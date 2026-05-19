@@ -246,6 +246,8 @@ const uniqueLinks = allLinks;
           });
           if (r.status === 403) {
             console.warn(`[LinkFollower] Proxy blocked document for ${url} — potential injection detected`);
+          } else if (r.status === 429) {
+            console.warn(`[LinkFollower] Rate limited for ${url}`);
           } else if (r.ok) {
             const d = await r.json();
             if (d.text && d.text.length > 200) {

@@ -16,18 +16,6 @@ importScripts("orchestrator.js");
 const browser = globalThis.browser || chrome;
 const PROXY_URL = "https://tos-guardian-proxy-production.up.railway.app";
 
-// How long before we re-analyze a site (15 days in milliseconds)
-const CACHE_EXPIRY_MS = 15 * 24 * 60 * 60 * 1000;
-
-function hashString(str) {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    hash = (hash << 5) - hash + str.charCodeAt(i);
-    hash |= 0;
-  }
-  return hash.toString();
-}
-
 // Write an analysis result to Supabase community cache
 async function writeToSupabase(domain, summary, aiProvider, optOutLinks = [], privacyText = '') {
   try {
@@ -46,6 +34,10 @@ async function writeToSupabase(domain, summary, aiProvider, optOutLinks = [], pr
       console.warn('[Supabase] Write blocked by security scan for', domain);
       return;
     }
+    if (response.status === 429) {
+      console.warn('[Supabase] Write rate limited for', domain);
+      return;
+    }
     if (!response.ok) {
       const errBody = await response.json().catch(() => ({}));
       console.warn('[Supabase] Write failed with status', response.status, 'for', domain, '—', errBody.reason || errBody.error || 'unknown');
@@ -62,23 +54,12 @@ async function writeToSupabase(domain, summary, aiProvider, optOutLinks = [], pr
 
 // Save an analysis result for a domain
 function saveAnalysis(domain, summary, tosText, optOutLinks = []) {
-  const entry = {
-    summary: summary,
-    summaryHash: hashString(summary),
-    savedAt: Date.now(),
-    optOutLinks: optOutLinks
-  };
-
-  browser.storage.local.get(["tosCache", "tosAcknowledged"], (result) => {
-    const cache = result.tosCache || {};
+  browser.storage.local.get("tosAcknowledged", (result) => {
     const ack = result.tosAcknowledged || {};
-    cache[domain] = entry;
-    delete ack[domain]; // Clear acknowledgment — user needs to see updated ToS
-    browser.storage.local.set({ tosCache: cache, tosAcknowledged: ack }, () => {
-      console.log(`[Memory] Saved analysis for ${domain}`);
-      writeToSupabase(domain, summary, 'anthropic', optOutLinks, tosText);
-    });
+    delete ack[domain];
+    browser.storage.local.set({ tosAcknowledged: ack });
   });
+  writeToSupabase(domain, summary, 'anthropic', optOutLinks, tosText);
 }
 
 async function readFromSupabase(domain, privacyText = '') {
@@ -89,6 +70,10 @@ async function readFromSupabase(domain, privacyText = '') {
     const response = await fetch(url);
     if (response.status === 403) {
       console.warn('[Supabase] Read blocked by security scan for', domain);
+      return null;
+    }
+    if (response.status === 429) {
+      console.warn('[Supabase] Read rate limited for', domain);
       return null;
     }
     if (!response.ok && response.status !== 404) {
@@ -111,52 +96,18 @@ async function readFromSupabase(domain, privacyText = '') {
   }
 }
 
-function loadAnalysis(domain, callback) {
-  browser.storage.local.get("tosCache", (result) => {
-    const cache = result.tosCache || {};
-    const entry = cache[domain];
-
-    if (!entry) {
-      console.log(`[Memory] No cache found for ${domain} — checking Supabase`);
-      readFromSupabase(domain).then(supabaseResult => {
-        if (supabaseResult) {
-          saveAnalysis(domain, supabaseResult.summary, '', supabaseResult.optOutLinks);
-          callback(supabaseResult.summary, supabaseResult.optOutLinks);
-        } else {
-          callback(null);
-        }
-      });
-      return;
-    }
-
-    const age = Date.now() - entry.savedAt;
-    if (age > CACHE_EXPIRY_MS) {
-      console.log(`[Memory] Cache expired for ${domain}`);
-      callback(null);
-      return;
-    }
-
-    if (entry.summaryHash && hashString(entry.summary) !== entry.summaryHash) {
-      console.warn(`[Memory] Integrity check failed for ${domain} — cache corrupted, forcing re-analysis`);
-      browser.storage.local.get("tosCache", (r) => {
-        const c = r.tosCache || {};
-        delete c[domain];
-        browser.storage.local.set({ tosCache: c });
-      });
-      callback(null);
-      return;
-    }
-
-    console.log(`[Memory] Cache hit for ${domain}`);
-    callback(entry.summary, entry.optOutLinks || []);
-  });
+async function loadAnalysis(domain, callback) {
+  const result = await readFromSupabase(domain);
+  if (result) {
+    console.log(`[Memory] Supabase cache hit for ${domain}`);
+    callback(result.summary, result.optOutLinks);
+  } else {
+    callback(null);
+  }
 }
 
-// Clear all cached analyses (useful for testing)
 function clearMemory() {
-  browser.storage.local.remove("tosCache", () => {
-    console.log("[Memory] Cache cleared");
-  });
+  console.log("[Memory] Cache lives in Supabase — no local cache to clear");
 }
 
 // --- FETCHER AGENT ---
@@ -287,6 +238,10 @@ async function fetchNextJsDocument(url) {
       console.warn(`[Fetcher] Proxy blocked document for ${url} — potential injection detected`);
       return null;
     }
+    if (response.status === 429) {
+      console.warn(`[Fetcher] Rate limited for ${url}`);
+      return null;
+    }
     if (!response.ok) {
       console.warn(`[Fetcher] Proxy returned ${response.status} for ${url}`);
       return null;
@@ -389,19 +344,12 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
       return;
     }
 
-    loadAnalysis(domain, async (summary, optOutLinks) => {
+    await loadAnalysis(domain, (summary, optOutLinks) => {
       if (summary) {
         sendResponse({ hit: true, knownSite, acknowledged: false, cached: { summary, optOutLinks: optOutLinks || [] } });
-        return;
+      } else {
+        sendResponse({ hit: false, knownSite, acknowledged: false });
       }
-      try {
-        const supabaseResult = await readFromSupabase(domain, null);
-        if (supabaseResult) {
-          sendResponse({ hit: true, knownSite, acknowledged: false, cached: { summary: supabaseResult.summary, optOutLinks: supabaseResult.optOutLinks || [] } });
-          return;
-        }
-      } catch(e) {}
-      sendResponse({ hit: false, knownSite, acknowledged: false });
     });
   })();
 

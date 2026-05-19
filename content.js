@@ -223,7 +223,7 @@ document.addEventListener("click", (event) => {
       console.warn('[TOS Guardian] Background service worker did not respond — showing overlay');
       showGuardianOverlay(event, null, hookedEl);
     }
-  }, 3000);
+  }, 8000);
 
   browser.runtime.sendMessage(
     { action: "checkCache", domain },

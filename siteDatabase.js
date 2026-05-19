@@ -8,10 +8,7 @@
 //
 // TWO LAYERS:
 // 1. STATIC_SITES  — hardcoded, never expire. Offline fallback if proxy unreachable.
-// 2. Supabase      — cross-user learned sites via proxy GET /site/:domain
-// 3. Learned sites — discovered at runtime, saved locally + to Supabase via proxy POST /site
-
-const CACHE_EXPIRY_DAYS = 15;
+// 2. Supabase      — cross-user learned sites via proxy GET/POST /site/:domain
 
 // ---------------------------------------------------------------------------
 // Static database — hardcoded, never expire, offline fallback
@@ -49,19 +46,17 @@ const STATIC_SITES = {
 
 // ---------------------------------------------------------------------------
 // lookupSite(pageUrl)
-// Priority: (1) local STATIC_SITES, (2) Supabase via proxy, (3) null → Fetcher guesses
+// Priority: (1) STATIC_SITES, (2) Supabase via proxy, (3) null → Fetcher guesses
 // ---------------------------------------------------------------------------
 async function lookupSite(pageUrl) {
   try {
     const hostname = new URL(pageUrl).hostname.replace(/^www\./, "");
 
-    // 1. Check local static database first — instant, no network call
     if (STATIC_SITES[hostname]) {
       console.log(`[SiteDB] ✅ Static match: ${hostname}`);
       return STATIC_SITES[hostname];
     }
 
-    // Subdomain fallback — e.g. "store.steampowered.com" → "steampowered.com"
     const parts = hostname.split(".");
     for (let i = 1; i < parts.length - 1; i++) {
       const candidate = parts.slice(i).join(".");
@@ -71,41 +66,23 @@ async function lookupSite(pageUrl) {
       }
     }
 
-    // 2. Check local learned cache
-    const key = "sitedb_" + hostname;
-    const result = await browser.storage.local.get(key);
-    const learned = result[key];
-
-    if (learned) {
-      const ageInDays = (Date.now() - learned.savedAt) / (1000 * 60 * 60 * 24);
-      if (ageInDays <= CACHE_EXPIRY_DAYS) {
-        console.log(`[SiteDB] ✅ Learned match (local): ${hostname} (${Math.floor(ageInDays)}d old)`);
-        return { tos: learned.tos, privacy: learned.privacy };
-      } else {
-        console.log(`[SiteDB] ⏰ Learned entry expired for ${hostname} — will re-discover`);
-        await browser.storage.local.remove(key);
-      }
-    }
-
-    // 3. Check Supabase via proxy
     try {
       const response = await fetch(`${PROXY_URL}/site/${encodeURIComponent(hostname)}`);
+      if (response.status === 429) {
+        console.warn(`[SiteDB] Rate limited for ${hostname}`);
+        return null;
+      }
       if (response.ok) {
         const data = await response.json();
         if (data && data.tos && data.privacy) {
-          // Check expiry for non-static entries
           if (!data.is_static) {
             const ageInDays = (Date.now() - new Date(data.updated_at).getTime()) / (1000 * 60 * 60 * 24);
-            if (ageInDays > CACHE_EXPIRY_DAYS) {
+            if (ageInDays > 15) {
               console.log(`[SiteDB] ⏰ Supabase entry expired for ${hostname}`);
               return null;
             }
           }
           console.log(`[SiteDB] ✅ Supabase match: ${hostname}`);
-          // Save to local cache for next time
-          await browser.storage.local.set({
-            [key]: { tos: data.tos, privacy: data.privacy, savedAt: Date.now() }
-          });
           return { tos: data.tos, privacy: data.privacy };
         }
       }
@@ -124,30 +101,20 @@ async function lookupSite(pageUrl) {
 
 // ---------------------------------------------------------------------------
 // learnSite(pageUrl, tosUrl, privacyUrl)
-// Saves to chrome.storage.local AND Supabase via proxy POST /site
-// Never overwrites static entries
+// Saves to Supabase via proxy POST /site. Never overwrites static entries.
 // ---------------------------------------------------------------------------
 async function learnSite(pageUrl, tosUrl, privacyUrl) {
   try {
     const hostname = new URL(pageUrl).hostname.replace(/^www\./, "");
 
-    // Never overwrite static entries
     if (STATIC_SITES[hostname]) return;
 
-    // Save locally
-    const key = "sitedb_" + hostname;
-    await browser.storage.local.set({
-      [key]: { tos: tosUrl, privacy: privacyUrl, savedAt: Date.now() }
-    });
-    console.log(`[SiteDB] 📚 Learned and saved locally: ${hostname}`);
-
-    // Save to Supabase — fire and forget
     fetch(`${PROXY_URL}/site`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ domain: hostname, tos_url: tosUrl, privacy_url: privacyUrl })
     }).then(r => r.json())
-      .then(d => { if (d.success) console.log(`[SiteDB] ☁️ Learned and saved to Supabase: ${hostname}`); })
+      .then(d => { if (d.success) console.log(`[SiteDB] ☁️ Learned and saved: ${hostname}`); })
       .catch(e => console.warn(`[SiteDB] Supabase write failed for ${hostname}:`, e.message));
 
   } catch (e) {
