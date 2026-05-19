@@ -244,10 +244,16 @@ const uniqueLinks = allLinks;
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ url })
           });
-          const d = await r.json();
-          if (d.text && d.text.length > 200) {
-            fetched = { text: stripHtml(d.text), html: d.text };
-            console.log(`[LinkFollower] Proxy fallback successful for: ${url}`);
+          if (r.status === 403) {
+            console.warn(`[LinkFollower] Proxy blocked document for ${url} — potential injection detected`);
+          } else if (r.ok) {
+            const d = await r.json();
+            if (d.text && d.text.length > 200) {
+              fetched = { text: stripHtml(d.text), html: d.text };
+              console.log(`[LinkFollower] Proxy fallback successful for: ${url}`);
+            }
+          } else {
+            console.warn(`[LinkFollower] Proxy returned ${r.status} for ${url}`);
           }
         } catch (e) {
           console.warn(`[LinkFollower] Proxy fallback failed for ${url}:`, e.message);

@@ -42,6 +42,15 @@ async function writeToSupabase(domain, summary, aiProvider, optOutLinks = [], pr
         privacy_text: privacyText
       })
     });
+    if (response.status === 403) {
+      console.warn('[Supabase] Write blocked by security scan for', domain);
+      return;
+    }
+    if (!response.ok) {
+      const errBody = await response.json().catch(() => ({}));
+      console.warn('[Supabase] Write failed with status', response.status, 'for', domain, '—', errBody.reason || errBody.error || 'unknown');
+      return;
+    }
     const data = await response.json();
     if (data.success) {
       console.log('[Supabase] Analysis written for', domain);
@@ -78,6 +87,14 @@ async function readFromSupabase(domain, privacyText = '') {
       ? `${PROXY_URL}/read/${domain}?text=${encodeURIComponent(privacyText)}`
       : `${PROXY_URL}/read/${domain}`;
     const response = await fetch(url);
+    if (response.status === 403) {
+      console.warn('[Supabase] Read blocked by security scan for', domain);
+      return null;
+    }
+    if (!response.ok && response.status !== 404) {
+      console.warn('[Supabase] Read failed with status', response.status, 'for', domain);
+      return null;
+    }
     const data = await response.json();
     if (data.result) {
       console.log('[Supabase] Community cache hit for', domain);
@@ -266,6 +283,14 @@ async function fetchNextJsDocument(url) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url })
     });
+    if (response.status === 403) {
+      console.warn(`[Fetcher] Proxy blocked document for ${url} — potential injection detected`);
+      return null;
+    }
+    if (!response.ok) {
+      console.warn(`[Fetcher] Proxy returned ${response.status} for ${url}`);
+      return null;
+    }
     const data = await response.json();
     if (data.text && data.text.length > 500) {
       console.log(`[Fetcher] Proxy fetch successful for ${url} — method: ${data.method}`);

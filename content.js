@@ -11,7 +11,6 @@ function hasProximityConsent(el) {
     "privacy policy", "our terms", "our policies"
   ];
 
-  // Check parent, grandparent, and great-grandparent innerText
   let node = el.parentElement;
   for (let i = 0; i < 3; i++) {
     if (!node) break;
@@ -52,13 +51,8 @@ function isAgreeButton(el) {
   if (highConfidence.some(k => combined.includes(k))) return true;
 
   if (lowConfidence.some(k => combined.includes(k))) {
-    // Tier 3: proximity check
     if (hasProximityConsent(el)) return true;
-
-    // Tier 4: known site + signin pattern
     if (domainIsKnown && signinPatterns.some(k => combined.includes(k))) return true;
-
-    // Tier 5: full page scan fallback
     const pageText = document.body.innerText.toLowerCase();
     const agreementContext = [
       "by clicking", "by continuing", "by signing up",
@@ -71,13 +65,20 @@ function isAgreeButton(el) {
   return false;
 }
 
-function showGuardianOverlay(event, cachedResult = null) {
-  const clickedButton = event.currentTarget || event.target;
-  event.preventDefault();
-  event.stopImmediatePropagation();
-  event.stopPropagation();
+// Walk up from a clicked element to find the nearest hooked agree button
+function findHookedAncestor(el) {
+  while (el && el !== document.body) {
+    if (el.dataset?.tgHooked === "true") return el;
+    el = el.parentElement;
+  }
+  return null;
+}
 
-  if (document.getElementById("tos-guardian-overlay")) return;
+function showGuardianOverlay(event, cachedResult = null, sourceButton = null) {
+  const clickedButton = sourceButton || event.currentTarget || event.target;
+
+  const existingOverlay = document.getElementById("tos-guardian-overlay");
+  if (existingOverlay) existingOverlay.remove();
 
   const overlay = document.createElement("div");
   overlay.id = "tos-guardian-overlay";
@@ -150,28 +151,17 @@ function showGuardianOverlay(event, cachedResult = null) {
   }, { passive: true });
 
   document.getElementById("tg-proceed").addEventListener("click", () => {
-  observerPaused = true;
-  overlay.remove();
-  // Write acknowledgment — user has seen and accepted this domain's ToS
-  browser.runtime.sendMessage({ action: "acknowledge", domain: window.location.hostname });
-  if (clickedButton) {
-    clickedButton.removeEventListener("click", checkCacheAndShowOverlay, true);
-    setTimeout(() => {
-      clickedButton.dispatchEvent(new MouseEvent("click", {
-        bubbles: true, cancelable: true, view: window
-      }));
-      setTimeout(() => { observerPaused = false; }, 500);
-    }, 100);
-  } else {
-    observerPaused = false;
-  }
-});
+    interceptActive = false;
+    acknowledgedDomains.add(window.location.hostname);
+    overlay.remove();
+    browser.runtime.sendMessage({ action: "acknowledge", domain: window.location.hostname });
+  });
 
   document.getElementById("tg-leave").addEventListener("click", () => {
+    interceptActive = false;
     overlay.remove();
   });
 
-  // If we already have a cached result, render it immediately — no API call needed
   if (cachedResult) {
     const summaryEl = document.getElementById("tg-summary");
     if (summaryEl) {
@@ -183,7 +173,6 @@ function showGuardianOverlay(event, cachedResult = null) {
     return;
   }
 
-  // No cache — run full analysis
   const fullText = document.body.innerText;
   browser.runtime.sendMessage(
     {
@@ -204,110 +193,148 @@ function showGuardianOverlay(event, cachedResult = null) {
   );
 }
 
-function checkCacheAndShowOverlay(event) {
+// --- EVENT DELEGATION ---
+// Single capture-phase listener on document handles all agree-button clicks.
+// Resilient to React re-rendering DOM nodes.
+let interceptActive = false;
+const acknowledgedDomains = new Set();
+
+document.addEventListener("click", (event) => {
+  if (acknowledgedDomains.has(window.location.hostname)) return;
+  if (interceptActive) return;
+
+  const hookedEl = findHookedAncestor(event.target);
+  if (!hookedEl) return;
+
   event.preventDefault();
   event.stopImmediatePropagation();
   event.stopPropagation();
+  interceptActive = true;
+  setTimeout(() => { interceptActive = false; }, 5000);
+
+  console.log('[TOS Guardian] Intercepted click on:', hookedEl.tagName);
 
   const domain = window.location.hostname;
+
+  let responded = false;
+  const fallbackTimer = setTimeout(() => {
+    if (!responded) {
+      responded = true;
+      console.warn('[TOS Guardian] Background service worker did not respond — showing overlay');
+      showGuardianOverlay(event, null, hookedEl);
+    }
+  }, 3000);
 
   browser.runtime.sendMessage(
     { action: "checkCache", domain },
     (response) => {
+      if (responded) return;
+      responded = true;
+      clearTimeout(fallbackTimer);
+
+      if (browser.runtime.lastError) {
+        console.warn('[TOS Guardian] Message channel error:', browser.runtime.lastError.message);
+        showGuardianOverlay(event, null, hookedEl);
+        return;
+      }
       if (response && response.acknowledged) {
-        // User has already seen and acknowledged this domain — let click through silently
-        const el = event.currentTarget || event.target;
-        if (el) {
-          el.removeEventListener("click", checkCacheAndShowOverlay, true);
-          setTimeout(() => {
-            el.dispatchEvent(new MouseEvent("click", {
-              bubbles: true, cancelable: true, view: window
-            }));
-          }, 50);
-        }
+        interceptActive = false;
+        acknowledgedDomains.add(domain);
         return;
       }
       if (response && response.hit) {
-        showGuardianOverlay(event, response.cached);
+        showGuardianOverlay(event, response.cached, hookedEl);
       } else {
-        showGuardianOverlay(event, null);
+        showGuardianOverlay(event, null, hookedEl);
       }
     }
   );
-}
+}, true);
 
+document.addEventListener("submit", (event) => {
+  if (acknowledgedDomains.has(window.location.hostname)) return;
+  if (interceptActive) return;
+
+  const form = event.target;
+  if (!form || form.tagName !== "FORM") return;
+
+  const submitButtons = form.querySelectorAll('button[type="submit"], input[type="submit"], button:not([type])');
+  let agreeBtn = null;
+  submitButtons.forEach(btn => { if (isAgreeButton(btn)) agreeBtn = btn; });
+
+  if (!agreeBtn) {
+    const pageText = document.body.innerText.toLowerCase();
+    const agreementContext = [
+      'by clicking', 'by continuing', 'by signing up',
+      'you agree', 'terms of service', 'privacy policy'
+    ].some(phrase => pageText.includes(phrase));
+    if (!agreementContext) return;
+  }
+
+  event.preventDefault();
+  event.stopImmediatePropagation();
+
+  const syntheticEvent = { preventDefault() {}, stopImmediatePropagation() {}, stopPropagation() {}, target: agreeBtn || form, currentTarget: form };
+  interceptActive = true;
+  setTimeout(() => { interceptActive = false; }, 5000);
+  showGuardianOverlay(syntheticEvent, null, agreeBtn || form);
+}, true);
+
+// --- BUTTON MARKING ---
+// attachToButtons only marks elements with data-tg-hooked — no per-element listeners.
 function attachToButtons() {
   document.querySelectorAll("button, a, [role='button']").forEach(el => {
-    if (isAgreeButton(el) && !hookedButtons.has(el)) {
-      hookedButtons.add(el);
+    if (el.dataset?.tgHooked === "true") return;
+    if (isAgreeButton(el)) {
       el.dataset.tgHooked = "true";
-      el.addEventListener("click", checkCacheAndShowOverlay, true);
-      el.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          e.stopImmediatePropagation();
-          e.stopPropagation();
-          checkCacheAndShowOverlay(e);
-        }
-      }, true);
+      console.log('[TOS Guardian] Marked button:', el.innerText?.trim().substring(0, 30));
     }
   });
   hookShadowButtons(document.body);
 }
 
 function attachToForms() {
-  document.querySelectorAll('form').forEach(form => {
-    if (hookedForms.has(form)) return;
-    hookedForms.add(form);
-
-    form.addEventListener('submit', function(event) {
-      const submitButtons = form.querySelectorAll('button[type="submit"], input[type="submit"], button:not([type])');
-      let hasAgreeButton = false;
-      submitButtons.forEach(btn => { if (isAgreeButton(btn)) hasAgreeButton = true; });
-
-      if (!hasAgreeButton) {
-        const pageText = document.body.innerText.toLowerCase();
-        const agreementContext = [
-          'by clicking', 'by continuing', 'by signing up',
-          'you agree', 'terms of service', 'privacy policy'
-        ].some(phrase => pageText.includes(phrase));
-        if (!agreementContext) return;
-      }
-
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      checkCacheAndShowOverlay(event);
-    }, true);
-  });
-  hookShadowForms(document.body);
+  // Forms are handled by the document-level submit listener — no per-form hooking needed
 }
-
-let observerPaused = false;
 
 let domainIsKnown = false;
 
 function initTosGuardian() {
   const domain = window.location.hostname;
+
+  let initResponded = false;
+  const initFallback = setTimeout(() => {
+    if (!initResponded) {
+      initResponded = true;
+      console.warn('[TOS Guardian] Init: service worker did not respond — hooking buttons without site check');
+      attachToButtons();
+    }
+  }, 2000);
+
   browser.runtime.sendMessage({ action: "checkCache", domain }, (response) => {
-    if (response && response.knownSite) {
-      domainIsKnown = true;
+    if (initResponded) return;
+    initResponded = true;
+    clearTimeout(initFallback);
+
+    if (browser.runtime.lastError) {
+      console.warn('[TOS Guardian] Init: message channel error:', browser.runtime.lastError.message);
+    } else {
+      if (response && response.knownSite) domainIsKnown = true;
+      if (response && response.acknowledged) acknowledgedDomains.add(domain);
     }
     attachToButtons();
-    attachToForms();
-    setTimeout(() => { attachToButtons(); attachToForms(); }, 2000);
-    setTimeout(() => { attachToButtons(); attachToForms(); }, 4000);
+    setTimeout(() => { attachToButtons(); }, 2000);
+    setTimeout(() => { attachToButtons(); }, 4000);
   });
 
   let debounceTimer = null;
-const observer = new MutationObserver(() => {
-  if (observerPaused) return;
-  clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(() => {
-    attachToButtons();
-    attachToForms();
-  }, 300);
-});
-observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'class'] });
+  const observer = new MutationObserver(() => {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      attachToButtons();
+    }, 300);
+  });
+  observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'class'] });
 }
 
 if (document.body) { initTosGuardian(); }
