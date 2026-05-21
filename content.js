@@ -7,17 +7,25 @@ function hasProximityConsent(el) {
     "by clicking", "by continuing", "by signing up",
     "by registering", "by creating", "by joining",
     "you agree", "you accept", "you consent",
-    "terms of service", "terms and conditions",
-    "privacy policy", "our terms", "our policies"
+    "terms of service", "terms and conditions", "terms of use",
+    "privacy policy", "our terms", "our policies",
+    "user agreement", "legal agreement", "end user license"
   ];
 
   let node = el.parentElement;
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 5; i++) {
     if (!node) break;
     const text = node.innerText?.toLowerCase() || "";
     if (consentPhrases.some(phrase => text.includes(phrase))) return true;
     node = node.parentElement;
   }
+  return false;
+}
+
+function pageHasAuthForm() {
+  if (document.querySelector('input[type="password"]')) return true;
+  const emailInputs = document.querySelectorAll('input[type="email"], input[autocomplete="username"], input[autocomplete="email"], input[name*="email"], input[name*="user"]');
+  if (emailInputs.length > 0) return true;
   return false;
 }
 
@@ -53,11 +61,13 @@ function isAgreeButton(el) {
   if (lowConfidence.some(k => combined.includes(k))) {
     if (hasProximityConsent(el)) return true;
     if (domainIsKnown && signinPatterns.some(k => combined.includes(k))) return true;
+    if (signinPatterns.some(k => combined.includes(k)) && pageHasAuthForm()) return true;
     const pageText = document.body.innerText.toLowerCase();
     const agreementContext = [
       "by clicking", "by continuing", "by signing up",
       "you agree", "terms of service", "privacy policy",
-      "terms and conditions"
+      "terms and conditions", "terms of use", "user agreement",
+      "legal agreement", "end user license"
     ];
     return agreementContext.some(phrase => pageText.includes(phrase));
   }
@@ -65,8 +75,14 @@ function isAgreeButton(el) {
   return false;
 }
 
-// Walk up from a clicked element to find the nearest hooked agree button
-function findHookedAncestor(el) {
+// Walk up from a clicked element to find the nearest hooked agree button.
+// Uses composedPath when available to cross shadow DOM boundaries.
+function findHookedAncestor(el, composedPath = null) {
+  if (composedPath) {
+    for (const node of composedPath) {
+      if (node.dataset?.tgHooked === "true") return node;
+    }
+  }
   while (el && el !== document.body) {
     if (el.dataset?.tgHooked === "true") return el;
     el = el.parentElement;
@@ -115,6 +131,7 @@ function showGuardianOverlay(event, cachedResult = null, sourceButton = null) {
       .tg-eval-strong   { background:#f0fff4; color:#1a7a3c; border:1px solid #b2dfc0; }
       .tg-eval-adequate { background:#fff8ee; color:#b7770d; border:1px solid #f5dfa0; }
       .tg-eval-weak     { background:#fff0f0; color:#c0392b; border:1px solid #f5c6c6; }
+      .tg-eval-failed   { background:#fff0f0; color:#c0392b; border:1px solid #f5c6c6; }
       #tg-card-footer { display:flex; gap:10px; padding:14px 20px; border-top:1px solid #f0f0f0; align-items:center; }
       #tg-proceed { flex:1 1 0; min-width:0; height:40px; padding:0 10px; background:#e0e0e0; color:#444; border:none; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; }
       #tg-proceed:hover { background:#d4d4d4; }
@@ -203,7 +220,7 @@ document.addEventListener("click", (event) => {
   if (acknowledgedDomains.has(window.location.hostname)) return;
   if (interceptActive) return;
 
-  const hookedEl = findHookedAncestor(event.target);
+  const hookedEl = findHookedAncestor(event.target, event.composedPath());
   if (!hookedEl) return;
 
   event.preventDefault();

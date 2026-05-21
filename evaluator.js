@@ -8,16 +8,126 @@ const HEDGE_PHRASES = [
   'does not mention', 'does not specify', 'not explicitly'
 ];
 
+const NOT_COVERED_PHRASES = [
+  'not covered in this document',
+  'not mentioned',
+  'not specified',
+  'not addressed',
+  'no information',
+  'not available'
+];
+
+const SECTION_HEADERS = [
+  '🔴 DATA SELLING & SHARING',
+  '🔴 OPT-OUT RIGHTS',
+  '📋 HOW TO OPT OUT RIGHT NOW',
+  '🟡 AUTO-RENEWAL & BILLING',
+  '🟢 DATA DELETION RIGHTS'
+];
+
+const CONTRADICTION_RULES = [
+  {
+    name: 'sharing-vs-optout',
+    sectionA: '🔴 DATA SELLING & SHARING',
+    sectionB: '🔴 OPT-OUT RIGHTS',
+    negatesA: ['does not share', 'does not sell', 'do not sell', 'do not share', 'no third parties', 'no data sharing', 'no data selling'],
+    requiresB: ['opt out of', 'say no to', 'turn off', 'stop sharing', 'stop selling', 'limit sharing', 'restrict'],
+    description: 'claims no data sharing but lists sharing opt-outs'
+  },
+  {
+    name: 'optout-vs-howto',
+    sectionA: '🔴 OPT-OUT RIGHTS',
+    sectionB: '📋 HOW TO OPT OUT RIGHT NOW',
+    notCoveredA: true,
+    requiresB: ['settings', 'click', 'navigate', 'go to', 'visit', 'contact', 'email', 'call', 'http'],
+    description: 'says no opt-out rights but provides opt-out steps'
+  },
+  {
+    name: 'howto-vs-optout',
+    sectionA: '📋 HOW TO OPT OUT RIGHT NOW',
+    sectionB: '🔴 OPT-OUT RIGHTS',
+    notCoveredA: true,
+    requiresB: ['opt out', 'say no', 'turn off', 'disable', 'unsubscribe', 'withdraw consent'],
+    description: 'says no opt-out steps but lists opt-out rights'
+  },
+  {
+    name: 'deletion-vs-howto',
+    sectionA: '🟢 DATA DELETION RIGHTS',
+    sectionB: '📋 HOW TO OPT OUT RIGHT NOW',
+    negatesA: ['cannot delete', 'no deletion', 'not delete', 'deletion is not available', 'does not offer deletion', 'no right to delete'],
+    requiresB: ['delete', 'deletion', 'erase', 'remove your data', 'remove my data'],
+    description: 'denies deletion rights but opt-out steps reference deletion'
+  }
+];
+
 const MIN_CREDIBLE_LENGTH = 300;
 
-function evaluateAnalysis(analysisText) {
+function parseSections(analysisText) {
+  const sections = {};
+  const lower = analysisText.toLowerCase();
+
+  for (let i = 0; i < SECTION_HEADERS.length; i++) {
+    const header = SECTION_HEADERS[i];
+    const start = lower.indexOf(header.toLowerCase());
+    if (start === -1) continue;
+
+    const contentStart = start + header.length;
+    let end = analysisText.length;
+    for (let j = i + 1; j < SECTION_HEADERS.length; j++) {
+      const nextPos = lower.indexOf(SECTION_HEADERS[j].toLowerCase(), contentStart);
+      if (nextPos !== -1) {
+        end = nextPos;
+        break;
+      }
+    }
+    sections[header] = analysisText.slice(contentStart, end).trim().toLowerCase();
+  }
+  return sections;
+}
+
+function detectContradictions(analysisText) {
+  const sections = parseSections(analysisText);
+  const contradictions = [];
+
+  for (const rule of CONTRADICTION_RULES) {
+    const textA = sections[rule.sectionA];
+    const textB = sections[rule.sectionB];
+    if (!textA || !textB) continue;
+
+    let aTriggered = false;
+
+    if (rule.notCoveredA) {
+      aTriggered = NOT_COVERED_PHRASES.some(p => textA.includes(p));
+    } else if (rule.negatesA) {
+      aTriggered = rule.negatesA.some(p => textA.includes(p));
+    }
+
+    if (!aTriggered) continue;
+
+    const bTriggered = rule.requiresB.some(p => textB.includes(p));
+    if (!bTriggered) continue;
+
+    contradictions.push({
+      rule: rule.name,
+      description: rule.description,
+      sectionA: rule.sectionA,
+      sectionB: rule.sectionB
+    });
+  }
+
+  return contradictions;
+}
+
+function evaluateAnalysis(analysisText, criticVerdict = null) {
   if (!analysisText || typeof analysisText !== 'string') {
     return {
       score: 0,
       label: 'Failed',
       warning: '⚠️ No analysis was returned. The legal document may not have loaded correctly.',
       passed: false,
-      escalate: true
+      escalate: true,
+      contradictions: [],
+      criticVerdict: null
     };
   }
 
@@ -55,6 +165,44 @@ function evaluateAnalysis(analysisText) {
     }
   }
 
+  // Check 4: All sections empty — document likely failed to fetch
+  const sections = parseSections(analysisText);
+  const sectionValues = Object.values(sections);
+  if (sectionValues.length > 0) {
+    const emptyCount = sectionValues.filter(s => NOT_COVERED_PHRASES.some(p => s.includes(p))).length;
+    if (emptyCount >= sectionValues.length) {
+      score -= 50;
+      issues.push('all sections empty — document likely not retrieved');
+    } else if (emptyCount >= sectionValues.length - 1) {
+      score -= 20;
+      issues.push('nearly all sections empty');
+    }
+  }
+
+  // Check 5: Cross-section contradiction detection
+  const contradictions = detectContradictions(analysisText);
+  if (contradictions.length > 0) {
+    score -= 15 * contradictions.length;
+    for (const c of contradictions) {
+      issues.push(`contradiction: ${c.description}`);
+      console.warn(`[Evaluator] Contradiction — ${c.rule}: ${c.description} (${c.sectionA} vs ${c.sectionB})`);
+    }
+  }
+
+  // Check 6: Critic/Judge verdicts — penalize unsupported or vague sections
+  if (criticVerdict) {
+    const criticFields = ['dataSelling', 'optOutRights', 'howToOptOut', 'autoRenewal', 'dataDeletion'];
+    for (const field of criticFields) {
+      if (criticVerdict[field] === 'unsupported') {
+        score -= 20;
+        issues.push(`critic: ${field} unsupported by source`);
+      } else if (criticVerdict[field] === 'vague') {
+        score -= 10;
+        issues.push(`critic: ${field} too vague`);
+      }
+    }
+  }
+
   score = Math.max(0, Math.min(100, score));
 
   // Thresholds per ESCALATION-001
@@ -76,7 +224,7 @@ function evaluateAnalysis(analysisText) {
   const escalate = label === 'Failed' || label === 'Adequate';
   const passed = label === 'Strong' || label === 'Adequate';
 
-  console.log(`[Evaluator] Score: ${score} | Label: ${label} | Issues: ${issues.join(', ') || 'none'}`);
+  console.log(`[Evaluator] Score: ${score} | Label: ${label} | Contradictions: ${contradictions.length} | Critic: ${criticVerdict ? 'yes' : 'skipped'} | Issues: ${issues.join(', ') || 'none'}`);
 
-  return { score, label, warning, passed, escalate };
+  return { score, label, warning, passed, escalate, contradictions, criticVerdict };
 }

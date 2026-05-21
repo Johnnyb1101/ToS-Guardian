@@ -10,6 +10,7 @@
  */
 
 importScripts("evaluator.js");
+importScripts("critic.js");
 importScripts("siteDatabase.js");
 importScripts("tosUtils.js");
 importScripts("orchestrator.js");
@@ -154,8 +155,11 @@ async function fetcherAgent(pageUrl, pageHtml = "", knownUrls = null) {
           catch(e) { return null; }
         }).filter(Boolean);
 
+      const resourcePagePatterns = /makingcents|blog|article|help|support|faq|tips|guide|learn|how-to|security-tips/i;
+
       const privacyHrefs = allHrefs
         .filter(href => /privacy|data-policy/i.test(href))
+        .filter(href => !resourcePagePatterns.test(href))
         .map(href => {
           try { return href.startsWith("http") ? href : new URL(href, `https://${domain}`).href; }
           catch(e) { return null; }
@@ -183,19 +187,140 @@ async function fetcherAgent(pageUrl, pageHtml = "", knownUrls = null) {
           privacyUrl: privacyFromPage?.sourceUrl || null
         };
       }
+
+      // Step 0.5: Link text extraction — scan anchor tags by visible text, not URL
+      const tosTextPatterns = /^\s*(terms|terms of service|terms of use|terms & conditions|terms and conditions|user agreement|subscriber agreement|legal terms)\s*$/i;
+      const privacyTextPatterns = /^\s*(privacy|privacy policy|privacy notice|privacy statement|data policy|your privacy rights|privacy & security|privacy and security|online privacy|your privacy)\s*$/i;
+
+      const anchorMatches = [...pageHtml.matchAll(/<a\s[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi)];
+
+      const tosTextHrefs = anchorMatches
+        .filter(m => tosTextPatterns.test(m[2].replace(/<[^>]+>/g, '').trim()))
+        .map(m => {
+          try { return m[1].startsWith("http") ? m[1] : new URL(m[1], `https://${domain}`).href; }
+          catch(e) { return null; }
+        }).filter(Boolean);
+
+      const privacyTextHrefs = anchorMatches
+        .filter(m => privacyTextPatterns.test(m[2].replace(/<[^>]+>/g, '').trim()))
+        .map(m => {
+          try { return m[1].startsWith("http") ? m[1] : new URL(m[1], `https://${domain}`).href; }
+          catch(e) { return null; }
+        }).filter(Boolean);
+
+      if (tosTextHrefs.length > 0 || privacyTextHrefs.length > 0) {
+        console.log(`[Fetcher] Link text scan found ${tosTextHrefs.length} ToS and ${privacyTextHrefs.length} privacy links`);
+
+        const [tosFromText, privacyFromText] = await Promise.all([
+          tosTextHrefs.length > 0 ? tryFetchCandidates([...new Set(tosTextHrefs)]) : null,
+          privacyTextHrefs.length > 0 ? tryFetchCandidates([...new Set(privacyTextHrefs)]) : null
+        ]);
+
+        if (tosFromText || privacyFromText) {
+          const combined = [
+            tosFromText ? `=== TERMS OF SERVICE ===\n${tosFromText.text}` : "",
+            privacyFromText ? `=== PRIVACY POLICY ===\n${privacyFromText.text}` : ""
+          ].filter(Boolean).join("\n\n");
+          const sourceUrl = tosFromText?.sourceUrl || privacyFromText?.sourceUrl;
+          console.log(`[Fetcher] Got documents from link text extraction`);
+          await learnSite(pageUrl, tosFromText?.sourceUrl || null, privacyFromText?.sourceUrl || null);
+          return {
+            text: combined,
+            sourceUrl,
+            privacyHtml: privacyFromText?.html || null,
+            privacyUrl: privacyFromText?.sourceUrl || null
+          };
+        }
+      }
     }
 
-    // Step 1: Candidate URL guessing
+    // Step 0.75: Homepage footer scan — fetch the root homepage and scan its links
+    const rootUrl = `https://${domain}/`;
+    if (!pageUrl.replace(/[?#].*$/, '').replace(/\/$/, '').endsWith(domain)) {
+      console.log(`[Fetcher] Scanning homepage footer for legal links: ${rootUrl}`);
+      try {
+        const homepageResponse = await fetch(`${PROXY_URL}/fetch-document`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: rootUrl })
+        });
+        if (homepageResponse.ok) {
+          const homepageData = await homepageResponse.json();
+          const homepageHtml = homepageData.text || '';
+          if (homepageHtml.length > 500) {
+            const homeAnchors = [...homepageHtml.matchAll(/<a\s[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi)];
+            const tosTextPatterns = /^\s*(terms|terms of service|terms of use|terms & conditions|terms and conditions|user agreement|subscriber agreement|legal terms)\s*$/i;
+            const privacyTextPatterns = /^\s*(privacy|privacy policy|privacy notice|privacy statement|data policy|your privacy rights|privacy & security|privacy and security|online privacy|your privacy)\s*$/i;
+
+            const homeTosHrefs = homeAnchors
+              .filter(m => tosTextPatterns.test(m[2].replace(/<[^>]+>/g, '').trim()))
+              .map(m => { try { return m[1].startsWith("http") ? m[1] : new URL(m[1], rootUrl).href; } catch(e) { return null; } })
+              .filter(Boolean);
+
+            const homePrivacyHrefs = homeAnchors
+              .filter(m => privacyTextPatterns.test(m[2].replace(/<[^>]+>/g, '').trim()))
+              .map(m => { try { return m[1].startsWith("http") ? m[1] : new URL(m[1], rootUrl).href; } catch(e) { return null; } })
+              .filter(Boolean);
+
+            if (homeTosHrefs.length > 0 || homePrivacyHrefs.length > 0) {
+              console.log(`[Fetcher] Homepage footer found ${homeTosHrefs.length} ToS and ${homePrivacyHrefs.length} privacy links`);
+              const [tosFromHome, privacyFromHome] = await Promise.all([
+                homeTosHrefs.length > 0 ? tryFetchCandidates([...new Set(homeTosHrefs)]) : null,
+                homePrivacyHrefs.length > 0 ? tryFetchCandidates([...new Set(homePrivacyHrefs)]) : null
+              ]);
+              if (tosFromHome || privacyFromHome) {
+                const combined = [
+                  tosFromHome ? `=== TERMS OF SERVICE ===\n${tosFromHome.text}` : "",
+                  privacyFromHome ? `=== PRIVACY POLICY ===\n${privacyFromHome.text}` : ""
+                ].filter(Boolean).join("\n\n");
+                const sourceUrl = tosFromHome?.sourceUrl || privacyFromHome?.sourceUrl;
+                console.log(`[Fetcher] Got documents from homepage footer scan`);
+                await learnSite(pageUrl, tosFromHome?.sourceUrl || null, privacyFromHome?.sourceUrl || null);
+                return {
+                  text: combined,
+                  sourceUrl,
+                  privacyHtml: privacyFromHome?.html || null,
+                  privacyUrl: privacyFromHome?.sourceUrl || null
+                };
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('[Fetcher] Homepage footer scan failed:', e.message);
+      }
+    }
+
+    // Step 1: Candidate URL guessing (expanded)
+    const rootDomain = domain.replace(/^www\./, '');
     const tosCandidates = [
       `https://${domain}/terms`,
       `https://${domain}/terms-of-service`,
+      `https://${domain}/terms-of-use`,
       `https://${domain}/legal/terms`,
+      `https://${domain}/legal/terms-of-service`,
+      `https://${domain}/legal/terms-of-use`,
+      `https://${domain}/policies/terms`,
+      `https://${domain}/about/terms`,
+      `https://${domain}/tos`,
+      `https://${domain}/user-agreement`,
+      `https://www.${rootDomain}/terms`,
+      `https://www.${rootDomain}/legal/terms`,
     ];
 
     const privacyCandidates = [
       `https://${domain}/privacy`,
       `https://${domain}/privacy-policy`,
+      `https://${domain}/privacy-notice`,
+      `https://${domain}/privacy-statement`,
       `https://${domain}/legal/privacy`,
+      `https://${domain}/legal/privacy-policy`,
+      `https://${domain}/policies/privacy`,
+      `https://${domain}/about/privacy`,
+      `https://${domain}/data-policy`,
+      `https://${domain}/your-privacy`,
+      `https://www.${rootDomain}/privacy`,
+      `https://www.${rootDomain}/privacy-policy`,
     ];
 
     const [tosResult, privacyResult] = await Promise.all([

@@ -80,9 +80,28 @@ function formatSummary(raw, optOutLinks = []) {
     }
   };
 
+  const knownHeaders = [
+    '🔴 DATA SELLING & SHARING',
+    '🔴 OPT-OUT RIGHTS',
+    '📋 HOW TO OPT OUT RIGHT NOW',
+    '🟡 AUTO-RENEWAL & BILLING',
+    '🟢 DATA DELETION RIGHTS'
+  ];
+
   for (const line of lines) {
     const cleanLine = line.replace(/^#+\s*/, '');
-    if (categoryMarkers.some(m => cleanLine.startsWith(m))) { flush(); currentTitle = cleanLine; }
+    if (categoryMarkers.some(m => cleanLine.startsWith(m))) {
+      flush();
+      const headerText = (h) => { const i = h.search(/[A-Z]/i); return i >= 0 ? h.slice(i) : h; };
+      const matchedHeader = knownHeaders.find(h => cleanLine.startsWith(h) || cleanLine.toUpperCase().includes(headerText(h).toUpperCase()));
+      if (matchedHeader) {
+        currentTitle = matchedHeader;
+        const remainder = cleanLine.slice(matchedHeader.length).replace(/^[:\s-]+/, '').trim();
+        if (remainder) currentBody.push(remainder);
+      } else {
+        currentTitle = cleanLine;
+      }
+    }
     else if (cleanLine && cleanLine !== '---') { currentBody.push(cleanLine); }
   }
   flush();
@@ -100,6 +119,22 @@ function formatSummary(raw, optOutLinks = []) {
   </div>`;
 
   return html;
+}
+
+function normalizeAnalysisHeaders(summary) {
+  const headerMap = [
+    { pattern: /[🔴📋🟡🟢]*\s*\*{0,2}\s*[🔴📋🟡🟢]*\s*\*{0,2}\s*DATA SELLING\s*[&]\s*SHARING\s*\*{0,2}/gi, replacement: '🔴 DATA SELLING & SHARING' },
+    { pattern: /[🔴📋🟡🟢]*\s*\*{0,2}\s*[🔴📋🟡🟢]*\s*\*{0,2}\s*OPT[- ]?OUT RIGHTS\s*\*{0,2}/gi, replacement: '🔴 OPT-OUT RIGHTS' },
+    { pattern: /[🔴📋🟡🟢]*\s*\*{0,2}\s*[🔴📋🟡🟢]*\s*\*{0,2}\s*HOW TO OPT OUT RIGHT NOW\s*\*{0,2}/gi, replacement: '📋 HOW TO OPT OUT RIGHT NOW' },
+    { pattern: /[🔴📋🟡🟢]*\s*\*{0,2}\s*[🔴📋🟡🟢]*\s*\*{0,2}\s*AUTO[- ]?RENEWAL\s*[&]\s*BILLING\s*\*{0,2}/gi, replacement: '🟡 AUTO-RENEWAL & BILLING' },
+    { pattern: /[🔴📋🟡🟢]*\s*\*{0,2}\s*[🔴📋🟡🟢]*\s*\*{0,2}\s*DATA DELETION RIGHTS\s*\*{0,2}/gi, replacement: '🟢 DATA DELETION RIGHTS' }
+  ];
+
+  let normalized = summary;
+  for (const { pattern, replacement } of headerMap) {
+    normalized = normalized.replace(pattern, '\n' + replacement + '\n');
+  }
+  return normalized.trim();
 }
 
 function validateLinkFollowerUrl(url) {
@@ -161,18 +196,18 @@ function scanForInjection(text) {
     /ignore\s+(all\s+)?(previous|prior|above)\s+instructions/i,
     /system\s*:\s*(override|prompt|message|instruction)/i,
     /system\s+override/i,
-    /you\s+are\s+now\s+(a|an)\s+/i,
-    /forget\s+(everything|all|your|prior)/i,
+    /you\s+are\s+now\s+(a|an)\s+(ai|assistant|chatbot|language model|helpful)/i,
+    /forget\s+(everything|all|your|prior)\s+(instructions?|rules?|context|training)/i,
     /new\s+instructions?\s*:/i,
     /\[INST\]/i,
     /<\|system\|>/i,
     /<\|im_start\|>/i,
     /###\s*instruction/i,
     /---\s*system\s*---/i,
-    /act\s+as\s+if\s+you\s+(are|have|were)/i,
-    /disregard\s+(your|all|any|previous)/i,
+    /act\s+as\s+if\s+you\s+(are|have|were)\s+(a|an)?\s*(different|new|unrestricted)/i,
+    /disregard\s+(your|all|any|previous)\s+(instructions?|rules?|guidelines?|training)/i,
     /override\s+(your|all|previous|prior)\s+(instructions?|rules?|guidelines?)/i,
-    /you\s+must\s+(now\s+)?(ignore|disregard|forget)/i
+    /you\s+must\s+(now\s+)?(ignore|disregard|forget)\s+(all|your|previous|prior)/i
   ];
 
   let strippedText = text;

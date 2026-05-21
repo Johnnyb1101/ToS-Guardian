@@ -73,8 +73,23 @@ const { text: enrichedText, optOutLinks } = await linkFollowerStub(safeText, sou
   let result = null;
   result = await runWithRetry(() => analyzeWithModel(enrichedText, source), "[Analyzer]");
 
+  if (result && result.summary) {
+    result.summary = normalizeAnalysisHeaders(result.summary);
+  }
+
+  // --- STEP 4.5: CRITIC/JUDGE AGENT ---
+  let criticVerdict = null;
+  if (result) {
+    criticVerdict = await runCritic(result.summary, enrichedText);
+    if (criticVerdict) {
+      console.log(`[Orchestrator] Critic verdict received — flags: ${criticVerdict.flags?.length || 0}`);
+    } else {
+      console.log(`[Orchestrator] Critic skipped or failed — continuing without`);
+    }
+  }
+
   // --- STEP 5: EVALUATOR AGENT + ESCALATION ---
-  const rawEvaluation = evaluateAnalysis(result ? result.summary : null);
+  const rawEvaluation = evaluateAnalysis(result ? result.summary : null, criticVerdict);
 
   // Schema validation — fail closed if Evaluator returns unexpected format (SECURITY-010)
   const validLabels = ['Strong', 'Adequate', 'Failed'];
@@ -96,42 +111,51 @@ const { text: enrichedText, optOutLinks } = await linkFollowerStub(safeText, sou
 
   // --- ESCALATION (ESCALATION-002, ESCALATION-003, ESCALATION-006) ---
   if (evaluation.escalate) {
-    // Check session cap for Adequate results (Failed always escalates)
-    const capKey = 'opusEscalationCount';
+    const capKey = 'opusEscalationData';
     const capData = await browser.storage.local.get(capKey);
-    const escalationCount = capData[capKey] || 0;
-    const CAP = 3;
+    const stored = capData[capKey] || { count: 0, resetAt: 0 };
 
-    const shouldEscalate = evaluation.label === 'Failed' || escalationCount < CAP;
+    const now = Date.now();
+    if (now > stored.resetAt) {
+      stored.count = 0;
+      stored.resetAt = now + 24 * 60 * 60 * 1000;
+    }
+    const escalationCount = stored.count;
+    const CAP = 5;
+
+    const shouldEscalate = escalationCount < CAP;
 
     if (shouldEscalate) {
-      console.log(`[Orchestrator] Escalating to Opus — Haiku score: ${evaluation.score}, count: ${escalationCount + 1}/${CAP}`);
+      console.log(`[Orchestrator] Escalating to Opus — Haiku score: ${evaluation.score}, count: ${escalationCount + 1}/${CAP} (resets ${new Date(stored.resetAt).toLocaleTimeString()})`);
       const escalatedResult = await runWithRetry(
-        () => analyzeWithModel(enrichedText, source, true), // true = use escalation model
+        () => analyzeWithModel(enrichedText, source, true),
         "[Analyzer-Opus]"
       );
 
       if (escalatedResult) {
-        const escalatedEvaluation = evaluateAnalysis(escalatedResult.summary);
+        if (escalatedResult.summary) {
+          escalatedResult.summary = normalizeAnalysisHeaders(escalatedResult.summary);
+        }
+        // Re-run Critic on escalated result
+        const escalatedCritic = await runCritic(escalatedResult.summary, enrichedText);
+        const escalatedEvaluation = evaluateAnalysis(escalatedResult.summary, escalatedCritic);
         console.log(`[Orchestrator] Opus score: ${escalatedEvaluation.score} | Label: ${escalatedEvaluation.label}`);
 
-        // Use Opus result if it's better
         if (escalatedEvaluation.score > evaluation.score) {
           result = escalatedResult;
           evaluation = escalatedEvaluation;
+          criticVerdict = escalatedCritic;
           console.log(`[Orchestrator] Opus result accepted`);
         } else {
           console.log(`[Orchestrator] Opus result not better — keeping Haiku result`);
         }
 
-        // Increment session cap regardless of which result was kept
-        await browser.storage.local.set({ [capKey]: escalationCount + 1 });
-
-        // Log escalation to Supabase (ESCALATION-004)
+        stored.count = escalationCount + 1;
+        await browser.storage.local.set({ [capKey]: stored });
         writeToSupabase(domain, result.summary, 'anthropic-escalated', optOutLinks, textToAnalyze);
       }
     } else {
-      console.log(`[Orchestrator] Opus cap reached (${escalationCount}/${CAP}) — using Haiku result`);
+      console.log(`[Orchestrator] Opus cap reached (${escalationCount}/${CAP}) — using Haiku result. Resets ${new Date(stored.resetAt).toLocaleTimeString()}`);
     }
   }
 
