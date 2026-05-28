@@ -3,6 +3,17 @@
 // popup.html <script> tag (before popup.js),
 // and background.js importScripts()
 
+// HTML entity escaping — prevents XSS from AI/cache output rendered via innerHTML (SECURITY-021)
+function escapeHtml(text) {
+  if (!text) return "";
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function formatSummary(raw, optOutLinks = []) {
   if (!raw) return "";
 
@@ -14,7 +25,7 @@ function formatSummary(raw, optOutLinks = []) {
       <div style="margin-bottom:10px; padding:8px 10px; background:#3a1a00;
                   border-left:3px solid #ff6600; border-radius:4px;
                   font-size:12px; color:#ffaa55;">
-        🚨 ${injectionMatch[0].replace(/^⚠️\s*/i, "").trim()}
+        🚨 ${escapeHtml(injectionMatch[0].replace(/^⚠️\s*/i, "").trim())}
       </div>`;
     raw = raw.replace(injectionMatch[0], "").trim();
   }
@@ -22,11 +33,19 @@ function formatSummary(raw, optOutLinks = []) {
   let evalWarning = "";
   let evalBadge = "";
 
-  const warningMatch = raw.match(/<div class="tg-eval-warning"[^>]*>.*?<\/div>/s);
-  const badgeMatch   = raw.match(/<div class="tg-eval-badge[^>]*>.*?<\/div>/s);
+  const warningMatch = raw.match(/<div class="tg-eval-warning"[^>]*>(.*?)<\/div>/s);
+  const badgeMatch   = raw.match(/<div class="tg-eval-badge\s+(tg-eval-\w+)"[^>]*>(.*?)<\/div>/s);
 
-  if (warningMatch) { evalWarning = warningMatch[0]; raw = raw.replace(warningMatch[0], ""); }
-  if (badgeMatch)   { evalBadge   = badgeMatch[0];   raw = raw.replace(badgeMatch[0], ""); }
+  // Rebuild eval HTML from extracted text to prevent cache-poisoned markup (SECURITY-021)
+  if (warningMatch) {
+    evalWarning = `<div class="tg-eval-warning">${escapeHtml(warningMatch[1].replace(/<[^>]+>/g, '').trim())}</div>`;
+    raw = raw.replace(warningMatch[0], "");
+  }
+  if (badgeMatch) {
+    const badgeClass = /^tg-eval-(strong|adequate|failed|weak)$/.test(badgeMatch[1]) ? badgeMatch[1] : 'tg-eval-failed';
+    evalBadge = `<div class="tg-eval-badge ${badgeClass}">${escapeHtml(badgeMatch[2].replace(/<[^>]+>/g, '').trim())}</div>`;
+    raw = raw.replace(badgeMatch[0], "");
+  }
 
   const categoryMarkers = ["🔴", "📋", "🟡", "🟢"];
   const lines = raw.split("\n").map(l => l.trim()).filter(l => l !== "" && l !== "•");
@@ -38,7 +57,7 @@ function formatSummary(raw, optOutLinks = []) {
   const optOutHtml = validLinks.length > 0 ? `
     <div class="tg-optout-links">
       <div class="tg-optout-title">Opt-Out Links Found</div>
-      ${validLinks.map(url => `<a class="tg-optout-link" href="${url}" target="_blank">${url}</a>`).join("")}
+      ${validLinks.map(url => `<a class="tg-optout-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a>`).join("")}
     </div>` : "";
 
   let html = injectionWarning + evalWarning;
@@ -49,15 +68,20 @@ function formatSummary(raw, optOutLinks = []) {
   const flush = () => {
     if (currentTitle) {
       const bodyLines = currentBody
-        .map(l => l
-          .replace(/^•\s*/, "")
-          .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-          .replace(/\|[-\s|]+\|/g, '')
-          .replace(/^\|\s*/g, '')
-          .replace(/\s*\|$/g, '')
-          .replace(/\s*\|\s*/g, ' — ')
-          .trim()
-        )
+        .map(l => {
+          let cleaned = l
+            .replace(/^•\s*/, "")
+            .replace(/\|[-\s|]+\|/g, '')
+            .replace(/^\|\s*/g, '')
+            .replace(/\s*\|$/g, '')
+            .replace(/\s*\|\s*/g, ' — ')
+            .trim();
+          // Escape HTML entities BEFORE converting markdown bold (SECURITY-021)
+          cleaned = escapeHtml(cleaned);
+          // Now safe to convert **bold** to <strong> since content is escaped
+          cleaned = cleaned.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+          return cleaned;
+        })
         .filter(l => l !== "" && l !== "---" && l !== "—"
           && !l.match(/^It.s your right to/i)
           && !l.match(/^[-\s|]+$/));
@@ -66,7 +90,7 @@ function formatSummary(raw, optOutLinks = []) {
 
       html += `
         <div class="tg-category">
-          <span class="tg-category-title">${currentTitle}</span>
+          <span class="tg-category-title">${escapeHtml(currentTitle)}</span>
           <div class="tg-category-body">${bodyHtml}</div>
         </div>`;
 
@@ -137,38 +161,51 @@ function normalizeAnalysisHeaders(summary) {
   return normalized.trim();
 }
 
-function validateLinkFollowerUrl(url) {
+// Central URL validation gate — ALL outbound document fetches pass through here (SECURITY-020)
+// Used by: Fetcher (hidden tabs, proxy), Link Follower, homepage footer scan
+function validateDocumentUrl(url) {
   try {
     const parsed = new URL(url);
 
     if (parsed.protocol !== "https:") {
-      console.warn("[LinkFollower] Blocked non-HTTPS URL:", url);
+      console.warn("[URLGate] Blocked non-HTTPS URL:", url);
       return false;
     }
 
     const hostname = parsed.hostname.toLowerCase();
 
-    if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1") {
-      console.warn("[LinkFollower] Blocked loopback URL:", url);
+    if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]") {
+      console.warn("[URLGate] Blocked loopback URL:", url);
       return false;
     }
 
-    const privateIp = /^(10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+)$/;
+    const privateIp = /^(10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+|169\.254\.\d+\.\d+|0\.0\.0\.0)$/;
     if (privateIp.test(hostname)) {
-      console.warn("[LinkFollower] Blocked private IP URL:", url);
+      console.warn("[URLGate] Blocked private/link-local IP URL:", url);
       return false;
     }
 
     if (!hostname || hostname.length < 4) {
-      console.warn("[LinkFollower] Blocked invalid hostname:", url);
+      console.warn("[URLGate] Blocked invalid hostname:", url);
+      return false;
+    }
+
+    // Block suspicious schemes smuggled via URL constructor
+    if (parsed.username || parsed.password) {
+      console.warn("[URLGate] Blocked URL with credentials:", url);
       return false;
     }
 
     return true;
   } catch (e) {
-    console.warn("[LinkFollower] Blocked malformed URL:", url);
+    console.warn("[URLGate] Blocked malformed URL:", url);
     return false;
   }
+}
+
+// Legacy alias for backward compatibility
+function validateLinkFollowerUrl(url) {
+  return validateDocumentUrl(url);
 }
 
 function sanitizeForPrompt(text) {

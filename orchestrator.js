@@ -74,7 +74,10 @@ const { text: enrichedText, optOutLinks } = await linkFollowerStub(safeText, sou
   result = await runWithRetry(() => analyzeWithModel(enrichedText, source), "[Analyzer]");
 
   if (result && result.summary) {
+    console.log(`[Orchestrator] Raw Analyzer output (${result.summary.length} chars):`, result.summary.slice(0, 300));
     result.summary = normalizeAnalysisHeaders(result.summary);
+  } else {
+    console.warn('[Orchestrator] Analyzer returned:', JSON.stringify(result).slice(0, 300));
   }
 
   // --- STEP 4.5: CRITIC/JUDGE AGENT ---

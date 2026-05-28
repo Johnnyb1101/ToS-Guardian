@@ -236,7 +236,7 @@ async function fetcherAgent(pageUrl, pageHtml = "", knownUrls = null) {
 
     // Step 0.75: Homepage footer scan — fetch the root homepage and scan its links
     const rootUrl = `https://${domain}/`;
-    if (!pageUrl.replace(/[?#].*$/, '').replace(/\/$/, '').endsWith(domain)) {
+    if (!pageUrl.replace(/[?#].*$/, '').replace(/\/$/, '').endsWith(domain) && validateDocumentUrl(rootUrl)) {
       console.log(`[Fetcher] Scanning homepage footer for legal links: ${rootUrl}`);
       try {
         const homepageResponse = await fetch(`${PROXY_URL}/fetch-document`, {
@@ -353,6 +353,10 @@ async function fetcherAgent(pageUrl, pageHtml = "", knownUrls = null) {
 }
 
 async function fetchNextJsDocument(url) {
+  if (!validateDocumentUrl(url)) {
+    console.warn(`[Fetcher] Proxy fetch blocked by URL gate: ${url}`);
+    return null;
+  }
   try {
     const response = await fetch(`${PROXY_URL}/fetch-document`, {
       method: 'POST',
@@ -385,6 +389,11 @@ async function fetchNextJsDocument(url) {
 
 async function tryFetchCandidates(candidates) {
   for (const url of candidates) {
+    // Central URL validation gate (SECURITY-020)
+    if (!validateDocumentUrl(url)) {
+      console.warn(`[Fetcher] URL blocked by validation gate: ${url}`);
+      continue;
+    }
     // Hidden tab first — renders JavaScript, gets real content
     const tabResult = await fetchWithHiddenTab(url);
     if (tabResult && tabResult.text && tabResult.text.length > 500) {
@@ -596,9 +605,10 @@ ${trimmedText}`;
 
     const data = await response.json();
     if (data.content && data.content[0]) {
+      console.log(`[Analyzer] Response length: ${data.content[0].text.length} chars, stop_reason: ${data.stop_reason}`);
       return { summary: data.content[0].text };
     } else {
-      console.log("API response:", JSON.stringify(data));
+      console.log("[Analyzer] API error response:", JSON.stringify(data).slice(0, 500));
       return { summary: "Error: " + (data.error?.message || "Unknown error") };
     }
   }
