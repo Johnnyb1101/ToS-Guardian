@@ -111,6 +111,7 @@ function detectContradictions(analysisText) {
 
     const bTriggered = rule.requiresB.some(p => textB.includes(p));
     if (!bTriggered) continue;
+    if (rule.name === 'optout-vs-howto' && !hasActualOptOutInstruction(textB)) continue;
 
     contradictions.push({
       rule: rule.name,
@@ -121,6 +122,13 @@ function detectContradictions(analysisText) {
   }
 
   return contradictions;
+}
+
+function hasActualOptOutInstruction(sectionText) {
+  const text = (sectionText || "").toLowerCase();
+  const optOutAction = /opt out|unsubscribe|limit|turn off|disable|withdraw consent|global privacy control|do not sell|do not share|delete|request deletion|remove your data/;
+  const contactAction = /\b(call|email|contact|submit|request)\b/;
+  return optOutAction.test(text) || (contactAction.test(text) && /privacy|data|sharing|marketing|advertising|delete/.test(text));
 }
 
 function isSectionUnavailable(sectionText) {

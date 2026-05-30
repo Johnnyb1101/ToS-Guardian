@@ -83,21 +83,7 @@ const displayOptOutLinks = [
   // --- STEP 5: EVALUATOR AGENT + ESCALATION ---
   const rawEvaluation = evaluateAnalysis(result ? result.summary : null, criticVerdict);
 
-  // Schema validation — fail closed if Evaluator returns unexpected format (SECURITY-010)
-  const validLabels = ['Strong', 'Adequate', 'Failed'];
-  let evaluation = (
-    rawEvaluation &&
-    typeof rawEvaluation.score === 'number' &&
-    rawEvaluation.score >= 0 &&
-    rawEvaluation.score <= 100 &&
-    validLabels.includes(rawEvaluation.label)
-  ) ? rawEvaluation : {
-    score: 0,
-    label: 'Failed',
-    warning: '⚠️ Evaluator returned an unexpected result. Analysis could not be verified.',
-    passed: false,
-    escalate: true
-  };
+  let evaluation = validateEvaluation(rawEvaluation);
 
   console.log(`[Orchestrator] Evaluator — Label: ${evaluation.label}, Score: ${evaluation.score}`);
 
@@ -130,7 +116,7 @@ const displayOptOutLinks = [
         }
         // Re-run Critic on escalated result
         const escalatedCritic = await runCritic(escalatedResult.summary, enrichedText);
-        const escalatedEvaluation = evaluateAnalysis(escalatedResult.summary, escalatedCritic);
+        const escalatedEvaluation = validateEvaluation(evaluateAnalysis(escalatedResult.summary, escalatedCritic));
         console.log(`[Orchestrator] Opus score: ${escalatedEvaluation.score} | Label: ${escalatedEvaluation.label}`);
 
         if (escalatedEvaluation.score > evaluation.score) {
@@ -180,6 +166,23 @@ const displayOptOutLinks = [
 
 function isConfigurationMessage(summary) {
   return /No (Anthropic|OpenAI) API key set|Unknown provider selected/i.test(summary || "");
+}
+
+function validateEvaluation(rawEvaluation) {
+  const validLabels = ['Strong', 'Adequate', 'Failed'];
+  return (
+    rawEvaluation &&
+    typeof rawEvaluation.score === 'number' &&
+    rawEvaluation.score >= 0 &&
+    rawEvaluation.score <= 100 &&
+    validLabels.includes(rawEvaluation.label)
+  ) ? rawEvaluation : {
+    score: 0,
+    label: 'Failed',
+    warning: '⚠️ Evaluator returned an unexpected result. Analysis could not be verified.',
+    passed: false,
+    escalate: true
+  };
 }
 
 function buildCacheVerificationText(text) {

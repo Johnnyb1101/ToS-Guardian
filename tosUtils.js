@@ -185,10 +185,21 @@ function validateDocumentUrl(url) {
       return false;
     }
 
-    const hostname = parsed.hostname.toLowerCase();
+    const hostname = parsed.hostname.toLowerCase().replace(/\.$/, "");
 
     if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]") {
       console.warn("[URLGate] Blocked loopback URL:", url);
+      return false;
+    }
+
+    const ipv6Host = hostname.replace(/^\[|\]$/g, "");
+    if (
+      ipv6Host === "::1" ||
+      ipv6Host.startsWith("::ffff:127.") ||
+      ipv6Host === "::ffff:7f00:1" ||
+      /^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/i.test(ipv6Host)
+    ) {
+      console.warn("[URLGate] Blocked IPv6 loopback URL:", url);
       return false;
     }
 
@@ -262,6 +273,17 @@ function scanForInjection(text) {
 
   let strippedText = text;
   let detectedPattern = null;
+  let detectedCrossTextPattern = null;
+  const normalizedText = text.replace(/\s+/g, " ");
+
+  for (const pattern of injectionPatterns) {
+    if (pattern.test(normalizedText)) {
+      detectedPattern = normalizedText.match(pattern)?.[0]?.slice(0, 80) || "cross-line injection";
+      detectedCrossTextPattern = pattern;
+      console.warn('[Scanner] Injection pattern detected across text:', detectedPattern);
+      break;
+    }
+  }
 
   const lines = text.split('\n');
   const cleanedLines = lines.filter(line => {
@@ -276,6 +298,9 @@ function scanForInjection(text) {
   });
 
   strippedText = cleanedLines.join('\n');
+  if (detectedCrossTextPattern) {
+    strippedText = strippedText.replace(detectedCrossTextPattern, "").trim();
+  }
   const clean = detectedPattern === null;
 
   return { clean, strippedText, pattern: detectedPattern };
