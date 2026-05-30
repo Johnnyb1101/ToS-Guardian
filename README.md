@@ -18,8 +18,8 @@ TOS Guardian runs a multi-agent pipeline entirely inside the Chrome extension:
 
 Memory → Fetcher → Link Follower → Analyzer → Evaluator → UI
 
-- **Memory Agent** — caches analysis results locally for 15 days and in a community Supabase database. Uses semantic similarity via pgvector to detect meaningful ToS changes rather than exact text matching
-- **Fetcher Agent** — retrieves legal documents via a server-side proxy to bypass CORS restrictions. Supports Next.js `__NEXT_DATA__` extraction for JS-rendered pages, with hidden tab rendering as fallback
+- **Memory Agent** — reads and writes analysis results through the community Supabase cache via the proxy. Cached analyses are served only after current document text is fetched and compared through the semantic similarity path
+- **Fetcher Agent** — retrieves legal documents with hidden-tab rendering for JavaScript-heavy pages and a server-side proxy fallback for CORS-restricted/Next.js pages
 - **Link Follower Agent** — hunts down opt-out and privacy settings pages buried inside documents, follows them, and appends their content before analysis
 - **Analyzer** — sends combined documents to an AI model with a structured 5-category prompt
 - **Evaluator Agent** — scores the analysis quality before it reaches you
@@ -61,19 +61,19 @@ TOS Guardian supports three AI providers. You supply your own API key.
 TOS Guardian was built with security as a first-class concern. The extension:
 
 - Never stores API keys in code — keys live in `chrome.storage.local` only
-- Routes all document fetching through a server-side proxy — no direct browser fetches to third-party legal pages
+- Validates all document URLs before hidden-tab rendering or proxy fetches
 - Sanitizes all fetched document text before it reaches the AI prompt
 - Defends against prompt injection via explicit system prompt instructions
 - Validates all URLs before opening hidden tabs — blocks private IPs, localhost, and non-HTTPS
 - Uses a WeakSet for button hook tracking — inaccessible to page scripts
-- Verifies cached analysis integrity with a hash check on every read
+- Verifies cached analyses against current document text before serving semantic cache hits
 - Evaluator schema validation — fails closed if analysis output doesn't match expected format
 
 ## Known Limitations
 
 - Sites that submit forms via Enter key on an input field (not a button) may bypass interception
 - Button interception on dynamically rendered Next.js pages may require a second click in some cases when browser DevTools is open
-- The self-learning site database writes to both local storage and the community Supabase database — community entries expire after 15 days
+- The self-learning site database writes to the community Supabase database — learned community entries expire after 15 days
 - Reddit registration form submits via a cross-origin iframe — Enter key interception is not achievable at the extension layer. Button click interception works correctly on Reddit.
 
 ## Roadmap

@@ -61,6 +61,11 @@ const CONTRADICTION_RULES = [
 ];
 
 const MIN_CREDIBLE_LENGTH = 300;
+const ACTIONABLE_PHRASES = [
+  'you can', 'call', 'visit', 'go to', 'click', 'turn off',
+  'enable', 'unsubscribe', 'submit', 'request', 'contact',
+  'email', 'manage', 'opt out', 'say no', 'limit'
+];
 
 function parseSections(analysisText) {
   const sections = {};
@@ -97,7 +102,7 @@ function detectContradictions(analysisText) {
     let aTriggered = false;
 
     if (rule.notCoveredA) {
-      aTriggered = NOT_COVERED_PHRASES.some(p => textA.includes(p));
+      aTriggered = isSectionUnavailable(textA);
     } else if (rule.negatesA) {
       aTriggered = rule.negatesA.some(p => textA.includes(p));
     }
@@ -116,6 +121,24 @@ function detectContradictions(analysisText) {
   }
 
   return contradictions;
+}
+
+function isSectionUnavailable(sectionText) {
+  const text = (sectionText || "").trim().toLowerCase();
+  if (!text) return true;
+
+  const hasActionableContent = ACTIONABLE_PHRASES.some(phrase => text.includes(phrase));
+  if (hasActionableContent) return false;
+
+  const compact = text
+    .replace(/^[-*]\s*/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return NOT_COVERED_PHRASES.some(phrase => {
+    if (compact === phrase) return true;
+    return compact.startsWith(`${phrase}.`) || compact.startsWith(`${phrase} —`) || compact.startsWith(`${phrase} -`);
+  });
 }
 
 function evaluateAnalysis(analysisText, criticVerdict = null) {
@@ -169,7 +192,7 @@ function evaluateAnalysis(analysisText, criticVerdict = null) {
   const sections = parseSections(analysisText);
   const sectionValues = Object.values(sections);
   if (sectionValues.length > 0) {
-    const emptyCount = sectionValues.filter(s => NOT_COVERED_PHRASES.some(p => s.includes(p))).length;
+    const emptyCount = sectionValues.filter(s => isSectionUnavailable(s)).length;
     if (emptyCount >= sectionValues.length) {
       score -= 50;
       issues.push('all sections empty — document likely not retrieved');
@@ -214,7 +237,7 @@ function evaluateAnalysis(analysisText, criticVerdict = null) {
 
   let warning = null;
   if (label === 'Failed') {
-    warning = '⚠️ Analysis failed — the legal document may not have loaded. Try reloading the page and clicking the button again.';
+    warning = '⚠️ Analysis quality could not be verified. Some claims may be unsupported or incomplete, so review the source documents before relying on this summary.';
   } else if (label === 'Adequate') {
     warning = '⚠️ Partial analysis — some sections could not be fully assessed. Use this as a starting point, not a complete review.';
   }

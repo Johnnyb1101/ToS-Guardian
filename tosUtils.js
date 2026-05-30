@@ -42,7 +42,7 @@ function formatSummary(raw, optOutLinks = []) {
     raw = raw.replace(warningMatch[0], "");
   }
   if (badgeMatch) {
-    const badgeClass = /^tg-eval-(strong|adequate|failed|weak)$/.test(badgeMatch[1]) ? badgeMatch[1] : 'tg-eval-failed';
+    const badgeClass = /^tg-eval-(strong|adequate|failed)$/.test(badgeMatch[1]) ? badgeMatch[1] : 'tg-eval-failed';
     evalBadge = `<div class="tg-eval-badge ${badgeClass}">${escapeHtml(badgeMatch[2].replace(/<[^>]+>/g, '').trim())}</div>`;
     raw = raw.replace(badgeMatch[0], "");
   }
@@ -64,6 +64,7 @@ function formatSummary(raw, optOutLinks = []) {
   let currentTitle = "";
   let currentBody  = [];
   let optOutInserted = false;
+  let renderedSections = 0;
 
   const flush = () => {
     if (currentTitle) {
@@ -93,6 +94,7 @@ function formatSummary(raw, optOutLinks = []) {
           <span class="tg-category-title">${escapeHtml(currentTitle)}</span>
           <div class="tg-category-body">${bodyHtml}</div>
         </div>`;
+      renderedSections++;
 
       if (!optOutInserted && currentTitle.includes("OPT-OUT RIGHTS") && optOutHtml) {
         html += optOutHtml;
@@ -129,6 +131,17 @@ function formatSummary(raw, optOutLinks = []) {
     else if (cleanLine && cleanLine !== '---') { currentBody.push(cleanLine); }
   }
   flush();
+
+  if (renderedSections === 0 && lines.length > 0) {
+    const bodyHtml = lines
+      .map(line => `<p style="margin:0 0 6px 0;">${escapeHtml(line)}</p>`)
+      .join("");
+    html += `
+      <div class="tg-category">
+        <span class="tg-category-title">TOS Guardian</span>
+        <div class="tg-category-body">${bodyHtml}</div>
+      </div>`;
+  }
 
   if (!optOutInserted && optOutHtml) {
     html += optOutHtml;

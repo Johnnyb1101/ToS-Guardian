@@ -1,6 +1,6 @@
 const hookedButtons = new WeakSet();
-const hookedForms = new WeakSet();
 const browser = globalThis.browser || chrome;
+const isFrame = window.top !== window;
 
 function hasProximityConsent(el) {
   const consentPhrases = [
@@ -29,10 +29,28 @@ function pageHasAuthForm() {
   return false;
 }
 
+function pageHasAgreementContext() {
+  const pageText = document.body?.innerText?.toLowerCase() || "";
+  const agreementContext = [
+    "by clicking", "by continuing", "by signing up",
+    "you agree", "terms of service", "privacy policy",
+    "terms and conditions", "terms of use", "user agreement",
+    "legal agreement", "end user license"
+  ];
+  return agreementContext.some(phrase => pageText.includes(phrase));
+}
+
+function shouldRunInFrame() {
+  if (!isFrame) return true;
+  return pageHasAuthForm() || pageHasAgreementContext();
+}
+
 function isAgreeButton(el) {
   const text = el.innerText?.toLowerCase().trim() || "";
   const value = el.value?.toLowerCase().trim() || "";
-  const combined = text || value;
+  const ariaLabel = el.getAttribute?.("aria-label")?.toLowerCase().trim() || "";
+  const title = el.getAttribute?.("title")?.toLowerCase().trim() || "";
+  const combined = text || value || ariaLabel || title;
 
   const highConfidence = [
     "i agree", "accept all", "i accept",
@@ -62,14 +80,8 @@ function isAgreeButton(el) {
     if (hasProximityConsent(el)) return true;
     if (domainIsKnown && signinPatterns.some(k => combined.includes(k))) return true;
     if (signinPatterns.some(k => combined.includes(k)) && pageHasAuthForm()) return true;
-    const pageText = document.body.innerText.toLowerCase();
-    const agreementContext = [
-      "by clicking", "by continuing", "by signing up",
-      "you agree", "terms of service", "privacy policy",
-      "terms and conditions", "terms of use", "user agreement",
-      "legal agreement", "end user license"
-    ];
-    return agreementContext.some(phrase => pageText.includes(phrase));
+    if (domainIsKnown && pageHasAuthForm()) return true;
+    return pageHasAgreementContext();
   }
 
   return false;
@@ -130,13 +142,13 @@ function showGuardianOverlay(event, cachedResult = null, sourceButton = null) {
       .tg-eval-badge { margin:8px 20px 4px; padding:4px 10px; border-radius:20px; font-size:11px; font-weight:500; display:inline-block; }
       .tg-eval-strong   { background:#f0fff4; color:#1a7a3c; border:1px solid #b2dfc0; }
       .tg-eval-adequate { background:#fff8ee; color:#b7770d; border:1px solid #f5dfa0; }
-      .tg-eval-weak     { background:#fff0f0; color:#c0392b; border:1px solid #f5c6c6; }
       .tg-eval-failed   { background:#fff0f0; color:#c0392b; border:1px solid #f5c6c6; }
-      #tg-card-footer { display:flex; gap:10px; padding:14px 20px; border-top:1px solid #f0f0f0; align-items:center; }
-      #tg-proceed { flex:1 1 0; min-width:0; height:40px; padding:0 10px; background:#e0e0e0; color:#444; border:none; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; }
-      #tg-proceed:hover { background:#d4d4d4; }
-      #tg-leave { flex:1 1 0; min-width:0; height:40px; padding:0 10px; background:#1a1aff; color:#fff; border:none; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; }
-      #tg-leave:hover { background:#0000dd; }
+      #tg-card-footer { display:none; gap:10px; padding:14px 20px; border-top:1px solid #f0f0f0; align-items:center; }
+      #tg-card-footer.tg-ready { display:flex; }
+      #tg-proceed { flex:1 1 0; min-width:0; height:40px; padding:0 10px; background:#9ca3af; color:#fff; border:none; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; }
+      #tg-proceed:hover { background:#6b7280; }
+      #tg-leave { flex:1 1 0; min-width:0; height:40px; padding:0 10px; background:#b91c1c; color:#fff; border:none; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; }
+      #tg-leave:hover { background:#991b1b; }
     </style>
 
     <div id="tg-card">
@@ -163,6 +175,10 @@ function showGuardianOverlay(event, cachedResult = null, sourceButton = null) {
 
   document.body.appendChild(overlay);
 
+  const revealActions = () => {
+    document.getElementById("tg-card-footer")?.classList.add("tg-ready");
+  };
+
   document.getElementById("tg-summary").addEventListener("wheel", (e) => {
     e.stopPropagation();
   }, { passive: true });
@@ -172,6 +188,15 @@ function showGuardianOverlay(event, cachedResult = null, sourceButton = null) {
     acknowledgedDomains.add(window.location.hostname);
     overlay.remove();
     browser.runtime.sendMessage({ action: "acknowledge", domain: window.location.hostname });
+    setTimeout(() => {
+      if (!clickedButton || !clickedButton.isConnected) return;
+      if (clickedButton instanceof HTMLFormElement) {
+        if (typeof clickedButton.requestSubmit === "function") clickedButton.requestSubmit();
+        else clickedButton.submit();
+        return;
+      }
+      if (typeof clickedButton.click === "function") clickedButton.click();
+    }, 0);
   });
 
   document.getElementById("tg-leave").addEventListener("click", () => {
@@ -186,11 +211,24 @@ function showGuardianOverlay(event, cachedResult = null, sourceButton = null) {
         cachedResult.summary || "Could not load cached analysis.",
         cachedResult.optOutLinks || []
       );
+      revealActions();
     }
     return;
   }
 
   const fullText = document.body.innerText;
+  let analysisResponded = false;
+  const analysisTimer = setTimeout(() => {
+    if (analysisResponded) return;
+    const summaryEl = document.getElementById("tg-summary");
+    if (summaryEl) {
+      summaryEl.innerHTML = formatSummary(
+        "TOS Guardian is still analyzing this agreement. Some sites take longer because legal pages and opt-out links have to be fetched and checked.",
+        []
+      );
+    }
+  }, 45000);
+
   browser.runtime.sendMessage(
     {
       action: "analyzeTos",
@@ -199,12 +237,24 @@ function showGuardianOverlay(event, cachedResult = null, sourceButton = null) {
       pageHtml: document.documentElement.innerHTML
     },
     (result) => {
+      if (analysisResponded) return;
+      analysisResponded = true;
+      clearTimeout(analysisTimer);
       const summaryEl = document.getElementById("tg-summary");
       if (summaryEl) {
+        if (browser.runtime.lastError) {
+          summaryEl.innerHTML = formatSummary(
+            "TOS Guardian could not reach the background service worker. Reload the extension and try again.",
+            []
+          );
+          revealActions();
+          return;
+        }
         summaryEl.innerHTML = formatSummary(
           result?.summary || "Could not analyze this page.",
           result?.optOutLinks || []
         );
+        revealActions();
       }
     }
   );
@@ -280,12 +330,7 @@ document.addEventListener("submit", (event) => {
   submitButtons.forEach(btn => { if (isAgreeButton(btn)) agreeBtn = btn; });
 
   if (!agreeBtn) {
-    const pageText = document.body.innerText.toLowerCase();
-    const agreementContext = [
-      'by clicking', 'by continuing', 'by signing up',
-      'you agree', 'terms of service', 'privacy policy'
-    ].some(phrase => pageText.includes(phrase));
-    if (!agreementContext) return;
+    if (!pageHasAgreementContext()) return;
   }
 
   event.preventDefault();
@@ -317,6 +362,8 @@ function attachToForms() {
 let domainIsKnown = false;
 
 function initTosGuardian() {
+  if (!shouldRunInFrame()) return;
+
   const domain = window.location.hostname;
 
   let initResponded = false;

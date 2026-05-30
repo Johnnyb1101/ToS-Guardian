@@ -30,45 +30,7 @@ function hookShadowButtons(root) {
     if (typeof isAgreeButton === 'function' && isAgreeButton(el)) {
       hookedButtons.add(el);
       el.dataset.tgHooked = 'true'; // DOM hint only — not authoritative
-      el.addEventListener('click', showGuardianOverlay, true);
-      el.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          e.stopImmediatePropagation();
-          e.stopPropagation();
-          showGuardianOverlay(e);
-        }
-      }, true);
-      console.log('[ShadowDOM] Hooked agree button inside shadow root:', el);
+      console.log('[ShadowDOM] Marked agree button inside shadow root:', el);
     }
-  });
-}
-
-function hookShadowForms(root) {
-  walkShadowDOM(root, (el) => {
-    if (el.tagName?.toLowerCase() !== 'form') return;
-    if (hookedForms.has(el)) return;
-    hookedForms.add(el);
-
-    el.addEventListener('submit', function(event) {
-      const submitButtons = el.querySelectorAll('button[type="submit"], input[type="submit"], button:not([type])');
-      let hasAgreeButton = false;
-      submitButtons.forEach(btn => { if (isAgreeButton(btn)) hasAgreeButton = true; });
-
-      if (!hasAgreeButton) {
-        const pageText = document.body.innerText.toLowerCase();
-        const agreementContext = [
-          'by clicking', 'by continuing', 'by signing up',
-          'you agree', 'terms of service', 'privacy policy'
-        ].some(phrase => pageText.includes(phrase));
-        if (!agreementContext) return;
-      }
-
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      showGuardianOverlay(event);
-    }, true);
-
-    console.log('[ShadowDOM] Hooked form inside shadow root:', el);
   });
 }

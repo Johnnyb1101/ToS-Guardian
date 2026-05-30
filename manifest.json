@@ -2,11 +2,15 @@
   "manifest_version": 3,
   "name": "TOS Guardian",
   "options_page": "options.html",
-  "version": "1.2.1",
+  "version": "1.2.3",
   "description": "Intercepts agree buttons and analyzes Terms of Service and Privacy Policies with AI — so you know what you're agreeing to before you agree.",
   "permissions": ["activeTab", "tabs", "storage", "scripting"],
   "host_permissions": [
-    "https://tos-guardian-proxy-production.up.railway.app/*"
+    "https://tos-guardian-proxy-production.up.railway.app/*",
+    "https://api.anthropic.com/*",
+    "https://api.openai.com/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
   ],
   "browser_specific_settings": {
     "gecko": {
@@ -36,7 +40,9 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["tosUtils.js", "shadowDom.js", "content.js"]
+      "js": ["tosUtils.js", "shadowDom.js", "content.js"],
+      "all_frames": true,
+      "match_about_blank": true
     }
   ]
 }

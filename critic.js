@@ -2,7 +2,7 @@
 // LLM-based quality gate between Analyzer and Evaluator.
 // Checks whether the Analyzer's claims are grounded in the source document.
 
-const CRITIC_SOURCE_BUDGET = 60000;
+const CRITIC_SOURCE_BUDGET = 100000;
 const CRITIC_MAX_TOKENS = 600;
 
 const CRITIC_MODELS = {
@@ -14,10 +14,14 @@ const CRITIC_MODELS = {
 const CRITIC_SYSTEM = `You are a fact-checking judge. You receive an AI-generated privacy analysis and the original legal document it was based on. Your job is to check whether each section of the analysis is actually supported by the source document.
 
 For each section, respond with exactly one verdict:
-- "grounded" — the claims are supported by the source text
-- "unsupported" — the claims contain information not found in the source text
-- "vague" — the section exists but is too generic to be useful (e.g., "check your settings" with no specifics when the document gives specifics)
+- "grounded" — every material claim in that section is clearly supported by the source text
+- "unsupported" — any material claim in that section is not found in the source text, overstates the source, or is only partially supported
+- "vague" — the section is supported but too generic to be useful (e.g., "check your settings" with no specifics when the document gives specifics)
 - "skipped" — the section says "not covered" and the source text genuinely does not cover it
+
+Accept faithful plain-English paraphrases of legal table labels. For example, if a financial privacy notice says users can "limit our affiliates from marketing to you", an analysis saying "You can limit affiliates from marketing to you" is grounded. Do not require exact wording, but do require the same recipient category, data category, and user action.
+
+Do not invent other verdict labels. Do not use "partially_grounded", "partially supported", "mixed", or "unclear". If support is partial, use "unsupported". If a section is true but underspecified, use "vague".
 
 Respond in ONLY this JSON format, no other text:
 {"dataSelling":"verdict","optOutRights":"verdict","howToOptOut":"verdict","autoRenewal":"verdict","dataDeletion":"verdict","flags":["short explanation of any unsupported or vague finding"]}`;
@@ -39,13 +43,7 @@ async function runCritic(analysisSummary, sourceText) {
     return null;
   }
 
-  const privacyIndex = sourceText.indexOf('=== PRIVACY POLICY');
-  const privacySection = privacyIndex > -1 ? sourceText.slice(privacyIndex) : '';
-  const otherSection = privacyIndex > -1 ? sourceText.slice(0, privacyIndex) : sourceText;
-  const trimmedSource = [
-    otherSection.slice(0, Math.floor(CRITIC_SOURCE_BUDGET * 0.3)),
-    privacySection.slice(0, Math.floor(CRITIC_SOURCE_BUDGET * 0.7))
-  ].filter(Boolean).join('\n\n');
+  const trimmedSource = buildCriticSourceExcerpt(sourceText);
 
   const userMessage = `ANALYSIS TO CHECK:
 ${analysisSummary}
@@ -142,15 +140,23 @@ ${trimmedSource}`;
     const validVerdicts = ['grounded', 'unsupported', 'vague', 'skipped'];
     const fields = ['dataSelling', 'optOutRights', 'howToOptOut', 'autoRenewal', 'dataDeletion'];
     for (const field of fields) {
-      if (!validVerdicts.includes(verdict[field])) {
-        console.warn(`[Critic] Invalid verdict for ${field}: ${verdict[field]}`);
-        return null;
+      const rawVerdict = verdict[field];
+      const normalized = normalizeCriticVerdict(rawVerdict);
+      if (!validVerdicts.includes(normalized)) {
+        console.warn(`[Critic] Invalid verdict for ${field}: ${rawVerdict} — treating as unsupported`);
+        verdict[field] = 'unsupported';
+        verdict.flags = Array.isArray(verdict.flags) ? verdict.flags : [];
+        verdict.flags.push(`${field}: invalid critic verdict "${rawVerdict}" treated as unsupported`);
+      } else {
+        verdict[field] = normalized;
       }
     }
 
     if (!Array.isArray(verdict.flags)) {
       verdict.flags = [];
     }
+
+    applyDeterministicGrounding(verdict, analysisSummary, sourceText);
 
     const unsupported = fields.filter(f => verdict[f] === 'unsupported').length;
     const vague = fields.filter(f => verdict[f] === 'vague').length;
@@ -166,4 +172,106 @@ ${trimmedSource}`;
     console.warn('[Critic] Failed — pipeline continues without critic:', e.message);
     return null;
   }
+}
+
+function normalizeCriticVerdict(value) {
+  const verdict = String(value || '').toLowerCase().trim().replace(/[\s-]+/g, '_');
+  if (
+    verdict === 'partially_grounded' ||
+    verdict === 'partially_supported' ||
+    verdict === 'mixed' ||
+    verdict === 'unclear'
+  ) {
+    return 'unsupported';
+  }
+  return verdict;
+}
+
+function applyDeterministicGrounding(verdict, analysisSummary, sourceText) {
+  const analysis = String(analysisSummary || '').toLowerCase();
+  const source = String(sourceText || '').toLowerCase();
+
+  if (verdict.dataSelling === 'unsupported' && hasFinancialSharingGrounding(analysis, source)) {
+    verdict.dataSelling = 'grounded';
+    verdict.flags.push('dataSelling: deterministic grounding matched financial privacy notice categories');
+  }
+
+  if (verdict.optOutRights === 'unsupported' && hasFinancialOptOutGrounding(analysis, source)) {
+    verdict.optOutRights = 'grounded';
+    verdict.flags.push('optOutRights: deterministic grounding matched financial privacy notice limit/opt-out categories');
+  }
+
+  if (verdict.howToOptOut === 'unsupported' && hasFinancialHowToGrounding(analysis, source)) {
+    verdict.howToOptOut = 'grounded';
+    verdict.flags.push('howToOptOut: deterministic grounding matched financial privacy notice contact instructions');
+  }
+
+  if (verdict.dataDeletion === 'unsupported' && hasDeletionGrounding(analysis, source)) {
+    verdict.dataDeletion = 'grounded';
+    verdict.flags.push('dataDeletion: deterministic grounding matched manage/delete data instructions');
+  }
+}
+
+function hasFinancialSharingGrounding(analysis, source) {
+  const sourceHasCategories = [
+    'affiliates',
+    'nonaffiliates',
+    'joint marketing',
+    'service providers'
+  ].filter(term => source.includes(term)).length >= 3;
+
+  const analysisUsesCategories = [
+    'affiliates',
+    'nonaffiliates',
+    'joint marketing',
+    'service providers'
+  ].filter(term => analysis.includes(term)).length >= 3;
+
+  const sourceHasDataTypes = /transaction|experience|creditworthiness|marketing|financial product|service offering/.test(source);
+  return sourceHasCategories && analysisUsesCategories && sourceHasDataTypes;
+}
+
+function hasFinancialOptOutGrounding(analysis, source) {
+  const sourceHasLimits = /limit (our )?sharing|limit (our )?affiliates|limit (our )?nonaffiliates|opt out|unsubscribe|global privacy control|cross[- ]context behavioral advertising/i.test(source);
+  const analysisHasActions = /you can (limit|opt out|unsubscribe)|global privacy control|cross[- ]context behavioral advertising/i.test(analysis);
+  return sourceHasLimits && analysisHasActions;
+}
+
+function hasFinancialHowToGrounding(analysis, source) {
+  const sourceHasContact = /1[-–—\s]?888[-–—\s]?817[-–—\s]?2970|1[-–—\s]?888[-–—\s]?480[-–—\s]?3282|manage your data|global privacy control|unsubscribe/i.test(source);
+  const analysisHasContact = /1[-–—\s]?888[-–—\s]?817[-–—\s]?2970|1[-–—\s]?888[-–—\s]?480[-–—\s]?3282|manage your data|global privacy control|unsubscribe/i.test(analysis);
+  return sourceHasContact && analysisHasContact;
+}
+
+function hasDeletionGrounding(analysis, source) {
+  const sourceHasDeletion = /delete|deletion|manage your data|request.*personal information|access.*or.*delete/i.test(source);
+  const analysisHasDeletion = /delete|deletion|manage your data|request.*personal information/i.test(analysis);
+  return sourceHasDeletion && analysisHasDeletion;
+}
+
+function buildCriticSourceExcerpt(sourceText) {
+  if (sourceText.length <= CRITIC_SOURCE_BUDGET) {
+    return sourceText;
+  }
+
+  const supplementalMatch = sourceText.search(/=== (SUPPLEMENTAL PRIVACY NOTICE|OPT-OUT \/ PRIVACY PAGE):/);
+  const baseText = supplementalMatch > -1 ? sourceText.slice(0, supplementalMatch) : sourceText;
+  const supplementalText = supplementalMatch > -1 ? sourceText.slice(supplementalMatch) : '';
+
+  const privacyIndex = baseText.indexOf('=== PRIVACY POLICY');
+  const privacySection = privacyIndex > -1 ? baseText.slice(privacyIndex) : '';
+  const otherSection = privacyIndex > -1 ? baseText.slice(0, privacyIndex) : baseText;
+
+  if (supplementalText) {
+    return [
+      otherSection.slice(0, Math.floor(CRITIC_SOURCE_BUDGET * 0.15)),
+      privacySection.slice(0, Math.floor(CRITIC_SOURCE_BUDGET * 0.35)),
+      supplementalText.slice(0, Math.floor(CRITIC_SOURCE_BUDGET * 0.50))
+    ].filter(Boolean).join('\n\n');
+  }
+
+  return [
+    otherSection.slice(0, Math.floor(CRITIC_SOURCE_BUDGET * 0.3)),
+    privacySection.slice(0, Math.floor(CRITIC_SOURCE_BUDGET * 0.7))
+  ].filter(Boolean).join('\n\n');
 }

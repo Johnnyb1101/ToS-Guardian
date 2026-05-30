@@ -8,24 +8,7 @@ async function runOrchestrator(pageUrl, pageText, pageHtml) {
 
   const domain = pageUrl ? (() => { try { return new URL(pageUrl).hostname; } catch(e) { return null; } })() : null;
 
-// --- STEP 1: MEMORY AGENT ---
-if (domain) {
-  const cached = await new Promise(resolve => {
-    loadAnalysis(domain, (summary, optOutLinks) => {
-      if (summary) {
-        resolve({ summary, optOutLinks });
-      } else {
-        resolve(null);
-      }
-    });
-  });
-  if (cached) {
-    console.log("[Orchestrator] Cache hit — skipping fetch and analysis");
-    return cached;
-  }
-}
-
-// --- STEP 2: FETCHER AGENT ---
+// --- STEP 1: FETCHER AGENT ---
 const knownUrls = await lookupSite(pageUrl);
 if (knownUrls) {
   console.log("[Orchestrator] Site database hit — passing confirmed URLs to Fetcher");
@@ -40,24 +23,20 @@ const source = fetched
       : fetched.sourceUrl)
   : "current page";
 console.log("[Orchestrator] Text source:", source);
+const cacheVerificationText = buildCacheVerificationText(textToAnalyze);
 
-// --- STEP 2.5: SEMANTIC SIMILARITY CHECK ---
-// Now we have fetched privacy text — check Supabase for a semantically similar cached result
+// --- STEP 2: MEMORY AGENT ---
+// Cache reads happen only after fetching current text, so Supabase can verify similarity.
 if (domain && fetched) {
-  const privacyText = sanitizeForPrompt(
-    fetched.text.split(/={3,}/).find(s => s.includes('PRIVACY POLICY')) || fetched.text
-  ).slice(0, 10000);
-
-  const supabaseResult = await readFromSupabase(domain, privacyText);
+  const supabaseResult = await readFromSupabase(domain, cacheVerificationText);
   if (supabaseResult) {
     console.log("[Orchestrator] Semantic cache hit — skipping analysis");
-    saveAnalysis(domain, supabaseResult.summary, fetched.text, supabaseResult.optOutLinks);
     return { summary: supabaseResult.summary, optOutLinks: supabaseResult.optOutLinks };
   }
   console.log("[Orchestrator] No semantic match — running full analysis");
 }
 
-// --- STEP 2.8: INJECTION SCANNER ---
+// --- STEP 2.5: INJECTION SCANNER ---
 const scanResult = scanForInjection(textToAnalyze);
 const safeText = scanResult.strippedText;
 if (!scanResult.clean) {
@@ -67,7 +46,13 @@ if (!scanResult.clean) {
 // --- STEP 3: LINK FOLLOWER AGENT ---
 const privacyHtml = fetched ? fetched.privacyHtml : null;
 const privacyUrl = fetched ? fetched.privacyUrl : null;
-const { text: enrichedText, optOutLinks } = await linkFollowerStub(safeText, source, privacyHtml, privacyUrl);
+const { text: enrichedText, optOutLinks } = await linkFollowerStub(safeText, source, privacyHtml, privacyUrl, fetched?.hasSupplementalPrivacy || false);
+const displayOptOutLinks = [
+  ...new Set([
+    ...(fetched?.documentLinks || []),
+    ...optOutLinks
+  ])
+].filter(url => validateLinkFollowerUrl(url) && isRelevantPrivacyActionUrl(url));
 
   // --- STEP 4: ANALYZER AGENT ---
   let result = null;
@@ -76,6 +61,10 @@ const { text: enrichedText, optOutLinks } = await linkFollowerStub(safeText, sou
   if (result && result.summary) {
     console.log(`[Orchestrator] Raw Analyzer output (${result.summary.length} chars):`, result.summary.slice(0, 300));
     result.summary = normalizeAnalysisHeaders(result.summary);
+    if (isConfigurationMessage(result.summary)) {
+      console.log("[Orchestrator] Configuration message returned — skipping critic/evaluator/escalation");
+      return result;
+    }
   } else {
     console.warn('[Orchestrator] Analyzer returned:', JSON.stringify(result).slice(0, 300));
   }
@@ -155,7 +144,9 @@ const { text: enrichedText, optOutLinks } = await linkFollowerStub(safeText, sou
 
         stored.count = escalationCount + 1;
         await browser.storage.local.set({ [capKey]: stored });
-        writeToSupabase(domain, result.summary, 'anthropic-escalated', optOutLinks, textToAnalyze);
+        if (domain && (evaluation.passed || evaluation.label === 'Adequate')) {
+          writeToSupabase(domain, result.summary, 'anthropic-escalated', displayOptOutLinks, cacheVerificationText);
+        }
       }
     } else {
       console.log(`[Orchestrator] Opus cap reached (${escalationCount}/${CAP}) — using Haiku result. Resets ${new Date(stored.resetAt).toLocaleTimeString()}`);
@@ -176,13 +167,26 @@ const { text: enrichedText, optOutLinks } = await linkFollowerStub(safeText, sou
 
   // --- STEP 6: SAVE TO MEMORY ---
   if (domain && (evaluation.passed || evaluation.label === 'Adequate')) {
-    saveAnalysis(domain, result.summary, textToAnalyze, optOutLinks);
+    saveAnalysis(domain, result.summary, cacheVerificationText, displayOptOutLinks);
     console.log("[Orchestrator] Analysis saved to memory for:", domain);
+  } else if (domain) {
+    console.log("[Orchestrator] Analysis not saved — quality gate did not pass:", evaluation.label);
   }
 
   console.log("[Orchestrator] Relay complete");
-  console.log('[Orchestrator] optOutLinks being returned:', optOutLinks);
-  return { ...result, optOutLinks };
+  console.log('[Orchestrator] optOutLinks being returned:', displayOptOutLinks);
+  return { ...result, optOutLinks: displayOptOutLinks };
+}
+
+function isConfigurationMessage(summary) {
+  return /No (Anthropic|OpenAI) API key set|Unknown provider selected/i.test(summary || "");
+}
+
+function buildCacheVerificationText(text) {
+  const sanitized = sanitizeForPrompt(text || "");
+  const privacyStart = sanitized.indexOf("=== PRIVACY POLICY");
+  const verificationSource = privacyStart > -1 ? sanitized.slice(privacyStart) : sanitized;
+  return verificationSource.slice(0, 10000);
 }
 
 // Retry wrapper — attempts once, retries once on failure, then returns null
@@ -208,7 +212,7 @@ async function runWithRetry(fn, label) {
 // --- LINK FOLLOWER AGENT ---
 // Scans fetched documents for opt-out and privacy links
 // Follows top 3 matches and appends their content to the main document
-async function linkFollowerStub(text, source, privacyHtml = null, privacyUrl = null) {
+async function linkFollowerStub(text, source, privacyHtml = null, privacyUrl = null, hasSupplementalPrivacy = false) {
   console.log("[LinkFollower] Scanning for opt-out and privacy links...");
 
   // Keywords that indicate an opt-out or privacy action page
@@ -218,7 +222,10 @@ async function linkFollowerStub(text, source, privacyHtml = null, privacyUrl = n
     "data-deletion", "delete-my-data", "deletemydata",
     "privacy-choices", "privacychoices", "privacy-settings",
     "data-rights", "your-privacy", "yourprivacy",
-    "safetyandprivacy", "learn-more-about-privacy", "account/privacy"
+    "safetyandprivacy", "learn-more-about-privacy", "account/privacy",
+    "privacy/notice", "consumer-privacy", "consumer_privacy",
+    "privacy-notice", "privacy notice", "ccpa-disclosure",
+    "online-privacy-policy", "manage-your-data"
   ];
 
 // Scan plain text for full URLs
@@ -229,9 +236,13 @@ async function linkFollowerStub(text, source, privacyHtml = null, privacyUrl = n
   // Scan privacy policy HTML for opt-out hrefs — this is where they actually live
   const htmlToScan = privacyHtml || text;
   const baseUrl = privacyUrl || source;
-  const relativeMatches = [...htmlToScan.matchAll(/href=["']([^"']+)["']/g)]
+  const relativeMatches = [...htmlToScan.matchAll(/href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/g)]
+    .filter(m => {
+      const href = m[1].toLowerCase();
+      const label = m[2].replace(/<[^>]+>/g, ' ').toLowerCase();
+      return priorityKeywords.some(keyword => href.includes(keyword) || label.includes(keyword));
+    })
     .map(m => m[1])
-    .filter(href => priorityKeywords.some(keyword => href.toLowerCase().includes(keyword)))
     .map(href => {
       try {
         return href.startsWith("http") ? href : new URL(href, baseUrl).href;
@@ -240,7 +251,8 @@ async function linkFollowerStub(text, source, privacyHtml = null, privacyUrl = n
     .filter(Boolean)
     .filter(url => validateLinkFollowerUrl(url));
 
-  const allLinks = [...new Set([...linkMatches, ...relativeMatches])];
+  const allLinks = [...new Set([...linkMatches, ...relativeMatches])]
+    .filter(url => isRelevantPrivacyActionUrl(url, { hasSupplementalPrivacy }));
 
   // Deduplicate
 const uniqueLinks = allLinks;
@@ -250,11 +262,12 @@ const uniqueLinks = allLinks;
     return { text, optOutLinks: [] };
   }
 
-  console.log(`[LinkFollower] Found ${uniqueLinks.length} candidate links — following top 3`);
+  const toFollow = uniqueLinks.slice(0, hasSupplementalPrivacy ? 1 : 3);
+  console.log(`[LinkFollower] Found ${uniqueLinks.length} relevant candidate links — following top ${toFollow.length}`);
 
-  // Follow top 3 links only
-  const toFollow = uniqueLinks.slice(0, 3);
+  // Follow top links only
   const appendSections = [];
+  const followedLinks = [];
 
   for (const url of toFollow) {
     if (!validateLinkFollowerUrl(url)) {
@@ -291,6 +304,7 @@ const uniqueLinks = allLinks;
       if (fetched && fetched.text && fetched.text.length > 200) {
         console.log(`[LinkFollower] Retrieved content from: ${url}`);
         appendSections.push(`=== OPT-OUT / PRIVACY PAGE: ${url} ===\n${fetched.text}`);
+        followedLinks.push(url);
       } else {
         console.log(`[LinkFollower] No usable content at: ${url}`);
       }
@@ -307,6 +321,41 @@ const uniqueLinks = allLinks;
   console.log(`[LinkFollower] Appending ${appendSections.length} opt-out sections to document`);
   return {
     text: text + "\n\n" + appendSections.join("\n\n"),
-    optOutLinks: uniqueLinks
+    optOutLinks: followedLinks
   };
+}
+
+function isRelevantPrivacyActionUrl(url, { hasSupplementalPrivacy = false } = {}) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (e) {
+    return false;
+  }
+
+  const normalized = `${parsed.hostname}${parsed.pathname}${parsed.hash}`.toLowerCase();
+  const irrelevantPatterns = [
+    /\/assets\//,
+    /favicon\.(ico|png|svg)$/,
+    /\.(ico|png|jpe?g|gif|svg|webp|css|js)([#?].*)?$/,
+    /workforce/,
+    /employee/,
+    /applicant/,
+    /associate/,
+    /job[-_]?candidate/,
+    /non[-_]?us/,
+    /international/,
+    /privacy\/notice\/(?!en-us\b)[^/#?]+/i
+  ];
+
+  if (irrelevantPatterns.some(pattern => pattern.test(normalized))) {
+    console.log("[LinkFollower] Ignoring non-consumer/privacy-resource link:", url);
+    return false;
+  }
+
+  if (hasSupplementalPrivacy && /\/privacy\/(notice|online-privacy-policy|ccpa-disclosure)\/?$/i.test(parsed.pathname)) {
+    return false;
+  }
+
+  return true;
 }

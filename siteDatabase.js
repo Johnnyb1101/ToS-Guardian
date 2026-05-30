@@ -41,6 +41,7 @@ const STATIC_SITES = {
   "steampowered.com": { tos: "https://store.steampowered.com/subscriber_agreement/", privacy: "https://store.steampowered.com/privacy_agreement/" },
   "epicgames.com":    { tos: "https://www.epicgames.com/tos", privacy: "https://www.epicgames.com/privacypolicy" },
   "walmart.com":      { tos: "https://www.walmart.com/help/article/walmart-com-terms-of-use/3b75080af40340d6bbd596f116fae5a0", privacy: "https://www.walmart.com/help/article/walmart-privacy-notice/308b8b3a2c5747dc8a06f40af4ff4ead" },
+  "capitalone.com":   { tos: "https://www.capitalone.com/digital/terms-conditions/", privacy: "https://www.capitalone.com/privacy/", supplemental: ["https://www.capitalone.com/privacy/notice/en-us", "https://www.capitalone.com/privacy/online-privacy-policy/", "https://www.capitalone.com/privacy/ccpa-disclosure/"] },
   "ea.com":           { tos: "https://tos.ea.com/legalapp/WEBTERMS/US/en/PC/", privacy: "https://www.ea.com/legal/privacy-policy" }
 };
 
@@ -83,7 +84,7 @@ async function lookupSite(pageUrl) {
             }
           }
           console.log(`[SiteDB] ✅ Supabase match: ${hostname}`);
-          return { tos: data.tos, privacy: data.privacy };
+          return { tos: data.tos, privacy: data.privacy, supplemental: data.supplemental || [] };
         }
       }
     } catch (e) {

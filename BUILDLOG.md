@@ -83,3 +83,17 @@ Public changelog. Technical architecture details are maintained separately.
 - Cross-category validation across 25+ sites (finance, social, shopping, healthcare, gaming, travel, productivity)
 - All tested sites returned Strong analyses with full relay completion
 - Documented edge cases: sites with opt-out links external to privacy policy documents, sites with JS-heavy help center pages
+
+## v1.2.3 — May 2026
+
+### Security & Reliability
+- Shadow DOM traversal is now mark-only and uses the delegated document-level click path
+- Added Anthropic, OpenAI, and local Ollama host permissions for direct BYOK/model calls
+- Cached community analyses are served only after current document text is fetched and checked through the semantic cache path
+- Updated Anthropic escalation model ID to the current Opus 4.1 snapshot
+
+### UX
+- Proceed now replays the original button/form action after acknowledgment
+
+### Cleanup
+- Removed unused Weak confidence badge styling
