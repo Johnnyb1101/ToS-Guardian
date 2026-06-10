@@ -578,18 +578,17 @@ async function analyzeWithModel(text, source = "this page", escalate = false) {
   console.log(`[Analyzer] Using provider: ${provider} | Model: ${model}${escalate ? ' (escalated)' : ''}`);
 
   // Split documents and allocate space — Privacy Policy gets priority
-const totalBudget = 80000;
-const privacyIndex = text.indexOf('=== PRIVACY POLICY');
-const privacySection = privacyIndex > -1 ? text.slice(privacyIndex) : '';
-const otherSection = privacyIndex > -1 ? text.slice(0, privacyIndex) : text;
+  const totalBudget = 80000;
+  const privacyIndex = text.indexOf('=== PRIVACY POLICY');
+  const privacySection = privacyIndex > -1 ? text.slice(privacyIndex) : '';
+  const otherSection = privacyIndex > -1 ? text.slice(0, privacyIndex) : text;
 
-const trimmedText = [
-  sanitizeForPrompt(otherSection).slice(0, Math.floor(totalBudget * 0.3)),
-  sanitizeForPrompt(privacySection).slice(0, Math.floor(totalBudget * 0.7))
-].filter(Boolean).join('\n\n');
+  const trimmedText = [
+    sanitizeForPrompt(otherSection).slice(0, Math.floor(totalBudget * 0.3)),
+    sanitizeForPrompt(privacySection).slice(0, Math.floor(totalBudget * 0.7))
+  ].filter(Boolean).join('\n\n');
 
-console.log('[Analyzer] trimmedText length:', trimmedText.length);
-console.log('[Analyzer] Contains Section 2:', trimmedText.includes('Your personal data rights'));
+  console.log('[Analyzer] trimmedText length:', trimmedText.length);
 
   const systemPrompt = `You are a privacy rights analyzer. Your sole purpose is to analyze legal documents and extract privacy-relevant information for users.
 
