@@ -186,6 +186,18 @@ mustEqual('evaluateAnalysis thresholds', 'score 74 label', 'Failed', labelForSco
   mustTrue('detectContradictions', 'sharing-vs-optout true positive', true, got.includes('sharing-vs-optout'));
 }
 
+// "Does not SELL" alongside sharing/ad opt-outs is a normal, lawful combination —
+// it must NOT be flagged as a contradiction (Netflix / Navy Federal false positive).
+{
+  const text = fullAnalysis().replace(
+    '- Affiliates: transaction information, experience information, and creditworthiness information.',
+    '- The company does not sell your personal information to third parties.'
+  );
+  const got = evaluator.detectContradictions(text).map(c => c.rule);
+  mustFalse('detectContradictions', '"does not sell" + opt-outs is not a contradiction', false,
+    got.includes('sharing-vs-optout'));
+}
+
 // Saying no opt-out rights exist while giving opt-out steps should be detected.
 {
   const text = fullAnalysis().replace(/🔴 OPT-OUT RIGHTS[\s\S]*?📋 HOW TO OPT OUT RIGHT NOW/, '🔴 OPT-OUT RIGHTS\nNot covered in this document.\n\n📋 HOW TO OPT OUT RIGHT NOW');

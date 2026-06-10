@@ -30,8 +30,13 @@ const CONTRADICTION_RULES = [
     name: 'sharing-vs-optout',
     sectionA: '🔴 DATA SELLING & SHARING',
     sectionB: '🔴 OPT-OUT RIGHTS',
-    negatesA: ['does not share', 'does not sell', 'do not sell', 'do not share', 'no third parties', 'no data sharing', 'no data selling'],
-    requiresB: ['opt out of', 'say no to', 'turn off', 'stop sharing', 'stop selling', 'limit sharing', 'restrict'],
+    // Only SHARING negations belong here. "Does not SELL" is deliberately excluded:
+    // a company can lawfully say it does not sell data while still sharing it and
+    // offering sharing/ad opt-outs (especially under CCPA, where "sell" is narrow).
+    // Treating "no sell" as "no share" produced false-positive contradictions
+    // (Netflix's discarded Opus pass, Navy Federal).
+    negatesA: ['does not share', 'do not share', 'does not disclose', 'do not disclose', 'will not share', 'never share', 'no third parties', 'no data sharing'],
+    requiresB: ['opt out of', 'say no to', 'turn off', 'stop sharing', 'limit sharing', 'restrict'],
     description: 'claims no data sharing but lists sharing opt-outs'
   },
   {
