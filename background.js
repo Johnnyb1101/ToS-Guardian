@@ -399,13 +399,43 @@ async function fetchNextJsDocument(url) {
   }
 }
 
-async function tryFetchCandidates(candidates) {
-  for (const url of candidates) {
-    // Central URL validation gate (SECURITY-020)
-    if (!validateDocumentUrl(url)) {
-      console.warn(`[Fetcher] URL blocked by validation gate: ${url}`);
-      continue;
+// Runs `worker` over items with bounded concurrency and resolves with the FIRST
+// truthy result (in completion order), abandoning the remaining items. Resolves
+// null if no item succeeds. Lets candidate fetching short-circuit on the first
+// real hit without paying one timeout per miss in series.
+async function firstSuccessful(items, worker, concurrency = 3) {
+  let index = 0;
+  let found = null;
+  const runLane = async () => {
+    while (found === null && index < items.length) {
+      const item = items[index++];
+      const result = await worker(item);
+      if (result && found === null) {
+        found = result;
+        return;
+      }
     }
+  };
+  const lanes = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    runLane
+  );
+  await Promise.all(lanes);
+  return found;
+}
+
+async function tryFetchCandidates(candidates) {
+  // Central URL validation gate (SECURITY-020)
+  const validCandidates = candidates.filter(url => {
+    if (validateDocumentUrl(url)) return true;
+    console.warn(`[Fetcher] URL blocked by validation gate: ${url}`);
+    return false;
+  });
+
+  // Candidates are priority-ordered, but most are misses on unknown sites.
+  // Race them with bounded concurrency so a page of dead guesses no longer
+  // costs one full hidden-tab timeout each in series.
+  return firstSuccessful(validCandidates, async (url) => {
     // Hidden tab first — renders JavaScript, gets real content
     const tabResult = await fetchWithHiddenTab(url);
     if (tabResult && tabResult.text && tabResult.text.length > 500) {
@@ -416,30 +446,53 @@ async function tryFetchCandidates(candidates) {
     // Proxy fallback — for CORS-restricted or Next.js sites
     const nextResult = await fetchNextJsDocument(url);
     if (nextResult) return { text: nextResult.text, html: nextResult.html, sourceUrl: url };
-  }
-  return null;
+    return null;
+  });
 }
 
-// Opens a hidden tab, waits for it to fully render, grabs text, closes it
-function fetchWithHiddenTab(url) {
+// Opens a hidden tab and polls until it has rendered usable content, then grabs
+// text and closes it. Polling lets a real document resolve in ~1-2s instead of
+// always waiting the full timeout; misses and slow pages fall through at maxWait
+// (kept at the old fixed value so no slow-but-real page regresses to a miss).
+function fetchWithHiddenTab(url, { maxWait = 12000, pollInterval = 700, minLength = 500 } = {}) {
   return new Promise((resolve) => {
     browser.tabs.create({ url, active: false }, (tab) => {
+      if (browser.runtime.lastError || !tab) {
+        console.warn("[Fetcher] Hidden tab create error:", browser.runtime.lastError?.message);
+        resolve(null);
+        return;
+      }
       const tabId = tab.id;
-      setTimeout(() => {
+      const deadline = Date.now() + maxWait;
+      let settled = false;
+
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        browser.tabs.remove(tabId);
+        resolve(result);
+      };
+
+      const poll = () => {
+        if (settled) return;
         browser.tabs.sendMessage(tabId, { action: "getText" }, (response) => {
-          browser.tabs.remove(tabId);
-          if (browser.runtime.lastError) {
-            console.warn("[Fetcher] Hidden tab message error:", browser.runtime.lastError.message);
-            resolve(null);
-            return;
-          }
-          if (response && response.text && response.text.length > 500) {
-            resolve({ text: response.text, html: response.html || null });
+          if (settled) return;
+          // Touch lastError so the content script not being ready yet (tab still
+          // loading) doesn't surface as an unchecked-error warning — we just retry.
+          const notReady = browser.runtime.lastError ||
+            !response || !response.text || response.text.length <= minLength;
+          if (!notReady) {
+            finish({ text: response.text, html: response.html || null });
+          } else if (Date.now() >= deadline) {
+            finish(null);
           } else {
-            resolve(null);
+            setTimeout(poll, pollInterval);
           }
         });
-      }, 12000);
+      };
+
+      // Give the page a brief head start before the first poll.
+      setTimeout(poll, 600);
     });
   });
 }
