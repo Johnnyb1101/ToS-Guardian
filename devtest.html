@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<!--
+  TOS Guardian — Dev Test Recorder (manual)
+  Dev/test only. Not linked from the UI. Open at:
+    chrome-extension://<EXTENSION_ID>/devtest.html
+  Workflow:
+    1. Paste a site list, click "Load list".
+    2. For the current site, open it in your own browser and trigger the
+       Guardian overlay manually (real agree/continue button or any way you like).
+    3. When the overlay finishes analyzing, the orchestrator mirrors the verdict
+       to chrome.storage.local (tosGuardianLastResult). This page captures it,
+       tags it with the current site, and advances. Then Export JSON.
+  No browser automation. No navigation is performed for you.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>TOS Guardian — Dev Test Recorder</title>
+  <style>
+    :root { color-scheme: light; }
+    body { font-family: system-ui, "DM Sans", sans-serif; margin: 0; background: #f6f7f9; color: #1c2024; }
+    header { background: #1a1aff; color: #fff; padding: 14px 20px; }
+    header h1 { margin: 0; font-size: 16px; }
+    header .sub { font-size: 12px; opacity: 0.85; margin-top: 2px; }
+    main { max-width: 1100px; margin: 0 auto; padding: 18px 20px 60px; }
+    .card { background: #fff; border: 1px solid #e6e8ec; border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }
+    .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; color: #8a9099; margin: 0 0 10px; }
+    textarea { width: 100%; box-sizing: border-box; min-height: 110px; font-family: ui-monospace, Consolas, monospace; font-size: 12px; padding: 8px; border: 1px solid #d5d9df; border-radius: 6px; resize: vertical; }
+    button { font: inherit; font-size: 13px; padding: 7px 13px; border: 1px solid #c3c8d0; background: #fff; border-radius: 6px; cursor: pointer; }
+    button:hover { background: #f0f1f4; }
+    button.primary { background: #1a1aff; border-color: #1a1aff; color: #fff; }
+    button.primary:hover { background: #1414cc; }
+    button.danger { color: #b91c1c; border-color: #e7b3b3; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .spacer { flex: 1; }
+    .pill { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 20px; }
+    .pill.on { background: #e6fff0; color: #1a7a3c; border: 1px solid #b2dfc0; }
+    .pill.off { background: #fff0f0; color: #c0392b; border: 1px solid #f5c6c6; }
+    .stepper { font-size: 15px; font-weight: 600; }
+    .stepper .meta { font-size: 12px; font-weight: 400; color: #6b7280; margin-left: 8px; }
+    .current-url { font-size: 13px; word-break: break-all; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eef0f3; vertical-align: top; }
+    th { color: #8a9099; font-weight: 600; text-transform: uppercase; font-size: 10px; letter-spacing: 0.04em; }
+    td.label-Strong { color: #1a7a3c; font-weight: 600; }
+    td.label-Adequate { color: #b7770d; font-weight: 600; }
+    td.label-Failed { color: #c0392b; font-weight: 600; }
+    td.label-Cached { color: #1a1aff; font-weight: 600; }
+    .muted { color: #9aa0a8; }
+    .links a { display: block; color: #1a1aff; word-break: break-all; }
+    code { background: #f0f1f4; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+    label.cb { font-size: 13px; display: inline-flex; gap: 6px; align-items: center; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>TOS Guardian — Dev Test Recorder</h1>
+    <div class="sub">Manual, dev-only. Captures the latest analysis verdict from chrome.storage.local. No automation.</div>
+  </header>
+  <main>
+    <div class="card">
+      <h2>Result capture</h2>
+      <div class="row">
+        <span>Debug capture flag (<code>tosGuardianDebug</code>):</span>
+        <span id="debug-status" class="pill off">unknown</span>
+        <button id="enable-debug">Enable</button>
+        <button id="disable-debug">Disable</button>
+        <span class="spacer"></span>
+        <label class="cb"><input type="checkbox" id="auto-capture" checked /> Auto-capture new results &amp; advance</label>
+      </div>
+      <p class="muted" style="margin:8px 0 0; font-size:12px;">
+        Capture requires the flag ON. With it on, finishing an overlay analysis on any site writes the verdict here automatically.
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>Site list</h2>
+      <textarea id="site-input" placeholder="One per line. Optional URL after a space or comma:&#10;Reddit https://www.reddit.com/&#10;Discord, https://discord.com/&#10;Dropbox"></textarea>
+      <div class="row" style="margin-top:10px;">
+        <button id="load-list" class="primary">Load list</button>
+        <span id="list-count" class="muted"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Current site</h2>
+      <div class="row">
+        <div class="stepper"><span id="step-name">—</span><span class="meta" id="step-pos"></span></div>
+      </div>
+      <div class="current-url" style="margin:6px 0 10px;"><a id="step-url" href="#" target="_blank" rel="noopener noreferrer"></a></div>
+      <div class="row">
+        <button id="prev">◀ Prev</button>
+        <button id="next">Next ▶</button>
+        <button id="capture-now" class="primary">Capture latest now → current site</button>
+        <button id="clear-latest">Clear latest result</button>
+        <span id="latest-info" class="muted"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Recorded results (<span id="result-count">0</span>)</h2>
+      <div class="row" style="margin-bottom:10px;">
+        <button id="export" class="primary">Export JSON</button>
+        <button id="clear" class="danger">Clear results</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>#</th><th>Site</th><th>URL</th><th>Score</th><th>Label</th>
+            <th>Cached</th><th>Warning</th><th>Issues</th><th>Opt-out links</th><th>Timestamp</th>
+          </tr>
+        </thead>
+        <tbody id="results-body">
+          <tr><td colspan="10" class="muted">No results captured yet.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+  <script src="devtest.js"></script>
+</body>
+</html>

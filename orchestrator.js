@@ -3,6 +3,23 @@
 // Memory → Fetcher → Link Follower → Analyzer → Evaluator → UI
 // On any agent failure: retry once, then fall back gracefully
 
+// --- TEST/DEBUG HOOK (no-op in normal use) ---
+// When `tosGuardianDebug` is true in chrome.storage.local, the manual dev test
+// recorder mirrors each completed analysis to `tosGuardianLastResult` so tests
+// can read exact score/label/issues instead of scraping overlay HTML. This never
+// affects scoring or the rendered overlay; it only mirrors the verdict.
+async function writeDebugResult(partial) {
+  try {
+    const flag = await browser.storage.local.get('tosGuardianDebug');
+    if (!flag.tosGuardianDebug) return;
+    await browser.storage.local.set({
+      tosGuardianLastResult: { timestamp: Date.now(), ...partial }
+    });
+  } catch (e) {
+    console.warn('[Orchestrator] Debug result write skipped:', e.message);
+  }
+}
+
 async function runOrchestrator(pageUrl, pageText, pageHtml) {
   console.log("[Orchestrator] Starting relay for:", pageUrl);
 
@@ -31,6 +48,10 @@ if (domain && fetched) {
   const supabaseResult = await readFromSupabase(domain, cacheVerificationText);
   if (supabaseResult) {
     console.log("[Orchestrator] Semantic cache hit — skipping analysis");
+    await writeDebugResult({
+      domain, url: pageUrl, score: null, label: 'Cached', warning: null,
+      issues: [], optOutLinks: supabaseResult.optOutLinks || [], cached: true
+    });
     return { summary: supabaseResult.summary, optOutLinks: supabaseResult.optOutLinks };
   }
   console.log("[Orchestrator] No semantic match — running full analysis");
@@ -139,6 +160,12 @@ const displayOptOutLinks = [
     }
   }
 
+  if (result) {
+    // Strip any verdict/warning markup the analyzer may have echoed from
+    // attacker-controlled document text, so only the trusted evaluator verdict
+    // composed below can ever render as UI chrome. (SECURITY-022)
+    result.summary = stripEvalChrome(result.summary);
+  }
   if (result && evaluation.warning) {
     result.summary = `<div class="tg-eval-warning">${evaluation.warning}</div>\n` + result.summary;
   }
@@ -161,6 +188,12 @@ const displayOptOutLinks = [
 
   console.log("[Orchestrator] Relay complete");
   console.log('[Orchestrator] optOutLinks being returned:', displayOptOutLinks);
+  await writeDebugResult({
+    domain, url: pageUrl,
+    score: evaluation.score, label: evaluation.label,
+    warning: evaluation.warning, issues: evaluation.issues || [],
+    optOutLinks: displayOptOutLinks, cached: false
+  });
   return { ...result, optOutLinks: displayOptOutLinks };
 }
 

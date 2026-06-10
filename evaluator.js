@@ -155,6 +155,7 @@ function evaluateAnalysis(analysisText, criticVerdict = null) {
       score: 0,
       label: 'Failed',
       warning: '⚠️ No analysis was returned. The legal document may not have loaded correctly.',
+      issues: ['no analysis returned'],
       passed: false,
       escalate: true,
       contradictions: [],
@@ -257,5 +258,5 @@ function evaluateAnalysis(analysisText, criticVerdict = null) {
 
   console.log(`[Evaluator] Score: ${score} | Label: ${label} | Contradictions: ${contradictions.length} | Critic: ${criticVerdict ? 'yes' : 'skipped'} | Issues: ${issues.join(', ') || 'none'}`);
 
-  return { score, label, warning, passed, escalate, contradictions, criticVerdict };
+  return { score, label, warning, issues, passed, escalate, contradictions, criticVerdict };
 }

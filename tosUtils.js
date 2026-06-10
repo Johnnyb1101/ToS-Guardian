@@ -14,6 +14,19 @@ function escapeHtml(text) {
     .replace(/'/g, "&#39;");
 }
 
+// Remove evaluator-chrome markup (verdict badge / warning divs, and the textual
+// "Analysis confidence:" line) that the analyzer LLM may have echoed from
+// attacker-controlled document text. The genuine verdict is composed by the
+// orchestrator AFTER this strip, so the analyzer can never contribute a trust
+// badge to the rendered output. (SECURITY-022 — output-render verdict spoofing)
+function stripEvalChrome(text) {
+  if (!text) return "";
+  return text
+    .replace(/<div\s+class="tg-eval-(?:badge|warning)\b[^"]*"[^>]*>[\s\S]*?<\/div>/gi, "")
+    .replace(/^[^\n]*Analysis confidence\s*:[^\n]*$/gim, "")
+    .trim();
+}
+
 function formatSummary(raw, optOutLinks = []) {
   if (!raw) return "";
 
@@ -33,19 +46,25 @@ function formatSummary(raw, optOutLinks = []) {
   let evalWarning = "";
   let evalBadge = "";
 
+  // The trusted verdict is composed LAST by the orchestrator (warning prepended,
+  // badge appended). An attacker-echoed badge would appear EARLIER in the blob, so
+  // we deliberately select the FIRST warning and the LAST badge, then strip ALL
+  // eval-chrome from the body so no forged badge can leak into the rendered output.
+  // (SECURITY-022 — output-render verdict spoofing; see also SECURITY-021)
   const warningMatch = raw.match(/<div class="tg-eval-warning"[^>]*>(.*?)<\/div>/s);
-  const badgeMatch   = raw.match(/<div class="tg-eval-badge\s+(tg-eval-\w+)"[^>]*>(.*?)<\/div>/s);
+  const badgeMatches = [...raw.matchAll(/<div class="tg-eval-badge\s+(tg-eval-\w+)"[^>]*>(.*?)<\/div>/gs)];
+  const badgeMatch   = badgeMatches.length ? badgeMatches[badgeMatches.length - 1] : null;
 
   // Rebuild eval HTML from extracted text to prevent cache-poisoned markup (SECURITY-021)
   if (warningMatch) {
     evalWarning = `<div class="tg-eval-warning">${escapeHtml(warningMatch[1].replace(/<[^>]+>/g, '').trim())}</div>`;
-    raw = raw.replace(warningMatch[0], "");
   }
   if (badgeMatch) {
     const badgeClass = /^tg-eval-(strong|adequate|failed)$/.test(badgeMatch[1]) ? badgeMatch[1] : 'tg-eval-failed';
     evalBadge = `<div class="tg-eval-badge ${badgeClass}">${escapeHtml(badgeMatch[2].replace(/<[^>]+>/g, '').trim())}</div>`;
-    raw = raw.replace(badgeMatch[0], "");
   }
+  // Remove every eval-chrome div from the body (including any forged earlier badges)
+  raw = stripEvalChrome(raw);
 
   const categoryMarkers = ["🔴", "📋", "🟡", "🟢"];
   const lines = raw.split("\n").map(l => l.trim()).filter(l => l !== "" && l !== "•");
