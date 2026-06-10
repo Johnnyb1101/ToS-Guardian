@@ -97,3 +97,33 @@ Public changelog. Technical architecture details are maintained separately.
 
 ### Cleanup
 - Removed unused Weak confidence badge styling
+
+## v1.3.0 — June 2026
+
+### Detection
+- Reworked agree-button detection to catch sign-up and log-in flows that previously slipped through silently — account-creation with an auth form, any auth action when a password field is present, Terms/Privacy links or auth text near the button, and magic-link "Continue" buttons on auth pages — while still ignoring ordinary e-commerce "Continue" buttons
+- First automated test coverage for button detection (18 scenarios)
+
+### Reliability & Quality
+- Retrieval-failure guard — an analysis that reports the document wasn't actually retrieved (navigation chrome instead of policy text) is now forced to "Failed" with a clear warning, instead of scored as a confident result
+- Fetcher now waits for real legal-document content instead of accepting a page's navigation shell, so JavaScript-rendered legal pages are captured
+- Fixed a false-positive contradiction flag — a policy that says it does not sell your data while offering sharing/ad opt-outs is no longer flagged
+- Removed a duplicate community-cache write on the escalation path
+
+### Security
+- Hardened the outbound-URL gate against SSRF — now blocks internal and cloud-metadata hostnames, single-label hosts, and bare IPv6 literals, on top of private/loopback IPs (including decimal, hex, and IPv6-mapped encodings)
+
+### Performance
+- Faster document fetching — hidden tabs resolve as soon as content renders instead of waiting a fixed timeout, and candidate URLs are tried in parallel
+
+### UI
+- Overlay action buttons relabeled to "Accept Risk and Continue" (red) and "Go Back Safely" (neutral) for clearer intent
+- Retheme'd the injection-warning box and disclaimer to match the light card
+
+### Maintenance
+- Updated the Anthropic escalation model to Claude Opus 4.8
+- Dropped the non-functional Firefox manifest config — honestly Chromium-only until real Firefox support is built and tested
+- Removed dead code and leftover debug logging; hardened the popup against background-service and tab errors with clear messages
+
+### Testing
+- Test suite grew to 71 logic + 36 system + 18 detection checks, all passing
