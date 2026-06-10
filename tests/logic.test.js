@@ -263,6 +263,39 @@ mustFalse('validateDocumentUrl', 'blocks IPv6-mapped loopback', false, utils.val
 
 // Uppercase LOCALHOST should be blocked because host checks should be case-insensitive.
 mustFalse('validateDocumentUrl', 'blocks uppercase LOCALHOST', false, utils.validateDocumentUrl('https://LOCALHOST'));
+mustTrue('isLikelyResourcePageUrl', 'blocks MakingCents article with terms in slug', true,
+  utils.isLikelyResourcePageUrl('https://www.navyfederal.org/makingcents/investing/investing-terms-you-should-know.html'));
+mustFalse('isLikelyResourcePageUrl', 'allows real legal terms path', false,
+  utils.isLikelyResourcePageUrl('https://example.com/legal/terms-of-service'));
+
+{
+  const privacyEmpty = `
+🔴 DATA SELLING & SHARING
+Not covered in this document.
+
+🔴 OPT-OUT RIGHTS
+Not covered in this document.
+
+📋 HOW TO OPT OUT RIGHT NOW
+Visit an investing education page to learn more about financial terminology and general account concepts.
+
+🟡 AUTO-RENEWAL & BILLING
+No automatic charges mentioned.
+
+🟢 DATA DELETION RIGHTS
+Not covered in this document.
+`;
+  const got = evaluator.evaluateAnalysis(privacyEmpty, {
+    dataSelling: 'skipped',
+    optOutRights: 'skipped',
+    howToOptOut: 'unsupported',
+    autoRenewal: 'skipped',
+    dataDeletion: 'skipped'
+  });
+  mustEqual('evaluateAnalysis', 'privacy-empty article output fails', 'Failed', got.label);
+  mustTrue('evaluateAnalysis', 'reports empty core privacy sections', true,
+    got.issues.includes('core privacy sections empty'));
+}
 
 // Obvious prompt-injection line should be detected and stripped.
 {

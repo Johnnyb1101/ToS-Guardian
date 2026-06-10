@@ -1,0 +1,18 @@
+# TOS Guardian batch runner — sample site list
+# One domain (or URL) per line. # starts a comment.
+
+# Known sites (static database hits — exercise the knownUrls path)
+discord.com
+reddit.com
+github.com
+spotify.com
+capitalone.com
+
+# Regression case: article-like "terms" URL must not be treated as a legal document
+navyfederal.org
+
+# Unknown sites (exercise candidate guessing / link-text scanning)
+wikipedia.org
+duckduckgo.com
+mozilla.org
+stripe.com

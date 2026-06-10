@@ -14,6 +14,10 @@ function escapeHtml(text) {
     .replace(/'/g, "&#39;");
 }
 
+function isLikelyResourcePageUrl(url) {
+  return /(?:^|[\/_-])(makingcents|blog|article|faq|tips|guide|learn|how-to|security-tips)(?:[\/_-]|$)/i.test(url || "");
+}
+
 // Remove evaluator-chrome markup (verdict badge / warning divs, and the textual
 // "Analysis confidence:" line) that the analyzer LLM may have echoed from
 // attacker-controlled document text. The genuine verdict is composed by the

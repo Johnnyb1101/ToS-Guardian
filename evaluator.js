@@ -211,6 +211,16 @@ function evaluateAnalysis(analysisText, criticVerdict = null) {
     }
   }
 
+  const corePrivacySections = [
+    sections[SECTION_HEADERS[0]],
+    sections[SECTION_HEADERS[1]],
+    sections[SECTION_HEADERS[4]]
+  ];
+  if (corePrivacySections.every(isSectionUnavailable)) {
+    score -= 30;
+    issues.push('core privacy sections empty');
+  }
+
   // Check 5: Cross-section contradiction detection
   const contradictions = detectContradictions(analysisText);
   if (contradictions.length > 0) {

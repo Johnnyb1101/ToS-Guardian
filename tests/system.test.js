@@ -240,10 +240,23 @@ async function runTest(fn) {
 
   // A semantic cache hit should skip model analysis and return the cached payload.
   await runTest(async () => {
-    spies.readFromSupabase.impl = async () => ({ summary: 'cached summary', optOutLinks: ['https://example.com/optout'] });
+    const cachedSummary = strongSummary('Cached');
+    spies.readFromSupabase.impl = async () => ({ summary: cachedSummary, optOutLinks: ['https://example.com/optout'] });
     const got = await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
     mustEqual('analyzeWithModel', 'not called on semantic cache hit', 0, spies.analyzeWithModel.calls.length);
-    mustDeep('runOrchestrator', 'returns cached payload', { summary: 'cached summary', optOutLinks: ['https://example.com/optout'] }, got);
+    mustTrue('runOrchestrator', 'rebuilds current cached confidence badge', true,
+      got.summary.includes('Analysis confidence: Strong (100/100)'));
+    mustDeep('runOrchestrator', 'returns cached opt-out links', ['https://example.com/optout'], got.optOutLinks);
+  });
+
+  // A cached privacy-empty summary must be rejected and replaced by fresh analysis.
+  await runTest(async () => {
+    spies.readFromSupabase.impl = async () => ({ summary: failedSummary('stale bad cache'), optOutLinks: [] });
+    const got = await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
+    mustEqual('analyzeWithModel', 'called when cached summary fails quality gate', 1,
+      spies.analyzeWithModel.calls.filter(args => args[2] !== true).length);
+    mustFalse('runOrchestrator', 'does not return rejected cached summary', false,
+      got.summary.includes('stale bad cache'));
   });
 
   // Injection lines must be stripped before model analysis to prevent hostile document instructions reaching the model.

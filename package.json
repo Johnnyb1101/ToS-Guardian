@@ -3,6 +3,7 @@
   "version": "1.2.3",
   "private": true,
   "scripts": {
-    "test": "node tests/logic.test.js && node tests/system.test.js && node tests/discord-score.repro.js"
+    "test": "node tests/logic.test.js && node tests/system.test.js && node tests/discord-score.repro.js",
+    "batch": "node tools/batch-runner.js"
   }
 }

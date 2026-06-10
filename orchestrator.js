@@ -47,12 +47,24 @@ const cacheVerificationText = buildCacheVerificationText(textToAnalyze);
 if (domain && fetched) {
   const supabaseResult = await readFromSupabase(domain, cacheVerificationText);
   if (supabaseResult) {
-    console.log("[Orchestrator] Semantic cache hit — skipping analysis");
-    await writeDebugResult({
-      domain, url: pageUrl, score: null, label: 'Cached', warning: null,
-      issues: [], optOutLinks: supabaseResult.optOutLinks || [], cached: true
-    });
-    return { summary: supabaseResult.summary, optOutLinks: supabaseResult.optOutLinks };
+    const cachedEvaluation = validateEvaluation(
+      evaluateAnalysis(stripEvalChrome(supabaseResult.summary))
+    );
+    if (cachedEvaluation.passed) {
+      let cachedSummary = stripEvalChrome(supabaseResult.summary);
+      if (cachedEvaluation.warning) {
+        cachedSummary = `<div class="tg-eval-warning">${cachedEvaluation.warning}</div>\n` + cachedSummary;
+      }
+      cachedSummary += `\n<div class="tg-eval-badge tg-eval-${cachedEvaluation.label.toLowerCase()}">Analysis confidence: ${cachedEvaluation.label} (${cachedEvaluation.score}/100)</div>`;
+      console.log("[Orchestrator] Semantic cache hit — skipping analysis");
+      await writeDebugResult({
+        domain, url: pageUrl, score: cachedEvaluation.score, label: 'Cached',
+        warning: cachedEvaluation.warning, issues: cachedEvaluation.issues || [],
+        optOutLinks: supabaseResult.optOutLinks || [], cached: true
+      });
+      return { summary: cachedSummary, optOutLinks: supabaseResult.optOutLinks };
+    }
+    console.warn("[Orchestrator] Cached summary failed local quality gate — running full analysis");
   }
   console.log("[Orchestrator] No semantic match — running full analysis");
 }

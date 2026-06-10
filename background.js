@@ -159,16 +159,15 @@ async function fetcherAgent(pageUrl, pageHtml = "", knownUrls = null) {
 
       const tosHrefs = allHrefs
         .filter(href => /terms|user-agreement|legal\/terms|subscriber/i.test(href))
+        .filter(href => !isLikelyResourcePageUrl(href))
         .map(href => {
           try { return href.startsWith("http") ? href : new URL(href, `https://${domain}`).href; }
           catch(e) { return null; }
         }).filter(Boolean);
 
-      const resourcePagePatterns = /makingcents|blog|article|help|support|faq|tips|guide|learn|how-to|security-tips/i;
-
       const privacyHrefs = allHrefs
         .filter(href => /privacy|data-policy/i.test(href))
-        .filter(href => !resourcePagePatterns.test(href))
+        .filter(href => !isLikelyResourcePageUrl(href))
         .map(href => {
           try { return href.startsWith("http") ? href : new URL(href, `https://${domain}`).href; }
           catch(e) { return null; }
