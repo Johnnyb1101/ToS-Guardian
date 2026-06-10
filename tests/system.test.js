@@ -124,7 +124,6 @@ const spies = {
   readFromSupabase: makeSpy('readFromSupabase', async () => null),
   writeToSupabase: makeSpy('writeToSupabase', async () => null),
   saveAnalysis: makeSpy('saveAnalysis', async () => null),
-  loadAnalysis: makeSpy('loadAnalysis', async () => null),
   fetchWithHiddenTab: makeSpy('fetchWithHiddenTab', async () => ({ text: 'Fetched opt-out page '.repeat(30), html: '<p>ok</p>' })),
   validateLinkFollowerUrl: makeSyncSpy('validateLinkFollowerUrl', () => true)
 };
@@ -171,7 +170,6 @@ function reset() {
   spies.readFromSupabase.impl = async () => null;
   spies.writeToSupabase.impl = async () => null;
   spies.saveAnalysis.impl = async () => null;
-  spies.loadAnalysis.impl = async () => null;
   spies.fetchWithHiddenTab.impl = async () => ({ text: 'Fetched opt-out page '.repeat(30), html: '<p>ok</p>' });
   spies.validateLinkFollowerUrl.impl = () => true;
   context.evaluateAnalysis = originalEvaluateAnalysis;

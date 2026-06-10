@@ -97,20 +97,6 @@ async function readFromSupabase(domain, privacyText = '') {
   }
 }
 
-async function loadAnalysis(domain, callback) {
-  const result = await readFromSupabase(domain);
-  if (result) {
-    console.log(`[Memory] Supabase cache hit for ${domain}`);
-    callback(result.summary, result.optOutLinks);
-  } else {
-    callback(null);
-  }
-}
-
-function clearMemory() {
-  console.log("[Memory] Cache lives in Supabase — no local cache to clear");
-}
-
 // --- FETCHER AGENT ---
 async function fetcherAgent(pageUrl, pageHtml = "", knownUrls = null) {
   try {
@@ -533,7 +519,7 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   (async () => {
     if (!domain) {
-      sendResponse({ hit: false, knownSite: false, acknowledged: false });
+      sendResponse({ knownSite: false, acknowledged: false });
       return;
     }
 
@@ -543,7 +529,7 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const ackData = await browser.storage.local.get("tosAcknowledged");
     const acknowledged = !!(ackData.tosAcknowledged && ackData.tosAcknowledged[domain]);
 
-    sendResponse({ hit: false, knownSite, acknowledged });
+    sendResponse({ knownSite, acknowledged });
   })();
 
   return true;

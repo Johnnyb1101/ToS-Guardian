@@ -125,7 +125,7 @@ function findAgreeControl(el, composedPath = null) {
   return null;
 }
 
-function showGuardianOverlay(event, cachedResult = null, sourceButton = null) {
+function showGuardianOverlay(event, sourceButton = null) {
   const clickedButton = sourceButton || event.currentTarget || event.target;
 
   const existingOverlay = document.getElementById("tos-guardian-overlay");
@@ -229,18 +229,6 @@ function showGuardianOverlay(event, cachedResult = null, sourceButton = null) {
     overlay.remove();
   });
 
-  if (cachedResult) {
-    const summaryEl = overlayRoot.getElementById("tg-summary");
-    if (summaryEl) {
-      summaryEl.innerHTML = formatSummary(
-        cachedResult.summary || "Could not load cached analysis.",
-        cachedResult.optOutLinks || []
-      );
-      revealActions();
-    }
-    return;
-  }
-
   const fullText = document.body.innerText;
   let analysisResponded = false;
   const analysisTimer = setTimeout(() => {
@@ -316,7 +304,7 @@ document.addEventListener("click", (event) => {
     if (!responded) {
       responded = true;
       console.warn('[TOS Guardian] Background service worker did not respond — showing overlay');
-      showGuardianOverlay(event, null, hookedEl);
+      showGuardianOverlay(event, hookedEl);
     }
   }, 8000);
 
@@ -329,7 +317,7 @@ document.addEventListener("click", (event) => {
 
       if (browser.runtime.lastError) {
         console.warn('[TOS Guardian] Message channel error:', browser.runtime.lastError.message);
-        showGuardianOverlay(event, null, hookedEl);
+        showGuardianOverlay(event, hookedEl);
         return;
       }
       if (response && response.acknowledged) {
@@ -337,11 +325,7 @@ document.addEventListener("click", (event) => {
         acknowledgedDomains.add(domain);
         return;
       }
-      if (response && response.hit) {
-        showGuardianOverlay(event, response.cached, hookedEl);
-      } else {
-        showGuardianOverlay(event, null, hookedEl);
-      }
+      showGuardianOverlay(event, hookedEl);
     }
   );
 }, true);
@@ -367,7 +351,7 @@ document.addEventListener("submit", (event) => {
   const syntheticEvent = { preventDefault() {}, stopImmediatePropagation() {}, stopPropagation() {}, target: agreeBtn || form, currentTarget: form };
   interceptActive = true;
   setTimeout(() => { interceptActive = false; }, 5000);
-  showGuardianOverlay(syntheticEvent, null, agreeBtn || form);
+  showGuardianOverlay(syntheticEvent, agreeBtn || form);
 }, true);
 
 // --- BUTTON MARKING ---
