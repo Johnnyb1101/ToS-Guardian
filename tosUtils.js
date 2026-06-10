@@ -47,9 +47,9 @@ function formatSummary(raw, optOutLinks = []) {
   const injectionMatch = raw.match(injectionPattern);
   if (injectionMatch) {
     injectionWarning = `
-      <div style="margin-bottom:10px; padding:8px 10px; background:#3a1a00;
-                  border-left:3px solid #ff6600; border-radius:4px;
-                  font-size:12px; color:#ffaa55;">
+      <div style="margin:8px 20px 0; padding:8px 12px; background:#fff4ed;
+                  border:1px solid #f5c6a0; border-left:3px solid #e8590c; border-radius:8px;
+                  font-size:12px; line-height:1.5; color:#9a3412;">
         🚨 ${escapeHtml(injectionMatch[0].replace(/^⚠️\s*/i, "").trim())}
       </div>`;
     raw = raw.replace(injectionMatch[0], "").trim();
@@ -181,8 +181,8 @@ function formatSummary(raw, optOutLinks = []) {
   html += evalBadge;
 
   // AI disclaimer — required on every result per ESCALATION-005
-  html += `<div style="margin-top:12px; padding-top:8px; border-top:1px solid #333;
-              font-size:11px; color:#888; text-align:center;">
+  html += `<div style="margin:12px 20px 14px; padding-top:10px; border-top:1px solid #f0f0f0;
+              font-size:11px; color:#999; text-align:center;">
     AI analysis may not be 100% accurate. Always review documents yourself for important decisions.
   </div>`;
 
@@ -247,11 +247,11 @@ function validateDocumentUrl(url) {
 
     // Require a public-looking FQDN. Block single-label intranet names (no dot)
     // and special-use / private TLD suffixes (mDNS .local, ICANN private-use
-    // .internal, plus common intranet conventions). This closes DNS-name SSRF
-    // such as metadata.google.internal that the IP-literal checks above miss.
-    // Bare IPv6 literals are dot-free too and get blocked here — no legitimate
-    // legal document is ever served from one. (SECURITY-020 — defense in depth;
-    // the proxy must enforce its own SSRF protection independently.)
+    // .internal, plus common intranet conventions), plus dot-free bare IPv6
+    // literals. None of these ever host a real legal document, and allowing them
+    // would let an attacker-supplied link aim an outbound fetch at an internal
+    // host the IP-literal checks above cannot catch. Do not loosen without
+    // equivalent host validation. (SECURITY-020)
     if (!hostname.includes(".") || /\.(local|internal|localhost|intranet|lan|corp|home)$/.test(hostname)) {
       console.warn("[URLGate] Blocked non-public/internal hostname:", url);
       return false;

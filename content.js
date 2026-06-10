@@ -170,10 +170,10 @@ function showGuardianOverlay(event, sourceButton = null) {
       #tg-card-footer { display:none; gap:10px; padding:14px 20px; border-top:1px solid #f0f0f0; align-items:center; }
       #tg-card-footer.tg-ready { display:flex; }
       #tg-card button { appearance:none; -webkit-appearance:none; text-transform:none; letter-spacing:normal; line-height:normal; margin:0; }
-      #tg-proceed { flex:1 1 0; min-width:0; height:40px; padding:0 10px; background:#9ca3af; color:#fff; border:none; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; }
-      #tg-proceed:hover { background:#6b7280; }
-      #tg-leave { flex:1 1 0; min-width:0; height:40px; padding:0 10px; background:#b91c1c; color:#fff; border:none; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; }
-      #tg-leave:hover { background:#991b1b; }
+      #tg-proceed { flex:1 1 0; min-width:0; height:40px; padding:0 10px; background:#b91c1c; color:#fff; border:none; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; }
+      #tg-proceed:hover { background:#991b1b; }
+      #tg-leave { flex:1 1 0; min-width:0; height:40px; padding:0 10px; background:#9ca3af; color:#fff; border:none; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; }
+      #tg-leave:hover { background:#6b7280; }
     </style>
 
     <div id="tg-card">
@@ -192,8 +192,8 @@ function showGuardianOverlay(event, sourceButton = null) {
         </div>
       </div>
       <div id="tg-card-footer">
-        <button id="tg-proceed">I've read it — Proceed</button>
-        <button id="tg-leave">Get me out of here</button>
+        <button id="tg-proceed">Accept Risk and Continue</button>
+        <button id="tg-leave">Go Back Safely</button>
       </div>
     </div>
   `;
