@@ -16,14 +16,15 @@ Most people click "I Agree" without reading anything. TOS Guardian stops that. W
 
 TOS Guardian runs a multi-agent pipeline entirely inside the Chrome extension:
 
-Memory → Fetcher → Link Follower → Analyzer → Evaluator → UI
+Memory → Fetcher → Link Follower → Analyzer → Critic → Evaluator → UI
 
 - **Memory Agent** — reads and writes analysis results through the community Supabase cache via the proxy. Cached analyses are served only after current document text is fetched and compared through the semantic similarity path
 - **Fetcher Agent** — retrieves legal documents with hidden-tab rendering for JavaScript-heavy pages and a server-side proxy fallback for CORS-restricted/Next.js pages
 - **Link Follower Agent** — hunts down opt-out and privacy settings pages buried inside documents, follows them, and appends their content before analysis
 - **Analyzer** — sends combined documents to an AI model with a structured 5-category prompt
-- **Evaluator Agent** — scores the analysis quality before it reaches you
-- **Site Database** — 30+ hardcoded known sites for instant URL lookup, plus self-learning for new sites
+- **Critic / Judge Agent** — a second AI pass that checks each section's claims are actually grounded in the source document, flagging unsupported or vague answers
+- **Evaluator Agent** — scores the analysis quality before it reaches you, and automatically escalates to a stronger model when the score is low, keeping whichever result is better
+- **Site Database** — 25+ hardcoded known sites for instant URL lookup, plus self-learning for new sites
 - **Proxy Server** — a Node.js/Express server on Railway handles server-side document fetching and community cache reads/writes via Supabase
 
 ## Installation
@@ -50,6 +51,8 @@ TOS Guardian supports three AI providers. You supply your own API key.
 | OpenAI (GPT) | gpt-4o-mini | platform.openai.com |
 | Ollama (Local) | llama3 | ollama.com |
 
+The fast model above is used by default. When an analysis scores low on quality, TOS Guardian automatically escalates to the provider's stronger model (Claude Opus 4.8 / GPT-4o) and keeps whichever result is better.
+
 ## Browser Support
 
 - ✅ Chrome
@@ -61,10 +64,12 @@ TOS Guardian supports three AI providers. You supply your own API key.
 TOS Guardian was built with security as a first-class concern. The extension:
 
 - Never stores API keys in code — keys live in `chrome.storage.local` only
-- Validates all document URLs before hidden-tab rendering or proxy fetches
-- Sanitizes all fetched document text before it reaches the AI prompt
+- Validates every outbound document URL before hidden-tab rendering or proxy fetch — blocks non-HTTPS, private/loopback/link-local addresses (including decimal, hex, and IPv6 encodings), and internal or cloud-metadata hostnames to prevent SSRF
+- Sanitizes all fetched document text before it reaches the AI prompt, and scans for prompt-injection patterns
 - Defends against prompt injection via explicit system prompt instructions
-- Validates all URLs before opening hidden tabs — blocks private IPs, localhost, and non-HTTPS
+- Escapes all AI- and cache-derived text before rendering, preventing XSS from poisoned documents or cache entries
+- Reconstructs the trust/confidence badge only from the trusted evaluator verdict at render time, so attacker-controlled document text can't spoof a "safe" rating
+- Refuses to present an unretrieved document as a confident analysis — if a page returns navigation chrome instead of the policy text, the result is forced to "Failed" with a clear warning
 - Uses a WeakSet for button hook tracking — inaccessible to page scripts
 - Verifies cached analyses against current document text before serving semantic cache hits
 - Evaluator schema validation — fails closed if analysis output doesn't match expected format
