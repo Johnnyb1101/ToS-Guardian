@@ -283,6 +283,23 @@ mustTrue('isLikelyResourcePageUrl', 'blocks MakingCents article with terms in sl
 mustFalse('isLikelyResourcePageUrl', 'allows real legal terms path', false,
   utils.isLikelyResourcePageUrl('https://example.com/legal/terms-of-service'));
 
+// Navigation chrome (links/menus) must NOT be accepted as a legal document.
+{
+  const navShell = 'Home Pricing Features Blog Log in or sign up Start your Substack ' +
+    'Make money doing the work you believe in Learn more Get the app About Careers Terms Privacy';
+  mustFalse('looksLikeLegalDocument', 'rejects navigation chrome', false, utils.looksLikeLegalDocument(navShell));
+}
+// A real privacy policy (length + legal markers) must be accepted.
+{
+  const policy = ('This Privacy Policy explains how we collect and use your personal information. ' +
+    'We may share your information with third parties and service providers. You agree to these terms of service. ' +
+    'You can opt out of certain processing. We use cookies. Your rights include access and deletion. ' +
+    'Governing law and arbitration apply. We disclose data only as described. ').repeat(6);
+  mustTrue('looksLikeLegalDocument', 'accepts a real privacy policy', true, utils.looksLikeLegalDocument(policy));
+}
+// Empty / non-string input is not a document.
+mustFalse('looksLikeLegalDocument', 'rejects empty input', false, utils.looksLikeLegalDocument(''));
+
 {
   const privacyEmpty = `
 🔴 DATA SELLING & SHARING
@@ -310,6 +327,40 @@ Not covered in this document.
   mustEqual('evaluateAnalysis', 'privacy-empty article output fails', 'Failed', got.label);
   mustTrue('evaluateAnalysis', 'reports empty core privacy sections', true,
     got.issues.includes('core privacy sections empty'));
+}
+
+// A document that wasn't retrieved (model reports navigation-only content in prose)
+// must score Failed even when worded fluently — never Strong. (Substack Opus case)
+{
+  const navOnly = `
+🔴 DATA SELLING & SHARING
+- The fetched text does not contain any sharing or selling details. The document content is only website navigation links and menus, not the actual privacy policy text.
+
+🔴 OPT-OUT RIGHTS
+- Not covered in this document. The fetched text does not include any opt-out information.
+
+📋 HOW TO OPT OUT RIGHT NOW
+No specific steps provided — check your account settings.
+
+🟡 AUTO-RENEWAL & BILLING
+No automatic charges mentioned.
+
+🟢 DATA DELETION RIGHTS
+Not covered in this document.`;
+  const got = evaluator.evaluateAnalysis(navOnly);
+  mustEqual('evaluateAnalysis', 'navigation-only document scores Failed', 'Failed', got.label);
+  mustTrue('evaluateAnalysis', 'navigation-only flagged as not retrieved', true,
+    got.issues.includes('analysis reports the document was not retrieved'));
+  mustTrue('evaluateAnalysis', 'navigation-only warning mentions retrieval', true,
+    /could not be retrieved/i.test(got.warning || ''));
+}
+
+// A genuine, complete analysis must NOT be mistaken for a retrieval failure.
+{
+  const got = evaluator.evaluateAnalysis(fullAnalysis());
+  mustEqual('evaluateAnalysis', 'real analysis not false-flagged as unretrieved', 'Strong', got.label);
+  mustFalse('evaluateAnalysis', 'real analysis has no retrieval-failure issue', false,
+    got.issues.includes('analysis reports the document was not retrieved'));
 }
 
 // Obvious prompt-injection line should be detected and stripped.

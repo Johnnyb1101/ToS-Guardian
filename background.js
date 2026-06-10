@@ -422,10 +422,12 @@ async function tryFetchCandidates(candidates) {
   // Race them with bounded concurrency so a page of dead guesses no longer
   // costs one full hidden-tab timeout each in series.
   return firstSuccessful(validCandidates, async (url) => {
-    // Hidden tab first — renders JavaScript, gets real content
-    const tabResult = await fetchWithHiddenTab(url);
+    // Hidden tab first — renders JavaScript, gets real content. Keep polling past
+    // the nav shell until the text actually looks like a legal document, so SPA
+    // legal pages aren't captured as navigation chrome.
+    const tabResult = await fetchWithHiddenTab(url, { accept: looksLikeLegalDocument });
     if (tabResult && tabResult.text && tabResult.text.length > 500) {
-      console.log(`[Fetcher] Found at: ${url}`);
+      console.log(`[Fetcher] Found at: ${url}${looksLikeLegalDocument(tabResult.text) ? '' : ' (nav shell — no legal content rendered)'}`);
       return { text: tabResult.text, html: tabResult.html, sourceUrl: url };
     }
 
@@ -440,7 +442,13 @@ async function tryFetchCandidates(candidates) {
 // text and closes it. Polling lets a real document resolve in ~1-2s instead of
 // always waiting the full timeout; misses and slow pages fall through at maxWait
 // (kept at the old fixed value so no slow-but-real page regresses to a miss).
-function fetchWithHiddenTab(url, { maxWait = 12000, pollInterval = 700, minLength = 500 } = {}) {
+//
+// `accept` is an optional predicate (text => bool). When provided, polling keeps
+// going past the first >minLength snapshot until the content actually satisfies
+// it — e.g. looks like a real legal document rather than the SPA's nav shell —
+// or the deadline hits, at which point the best content seen so far is returned.
+// Without `accept`, behavior is unchanged (resolves on the first usable snapshot).
+function fetchWithHiddenTab(url, { maxWait = 12000, pollInterval = 700, minLength = 500, accept = null } = {}) {
   return new Promise((resolve) => {
     browser.tabs.create({ url, active: false }, (tab) => {
       if (browser.runtime.lastError || !tab) {
@@ -451,6 +459,7 @@ function fetchWithHiddenTab(url, { maxWait = 12000, pollInterval = 700, minLengt
       const tabId = tab.id;
       const deadline = Date.now() + maxWait;
       let settled = false;
+      let best = null; // best usable snapshot seen so far (returned on deadline)
 
       const finish = (result) => {
         if (settled) return;
@@ -465,12 +474,15 @@ function fetchWithHiddenTab(url, { maxWait = 12000, pollInterval = 700, minLengt
           if (settled) return;
           // Touch lastError so the content script not being ready yet (tab still
           // loading) doesn't surface as an unchecked-error warning — we just retry.
-          const notReady = browser.runtime.lastError ||
-            !response || !response.text || response.text.length <= minLength;
-          if (!notReady) {
-            finish({ text: response.text, html: response.html || null });
+          const text = (!browser.runtime.lastError && response && response.text) ? response.text : "";
+          const usable = text.length > minLength;
+          if (usable) best = { text, html: response.html || null };
+          if (usable && (!accept || accept(text))) {
+            finish(best);
           } else if (Date.now() >= deadline) {
-            finish(null);
+            // Out of time: return the best content we saw (may be a nav shell that
+            // failed `accept` — the evaluator's retrieval-failure check handles it).
+            finish(best);
           } else {
             setTimeout(poll, pollInterval);
           }

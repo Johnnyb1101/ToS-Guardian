@@ -60,6 +60,27 @@ const CONTRADICTION_RULES = [
   }
 ];
 
+// When a fetch returns navigation chrome instead of the policy text, the model
+// frequently says so in prose ("the fetched text is only navigation links, not
+// the actual privacy policy") rather than the exact "Not covered" phrasing. That
+// is a statement that the DOCUMENT ITSELF wasn't retrieved — it must never score
+// as a confident analysis, regardless of how the sections are worded.
+const RETRIEVAL_FAILURE_PATTERNS = [
+  /\b(fetched|retrieved|provided|document|source)\s+(text|content)\s+(does not|doesn't|only|appears|seems|is only|did not)/i,
+  /\bnavigation (links?|menus?|elements?|items?)\b/i,
+  /\bnot the actual (privacy|policy|terms|legal|document|content)/i,
+  /\bonly (website |site )?navigation\b/i,
+  /\bno actual (privacy|policy|terms|legal|document|content)\b/i,
+  /\bdocument (content|text) is only\b/i,
+  /\bappears to be (a |an )?(navigation|menu|landing|placeholder|error|login)\b/i,
+  /\b(could not|couldn't|unable to|failed to) (retrieve|fetch|access|load|read) the (document|policy|terms|page|content)\b/i,
+  /\bnot (the )?(actual|real|full) (policy|terms|privacy|document) (text|content|page)\b/i
+];
+
+function mentionsRetrievalFailure(text) {
+  return RETRIEVAL_FAILURE_PATTERNS.some(pattern => pattern.test(text));
+}
+
 const MIN_CREDIBLE_LENGTH = 300;
 const ACTIONABLE_PHRASES = [
   'you can', 'call', 'visit', 'go to', 'click', 'turn off',
@@ -245,6 +266,16 @@ function evaluateAnalysis(analysisText, criticVerdict = null) {
     }
   }
 
+  // Check 7: Did the analyzer report that the document itself wasn't retrieved?
+  // This is the strongest possible "not a real analysis" signal — apply a penalty
+  // large enough to force Failed even from an otherwise-perfect-looking score, so
+  // navigation-chrome results can never be presented as Strong.
+  const retrievalFailure = mentionsRetrievalFailure(analysisText);
+  if (retrievalFailure) {
+    score -= 70;
+    issues.push('analysis reports the document was not retrieved');
+  }
+
   score = Math.max(0, Math.min(100, score));
 
   // Thresholds per ESCALATION-001
@@ -255,7 +286,9 @@ function evaluateAnalysis(analysisText, criticVerdict = null) {
   else                  label = 'Failed';
 
   let warning = null;
-  if (label === 'Failed') {
+  if (retrievalFailure) {
+    warning = '⚠️ The legal document could not be retrieved — the page returned navigation or placeholder content instead of the policy text. This summary is not reliable; open the document directly before agreeing.';
+  } else if (label === 'Failed') {
     warning = '⚠️ Analysis quality could not be verified. Some claims may be unsupported or incomplete, so review the source documents before relying on this summary.';
   } else if (label === 'Adequate') {
     warning = '⚠️ Partial analysis — some sections could not be fully assessed. Use this as a starting point, not a complete review.';

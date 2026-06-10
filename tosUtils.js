@@ -18,6 +18,27 @@ function isLikelyResourcePageUrl(url) {
   return /(?:^|[\/_-])(makingcents|blog|article|faq|tips|guide|learn|how-to|security-tips)(?:[\/_-]|$)/i.test(url || "");
 }
 
+// Heuristic: does fetched text look like an actual legal/privacy document rather
+// than navigation chrome or an unrendered SPA shell? The fetcher uses this to keep
+// waiting for / preferring real policy content over a page skeleton. Pairs with
+// the evaluator's retrieval-failure check as defense in depth: this reduces how
+// often we analyze nav chrome; the evaluator catches it when we still do.
+function looksLikeLegalDocument(text) {
+  if (!text || typeof text !== "string") return false;
+  const t = text.toLowerCase();
+  const indicators = [
+    "personal information", "personal data", "we collect", "information we collect",
+    "third part", "you agree", "your information", "data protection", "privacy policy",
+    "terms of service", "terms of use", "terms and conditions", "we may share",
+    "we use your", "cookies", "opt out", "opt-out", "your rights", "consent",
+    "liability", "warrant", "indemnif", "governing law", "arbitration", "retention",
+    "we process", "disclose", "applicable law", "our services"
+  ];
+  const hits = indicators.filter(k => t.includes(k)).length;
+  // Substantial text with several legal markers, OR a high marker count outright.
+  return (text.length >= 2000 && hits >= 4) || hits >= 7;
+}
+
 // Remove evaluator-chrome markup (verdict badge / warning divs, and the textual
 // "Analysis confidence:" line) that the analyzer LLM may have echoed from
 // attacker-controlled document text. The genuine verdict is composed by the
