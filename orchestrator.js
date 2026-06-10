@@ -84,6 +84,11 @@ const displayOptOutLinks = [
     result.summary = normalizeAnalysisHeaders(result.summary);
     if (isConfigurationMessage(result.summary)) {
       console.log("[Orchestrator] Configuration message returned — skipping critic/evaluator/escalation");
+      await writeDebugResult({
+        domain, url: pageUrl, score: null, label: 'Configuration',
+        warning: result.summary, issues: ['configuration required'],
+        optOutLinks: displayOptOutLinks, cached: false
+      });
       return result;
     }
   } else {
@@ -175,7 +180,13 @@ const displayOptOutLinks = [
 
   if (!result) {
     console.error("[Orchestrator] Analyzer failed after retry — returning fallback");
-    return { summary: "TOS Guardian was unable to analyze this document. Please try again." };
+    const fallbackSummary = "TOS Guardian was unable to analyze this document. Please try again.";
+    await writeDebugResult({
+      domain, url: pageUrl, score: null, label: 'Error',
+      warning: fallbackSummary, issues: ['analyzer failed after retry'],
+      optOutLinks: displayOptOutLinks, cached: false
+    });
+    return { summary: fallbackSummary };
   }
 
   // --- STEP 6: SAVE TO MEMORY ---

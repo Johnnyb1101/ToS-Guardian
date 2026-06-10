@@ -336,6 +336,33 @@ async function runTest(fn) {
     mustEqual('runOrchestrator', 'analyzer null retry fallback', 'TOS Guardian was unable to analyze this document. Please try again.', got.summary);
   });
 
+  // Debug capture should record configuration outcomes instead of silently omitting them.
+  await runTest(async () => {
+    storageData.tosGuardianDebug = true;
+    spies.analyzeWithModel.impl = async () => ({ summary: 'No Anthropic API key set. Open extension settings.' });
+    await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
+    const latest = storageData.tosGuardianLastResult;
+    mustEqual('writeDebugResult', 'records configuration label', 'Configuration', latest?.label);
+    mustDeep('writeDebugResult', 'records configuration issue', ['configuration required'], latest?.issues);
+  });
+
+  // Debug capture should record analyzer failure so manual batches can advance honestly.
+  await runTest(async () => {
+    storageData.tosGuardianDebug = true;
+    spies.analyzeWithModel.impl = async () => null;
+    await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
+    const latest = storageData.tosGuardianLastResult;
+    mustEqual('writeDebugResult', 'records analyzer error label', 'Error', latest?.label);
+    mustDeep('writeDebugResult', 'records analyzer error issue', ['analyzer failed after retry'], latest?.issues);
+  });
+
+  // With debug capture off, terminal outcomes must not write recorder data.
+  await runTest(async () => {
+    spies.analyzeWithModel.impl = async () => null;
+    await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
+    mustEqual('writeDebugResult', 'does not write when disabled', undefined, storageData.tosGuardianLastResult);
+  });
+
   // runWithRetry should recover when a boundary throws once and then succeeds.
   await runTest(async () => {
     let count = 0;

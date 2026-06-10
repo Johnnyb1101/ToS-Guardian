@@ -180,8 +180,15 @@ $('clear').addEventListener('click', async () => {
   await persistResults();
   renderTable();
 });
-$('enable-debug').addEventListener('click', async () => { await setLocal({ [DEBUG_KEY]: true }); renderDebug(true); });
-$('disable-debug').addEventListener('click', async () => { await setLocal({ [DEBUG_KEY]: false }); renderDebug(false); });
+$('enable-debug').addEventListener('click', async () => {
+  await setLocal({ [DEBUG_KEY]: true });
+  renderDebug(true);
+});
+$('disable-debug').addEventListener('click', async () => {
+  await setLocal({ [DEBUG_KEY]: false });
+  await clearLatestResult('Debug capture disabled and latest result cleared.');
+  renderDebug(false);
+});
 
 // Auto-capture: when the orchestrator writes a new verdict, grab it.
 browser.storage.onChanged.addListener((changes, area) => {
@@ -193,11 +200,8 @@ browser.storage.onChanged.addListener((changes, area) => {
 
 // ---- init ----
 (async () => {
-  // Dev page: turn capture on by default so results flow without extra clicks.
   const data = await getLocal([DEBUG_KEY, RESULTS_KEY]);
-  let on = data[DEBUG_KEY];
-  if (on === undefined) { await setLocal({ [DEBUG_KEY]: true }); on = true; }
-  renderDebug(!!on);
+  renderDebug(data[DEBUG_KEY] === true);
   results = Array.isArray(data[RESULTS_KEY]) ? data[RESULTS_KEY] : [];
   results.forEach((r) => { if (r.timestamp) capturedStamps.add(r.timestamp); });
   renderStepper();
