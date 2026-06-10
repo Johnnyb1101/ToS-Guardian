@@ -12,12 +12,6 @@
     "http://localhost/*",
     "http://127.0.0.1/*"
   ],
-  "browser_specific_settings": {
-    "gecko": {
-      "id": "tos-guardian@johnnyb1101",
-      "strict_min_version": "109.0"
-    }
-  },
   "background": {
     "service_worker": "background.js"
   },
