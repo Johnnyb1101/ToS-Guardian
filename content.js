@@ -13,17 +13,29 @@ function hasProximityConsent(el) {
   ];
 
   let node = el.parentElement;
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 6; i++) {
     if (!node) break;
     const text = node.innerText?.toLowerCase() || "";
     if (consentPhrases.some(phrase => text.includes(phrase))) return true;
+    // Links to legal docs right next to the action are a strong consent signal
+    // even without explicit "you agree" prose — signup modals almost always
+    // have Terms/Privacy links beside the button. Scoped to the button's own
+    // container (6 ancestors), so a page-footer link won't trigger this.
+    if (typeof node.querySelector === "function" &&
+        node.querySelector('a[href*="terms" i], a[href*="privacy" i], a[href*="legal" i], a[href*="user-agreement" i]')) {
+      return true;
+    }
     node = node.parentElement;
   }
   return false;
 }
 
+function pageHasPasswordField() {
+  return !!document.querySelector('input[type="password"]');
+}
+
 function pageHasAuthForm() {
-  if (document.querySelector('input[type="password"]')) return true;
+  if (pageHasPasswordField()) return true;
   const emailInputs = document.querySelectorAll('input[type="email"], input[autocomplete="username"], input[autocomplete="email"], input[name*="email"], input[name*="user"]');
   if (emailInputs.length > 0) return true;
   return false;
@@ -45,46 +57,99 @@ function shouldRunInFrame() {
   return pageHasAuthForm() || pageHasAgreementContext();
 }
 
+// True when the URL path itself names an auth page (e.g. /login, /sign-up).
+function pageUrlLooksLikeAuth() {
+  const path = (window.location?.pathname || "").toLowerCase();
+  return /(^|\/)(log[-_]?in|sign[-_]?in|sign[-_]?up|signin|signup|register|registration|auth|join)(\/|$)/.test(path);
+}
+
+// True when auth-intent text sits right around the button (e.g. a login/signup
+// modal heading like "Log in or sign up"). Scoped tight (4 ancestors) so a
+// header "Sign in" link elsewhere on the page doesn't count.
+function hasAuthProximity(el) {
+  const authPhrases = [
+    "sign in", "signin", "log in", "login",
+    "sign up", "signup", "create account", "create an account",
+    "create your account", "forgot password", "reset password",
+    "log in or sign up"
+  ];
+  let node = el.parentElement;
+  for (let i = 0; i < 4; i++) {
+    if (!node) break;
+    const text = node.innerText?.toLowerCase() || "";
+    if (authPhrases.some(p => text.includes(p))) return true;
+    node = node.parentElement;
+  }
+  return false;
+}
+
 function isAgreeButton(el) {
   const text = el.innerText?.toLowerCase().trim() || "";
   const value = el.value?.toLowerCase().trim() || "";
   const ariaLabel = el.getAttribute?.("aria-label")?.toLowerCase().trim() || "";
   const title = el.getAttribute?.("title")?.toLowerCase().trim() || "";
   const combined = text || value || ariaLabel || title;
+  if (!combined) return false;
 
+  // High confidence: explicit agree/accept/signup language — fire on the label alone.
   const highConfidence = [
-    "i agree", "accept all", "i accept",
-    "agree & continue", "accept & continue",
-    "continue with sso", "sign up free"
+    "i agree", "agree & continue", "agree and continue", "agree & join", "agree and join",
+    "accept all", "accept & continue", "accept and continue", "i accept", "i consent",
+    "continue with sso", "sign up free", "sign up with email"
   ];
-
-  const lowConfidence = [
-    "sign up", "create account", "register",
-    "continue", "sign in", "log in", "login",
-    "sign in with google", "sign in with facebook",
-    "sign in with apple", "continue with google",
-    "continue with facebook", "continue with apple",
-    "get started", "join now", "join free"
-  ];
-
-  const signinPatterns = [
-    "sign in", "log in", "login",
-    "sign in with google", "sign in with facebook",
-    "sign in with apple", "continue with google",
-    "continue with facebook", "continue with apple"
-  ];
-
   if (highConfidence.some(k => combined.includes(k))) return true;
 
-  if (lowConfidence.some(k => combined.includes(k))) {
-    if (hasProximityConsent(el)) return true;
-    if (domainIsKnown && signinPatterns.some(k => combined.includes(k))) return true;
-    if (signinPatterns.some(k => combined.includes(k)) && pageHasAuthForm()) return true;
-    if (domainIsKnown && pageHasAuthForm()) return true;
-    return pageHasAgreementContext();
-  }
+  // Account-creation intent. Matched broadly ("create my account", "create your
+  // profile") because creating an account always forms an agreement — but every
+  // path below still requires real auth context before it fires.
+  const signupIntent =
+    /\bsign\s?up\b/.test(combined) ||
+    /\bregister\b/.test(combined) ||
+    /\bcreate\b[\s\w]{0,15}\b(account|profile)\b/.test(combined) ||
+    /\bjoin\b/.test(combined);
 
-  return false;
+  // Sign-in / SSO actions.
+  const signin = [
+    "sign in", "signin", "log in", "login", "sign in with",
+    "continue with google", "continue with facebook", "continue with apple",
+    "continue with microsoft", "continue with email"
+  ].some(k => combined.includes(k));
+
+  // Weak, generic progression words — only fire with strong context.
+  const generic = ["continue", "get started", "join now", "join free"]
+    .some(k => combined.includes(k));
+
+  if (!signupIntent && !signin && !generic) return false;
+
+  // Everything below requires real context so generic words never fire on
+  // arbitrary pages.
+
+  // Consent text or legal links right next to the button.
+  if (hasProximityConsent(el)) return true;
+
+  // A password field means this is unambiguously a login/signup flow.
+  if (pageHasPasswordField()) return true;
+
+  const authForm = pageHasAuthForm();
+
+  // Account creation + an auth form on the page.
+  if (signupIntent && authForm) return true;
+
+  // Signing in (incl. SSO) on a page that has an auth form.
+  if (signin && authForm) return true;
+
+  // Generic "continue" is weak, so it only fires when the page clearly IS an
+  // auth page — an auth form plus an auth-looking URL or auth text right around
+  // the button. Catches magic-link logins (no password field, no Terms links)
+  // without firing on e-commerce "Continue" buttons that merely sit near an
+  // email box.
+  if (generic && authForm && (pageUrlLooksLikeAuth() || hasAuthProximity(el))) return true;
+
+  // On domains we already know host legal docs, be more permissive.
+  if (domainIsKnown && (signin || signupIntent || authForm)) return true;
+
+  // Page-wide agreement context (SSO buttons, etc.).
+  return pageHasAgreementContext();
 }
 
 // Walk up from a clicked element to find the nearest hooked agree button.
