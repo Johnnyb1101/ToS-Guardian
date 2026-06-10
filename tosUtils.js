@@ -245,6 +245,18 @@ function validateDocumentUrl(url) {
       return false;
     }
 
+    // Require a public-looking FQDN. Block single-label intranet names (no dot)
+    // and special-use / private TLD suffixes (mDNS .local, ICANN private-use
+    // .internal, plus common intranet conventions). This closes DNS-name SSRF
+    // such as metadata.google.internal that the IP-literal checks above miss.
+    // Bare IPv6 literals are dot-free too and get blocked here — no legitimate
+    // legal document is ever served from one. (SECURITY-020 — defense in depth;
+    // the proxy must enforce its own SSRF protection independently.)
+    if (!hostname.includes(".") || /\.(local|internal|localhost|intranet|lan|corp|home)$/.test(hostname)) {
+      console.warn("[URLGate] Blocked non-public/internal hostname:", url);
+      return false;
+    }
+
     // Block suspicious schemes smuggled via URL constructor
     if (parsed.username || parsed.password) {
       console.warn("[URLGate] Blocked URL with credentials:", url);

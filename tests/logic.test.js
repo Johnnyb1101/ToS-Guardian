@@ -263,6 +263,21 @@ mustFalse('validateDocumentUrl', 'blocks IPv6-mapped loopback', false, utils.val
 
 // Uppercase LOCALHOST should be blocked because host checks should be case-insensitive.
 mustFalse('validateDocumentUrl', 'blocks uppercase LOCALHOST', false, utils.validateDocumentUrl('https://LOCALHOST'));
+
+// Single-label intranet hostnames (no public TLD) should be blocked.
+mustFalse('validateDocumentUrl', 'blocks single-label intranet host', false, utils.validateDocumentUrl('https://intranet/terms'));
+
+// mDNS .local hostnames resolve only on the local network — block them.
+mustFalse('validateDocumentUrl', 'blocks .local hostname', false, utils.validateDocumentUrl('https://router.local/'));
+
+// Cloud metadata reached via DNS name (.internal) must be blocked to prevent SSRF credential theft.
+mustFalse('validateDocumentUrl', 'blocks cloud metadata internal hostname', false, utils.validateDocumentUrl('https://metadata.google.internal/'));
+
+// Bare IPv6 literals are never legitimate document hosts — block them.
+mustFalse('validateDocumentUrl', 'blocks unique-local IPv6 literal', false, utils.validateDocumentUrl('https://[fd00::1]/'));
+
+// A real multi-label public domain must still be allowed (no over-blocking).
+mustTrue('validateDocumentUrl', 'allows public subdomain host', true, utils.validateDocumentUrl('https://help.example.co.uk/legal/terms'));
 mustTrue('isLikelyResourcePageUrl', 'blocks MakingCents article with terms in slug', true,
   utils.isLikelyResourcePageUrl('https://www.navyfederal.org/makingcents/investing/investing-terms-you-should-know.html'));
 mustFalse('isLikelyResourcePageUrl', 'allows real legal terms path', false,
