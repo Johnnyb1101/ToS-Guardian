@@ -31,11 +31,19 @@ function stripEvalChrome(text) {
     .trim();
 }
 
+function stripInjectionWarning(text) {
+  if (!text) return "";
+  return text
+    .replace(/^[^\n]*Possible injection attempt detected[^\n]*$/gim, "")
+    .replace(/^(?:Quick note|Note):\s*I (?:didn't|did not) (?:spot|find) any actual injection attempts?[^\n]*(?:\n|$)/gim, "")
+    .trim();
+}
+
 function formatSummary(raw, optOutLinks = []) {
   if (!raw) return "";
 
   let injectionWarning = "";
-  const injectionPattern = /⚠️\s*Possible injection attempt detected[^\n]*/i;
+  const injectionPattern = /⚠️\s*Possible injection attempt detected in document[^\n]*/i;
   const injectionMatch = raw.match(injectionPattern);
   if (injectionMatch) {
     injectionWarning = `

@@ -22,6 +22,13 @@ async function writeDebugResult(partial) {
 
 async function runOrchestrator(pageUrl, pageText, pageHtml) {
   console.log("[Orchestrator] Starting relay for:", pageUrl);
+  const relayStartedAt = Date.now();
+  let stageStartedAt = relayStartedAt;
+  const logStage = (stage) => {
+    const now = Date.now();
+    console.log(`[Timing] ${stage}: ${now - stageStartedAt}ms | total: ${now - relayStartedAt}ms`);
+    stageStartedAt = now;
+  };
 
   const domain = pageUrl ? (() => { try { return new URL(pageUrl).hostname; } catch(e) { return null; } })() : null;
 
@@ -32,6 +39,7 @@ if (knownUrls) {
 }
 let fetched = null;
 fetched = await runWithRetry(() => fetcherAgent(pageUrl, pageHtml, knownUrls), "[Fetcher]");
+logStage("fetcher");
 
 const textToAnalyze = fetched ? fetched.text : pageText;
 const source = fetched
@@ -48,10 +56,10 @@ if (domain && fetched) {
   const supabaseResult = await readFromSupabase(domain, cacheVerificationText);
   if (supabaseResult) {
     const cachedEvaluation = validateEvaluation(
-      evaluateAnalysis(stripEvalChrome(supabaseResult.summary))
+      evaluateAnalysis(stripInjectionWarning(stripEvalChrome(supabaseResult.summary)))
     );
-    if (cachedEvaluation.passed) {
-      let cachedSummary = stripEvalChrome(supabaseResult.summary);
+    if (isCacheableEvaluation(cachedEvaluation)) {
+      let cachedSummary = stripInjectionWarning(stripEvalChrome(supabaseResult.summary));
       if (cachedEvaluation.warning) {
         cachedSummary = `<div class="tg-eval-warning">${cachedEvaluation.warning}</div>\n` + cachedSummary;
       }
@@ -62,12 +70,14 @@ if (domain && fetched) {
         warning: cachedEvaluation.warning, issues: cachedEvaluation.issues || [],
         optOutLinks: supabaseResult.optOutLinks || [], cached: true
       });
+      logStage("cache hit");
       return { summary: cachedSummary, optOutLinks: supabaseResult.optOutLinks };
     }
     console.warn("[Orchestrator] Cached summary failed local quality gate — running full analysis");
   }
   console.log("[Orchestrator] No semantic match — running full analysis");
 }
+logStage("cache");
 
 // --- STEP 2.5: INJECTION SCANNER ---
 const scanResult = scanForInjection(textToAnalyze);
@@ -80,6 +90,7 @@ if (!scanResult.clean) {
 const privacyHtml = fetched ? fetched.privacyHtml : null;
 const privacyUrl = fetched ? fetched.privacyUrl : null;
 const { text: enrichedText, optOutLinks } = await linkFollowerStub(safeText, source, privacyHtml, privacyUrl, fetched?.hasSupplementalPrivacy || false);
+logStage("link follower");
 const displayOptOutLinks = [
   ...new Set([
     ...(fetched?.documentLinks || []),
@@ -90,10 +101,11 @@ const displayOptOutLinks = [
   // --- STEP 4: ANALYZER AGENT ---
   let result = null;
   result = await runWithRetry(() => analyzeWithModel(enrichedText, source), "[Analyzer]");
+  logStage("analyzer");
 
   if (result && result.summary) {
     console.log(`[Orchestrator] Raw Analyzer output (${result.summary.length} chars):`, result.summary.slice(0, 300));
-    result.summary = normalizeAnalysisHeaders(result.summary);
+    result.summary = stripInjectionWarning(normalizeAnalysisHeaders(result.summary));
     if (isConfigurationMessage(result.summary)) {
       console.log("[Orchestrator] Configuration message returned — skipping critic/evaluator/escalation");
       await writeDebugResult({
@@ -117,6 +129,7 @@ const displayOptOutLinks = [
       console.log(`[Orchestrator] Critic skipped or failed — continuing without`);
     }
   }
+  logStage("critic");
 
   // --- STEP 5: EVALUATOR AGENT + ESCALATION ---
   const rawEvaluation = evaluateAnalysis(result ? result.summary : null, criticVerdict);
@@ -150,7 +163,7 @@ const displayOptOutLinks = [
 
       if (escalatedResult) {
         if (escalatedResult.summary) {
-          escalatedResult.summary = normalizeAnalysisHeaders(escalatedResult.summary);
+          escalatedResult.summary = stripInjectionWarning(normalizeAnalysisHeaders(escalatedResult.summary));
         }
         // Re-run Critic on escalated result
         const escalatedCritic = await runCritic(escalatedResult.summary, enrichedText);
@@ -168,7 +181,7 @@ const displayOptOutLinks = [
 
         stored.count = escalationCount + 1;
         await browser.storage.local.set({ [capKey]: stored });
-        if (domain && (evaluation.passed || evaluation.label === 'Adequate')) {
+        if (domain && isCacheableEvaluation(evaluation)) {
           writeToSupabase(domain, result.summary, 'anthropic-escalated', displayOptOutLinks, cacheVerificationText);
         }
       }
@@ -182,6 +195,9 @@ const displayOptOutLinks = [
     // attacker-controlled document text, so only the trusted evaluator verdict
     // composed below can ever render as UI chrome. (SECURITY-022)
     result.summary = stripEvalChrome(result.summary);
+    if (!scanResult.clean) {
+      result.summary = `⚠️ Possible injection attempt detected in document\n${result.summary}`;
+    }
   }
   if (result && evaluation.warning) {
     result.summary = `<div class="tg-eval-warning">${evaluation.warning}</div>\n` + result.summary;
@@ -202,7 +218,7 @@ const displayOptOutLinks = [
   }
 
   // --- STEP 6: SAVE TO MEMORY ---
-  if (domain && (evaluation.passed || evaluation.label === 'Adequate')) {
+  if (domain && isCacheableEvaluation(evaluation)) {
     saveAnalysis(domain, result.summary, cacheVerificationText, displayOptOutLinks);
     console.log("[Orchestrator] Analysis saved to memory for:", domain);
   } else if (domain) {
@@ -210,6 +226,7 @@ const displayOptOutLinks = [
   }
 
   console.log("[Orchestrator] Relay complete");
+  logStage("complete");
   console.log('[Orchestrator] optOutLinks being returned:', displayOptOutLinks);
   await writeDebugResult({
     domain, url: pageUrl,
@@ -239,6 +256,15 @@ function validateEvaluation(rawEvaluation) {
     passed: false,
     escalate: true
   };
+}
+
+function isCacheableEvaluation(evaluation) {
+  return !!(
+    evaluation &&
+    evaluation.passed &&
+    Array.isArray(evaluation.contradictions) &&
+    evaluation.contradictions.length === 0
+  );
 }
 
 function buildCacheVerificationText(text) {
@@ -280,11 +306,9 @@ async function linkFollowerStub(text, source, privacyHtml = null, privacyUrl = n
     "do-not-sell", "donotsell", "do_not_sell",
     "data-deletion", "delete-my-data", "deletemydata",
     "privacy-choices", "privacychoices", "privacy-settings",
-    "data-rights", "your-privacy", "yourprivacy",
-    "safetyandprivacy", "learn-more-about-privacy", "account/privacy",
-    "privacy/notice", "consumer-privacy", "consumer_privacy",
-    "privacy-notice", "privacy notice", "ccpa-disclosure",
-    "online-privacy-policy", "manage-your-data"
+    "data-rights", "your-privacy-choices", "account/privacy",
+    "consumer-privacy", "consumer_privacy", "ccpa-disclosure",
+    "manage-your-data"
   ];
 
 // Scan plain text for full URLs
@@ -397,7 +421,9 @@ function isRelevantPrivacyActionUrl(url, { hasSupplementalPrivacy = false } = {}
     /\/assets\//,
     /favicon\.(ico|png|svg)$/,
     /\.(ico|png|jpe?g|gif|svg|webp|css|js)([#?].*)?$/,
+    /\.(woff2?|ttf|otf|eot)([#?].*)?$/,
     /workforce/,
+    /workplace/,
     /employee/,
     /applicant/,
     /associate/,

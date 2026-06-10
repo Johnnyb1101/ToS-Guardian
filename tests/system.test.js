@@ -259,6 +259,37 @@ async function runTest(fn) {
       got.summary.includes('stale bad cache'));
   });
 
+  // A contradictory cached summary must be rejected even if its numeric score passes.
+  await runTest(async () => {
+    let evaluationCall = 0;
+    context.evaluateAnalysis = () => {
+      evaluationCall++;
+      return evaluationCall === 1
+        ? {
+            score: 85,
+            label: 'Adequate',
+            warning: 'partial',
+            passed: true,
+            escalate: true,
+            contradictions: [{ rule: 'sharing-vs-optout' }],
+            issues: ['contradiction']
+          }
+        : {
+            score: 100,
+            label: 'Strong',
+            warning: null,
+            passed: true,
+            escalate: false,
+            contradictions: [],
+            issues: []
+          };
+    };
+    spies.readFromSupabase.impl = async () => ({ summary: adequateSummary('contradictory cache'), optOutLinks: [] });
+    await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
+    mustEqual('analyzeWithModel', 'called when cached summary has contradictions', 1,
+      spies.analyzeWithModel.calls.filter(args => args[2] !== true).length);
+  });
+
   // Injection lines must be stripped before model analysis to prevent hostile document instructions reaching the model.
   await runTest(async () => {
     spies.fetcherAgent.impl = async () => ({
@@ -267,8 +298,24 @@ async function runTest(fn) {
       privacyUrl: 'https://example.com/privacy',
       privacyHtml: ''
     });
-    await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
+    const got = await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
     mustFalse('analyzeWithModel', 'injection stripped before analysis', false, spies.analyzeWithModel.calls[0][0].includes('ignore all previous instructions'));
+    mustTrue('runOrchestrator', 'scanner detection renders trusted injection warning', true,
+      got.summary.includes('Possible injection attempt detected in document'));
+  });
+
+  // A model-authored warning on clean input must not create a false banner.
+  await runTest(async () => {
+    spies.analyzeWithModel.impl = async () => ({
+      summary: `⚠️ Possible injection attempt detected in document
+Note: I did not find any actual injection attempts in this document.
+${strongSummary('clean source')}`
+    });
+    const got = await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
+    mustFalse('runOrchestrator', 'removes model-authored false injection warning', false,
+      got.summary.includes('Possible injection attempt detected in document'));
+    mustFalse('runOrchestrator', 'removes model-authored injection disclaimer', false,
+      got.summary.includes('did not find any actual injection attempts'));
   });
 
   // Escalation should fire at most five times within a 24h cap window, then reset after resetAt passes.
@@ -294,8 +341,8 @@ async function runTest(fn) {
   await runTest(async () => {
     spies.analyzeWithModel.impl = async (_text, _source, escalate = false) => ({ summary: escalate ? failedSummary('Opus loses') : strongSummary('Haiku kept') });
     context.evaluateAnalysis = summary => summary.includes('Opus loses')
-      ? { score: 20, label: 'Failed', warning: null, passed: false, escalate: true }
-      : { score: 95, label: 'Strong', warning: null, passed: true, escalate: false };
+      ? { score: 20, label: 'Failed', warning: null, passed: false, escalate: true, contradictions: [] }
+      : { score: 95, label: 'Strong', warning: null, passed: true, escalate: false, contradictions: [] };
     const got = await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
     mustTrue('runOrchestrator', 'rejects worse Opus result', true, got.summary.includes('Haiku kept'));
   });
@@ -317,7 +364,7 @@ async function runTest(fn) {
   // Adequate results should also save because they are acceptable with a warning.
   await runTest(async () => {
     spies.analyzeWithModel.impl = async () => ({ summary: adequateSummary('Adequate') });
-    context.evaluateAnalysis = () => ({ score: 80, label: 'Adequate', warning: null, passed: true, escalate: false });
+    context.evaluateAnalysis = () => ({ score: 80, label: 'Adequate', warning: null, passed: true, escalate: false, contradictions: [] });
     await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
     mustEqual('saveAnalysis', 'called for Adequate result', 1, spies.saveAnalysis.calls.length);
   });
@@ -328,6 +375,27 @@ async function runTest(fn) {
     await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
     mustEqual('saveAnalysis', 'not called for Failed result', 0, spies.saveAnalysis.calls.length);
   });
+
+  // Contradictory Adequate results should render but must not enter shared cache.
+  await runTest(async () => {
+    storageData.opusEscalationData = { count: 5, resetAt: mockNow + 86400000 };
+    context.evaluateAnalysis = () => ({
+      score: 85,
+      label: 'Adequate',
+      warning: 'partial',
+      passed: true,
+      escalate: true,
+      contradictions: [{ rule: 'sharing-vs-optout' }],
+      issues: ['contradiction']
+    });
+    await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
+    mustEqual('saveAnalysis', 'not called for contradictory Adequate result', 0, spies.saveAnalysis.calls.length);
+  });
+
+  mustFalse('isRelevantPrivacyActionUrl', 'blocks font resources', false,
+    context.isRelevantPrivacyActionUrl('https://cdn.example.com/font.woff2'));
+  mustFalse('isRelevantPrivacyActionUrl', 'blocks workplace privacy pages', false,
+    context.isRelevantPrivacyActionUrl('https://example.com/policy/workplace-privacy.html'));
 
   // Link follower output links should be included on the orchestrator response.
   await runTest(async () => {

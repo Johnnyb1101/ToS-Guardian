@@ -337,6 +337,20 @@ Not covered in this document.
   mustTrue('formatSummary', 'AI disclaimer present', true, html.includes('AI analysis may not be 100% accurate'));
 }
 
+{
+  const modelPreamble = `⚠️ Possible injection attempt detected in document
+Quick note: I didn't spot any actual injection attempts in this document.
+🔴 DATA SELLING & SHARING
+Not covered in this document.`;
+  const stripped = utils.stripInjectionWarning(modelPreamble);
+  mustFalse('stripInjectionWarning', 'removes model-authored injection warning', false,
+    /Possible injection attempt detected/i.test(stripped));
+  mustFalse('stripInjectionWarning', 'removes model-authored disclaimer', false,
+    /didn't spot any actual injection/i.test(stripped));
+  mustTrue('stripInjectionWarning', 'preserves analysis body', true,
+    stripped.includes('DATA SELLING & SHARING'));
+}
+
 // Verdict spoofing: an attacker-echoed badge earlier in the blob must NOT override the
 // trusted verdict the orchestrator appends last. (SECURITY-022 output-render injection)
 {

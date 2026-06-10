@@ -102,6 +102,29 @@ function findHookedAncestor(el, composedPath = null) {
   return null;
 }
 
+function findAgreeControl(el, composedPath = null) {
+  const candidates = composedPath || [];
+  for (const node of candidates) {
+    if (!node || typeof node.getAttribute !== "function") continue;
+    const tag = node.tagName?.toLowerCase();
+    const buttonLike = tag === "button" || tag === "a" ||
+      (tag === "input" && ["submit", "button"].includes(node.type)) ||
+      node.getAttribute("role") === "button";
+    if (buttonLike && isAgreeButton(node)) return node;
+  }
+
+  let node = el;
+  while (node && node !== document.body) {
+    const tag = node.tagName?.toLowerCase();
+    const buttonLike = tag === "button" || tag === "a" ||
+      (tag === "input" && ["submit", "button"].includes(node.type)) ||
+      node.getAttribute?.("role") === "button";
+    if (buttonLike && isAgreeButton(node)) return node;
+    node = node.parentElement;
+  }
+  return null;
+}
+
 function showGuardianOverlay(event, cachedResult = null, sourceButton = null) {
   const clickedButton = sourceButton || event.currentTarget || event.target;
 
@@ -117,17 +140,18 @@ function showGuardianOverlay(event, cachedResult = null, sourceButton = null) {
     font-family: 'DM Sans', system-ui, sans-serif;
   `;
 
-  overlay.innerHTML = `
+  const overlayRoot = overlay.attachShadow({ mode: "closed" });
+  overlayRoot.innerHTML = `
     <style>
-      @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&display=swap');
-      #tg-card { background:#fff; border-radius:14px; box-shadow:0 8px 40px rgba(0,0,0,0.18); max-width:620px; width:90%; overflow:hidden; }
+      #tg-card { all:initial; box-sizing:border-box; background:#fff; border-radius:14px; box-shadow:0 8px 40px rgba(0,0,0,0.18); max-width:620px; width:min(620px,calc(100vw - 24px)); max-height:calc(100vh - 24px); overflow:hidden; display:flex; flex-direction:column; color:#111; font-family:Arial,Helvetica,sans-serif; }
+      #tg-card * { box-sizing:border-box; font-family:inherit; }
       #tg-card-topbar { height:4px; background:#1a1aff; }
       #tg-card-header { display:flex; align-items:center; gap:12px; padding:16px 20px 14px; border-bottom:1px solid #f0f0f0; }
       #tg-card-shield { width:34px; height:34px; background:#1a1aff; border-radius:8px; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
       #tg-card-shield-icon { width:16px; height:18px; background:#fff; clip-path:polygon(50% 0%,100% 25%,100% 70%,50% 100%,0% 70%,0% 25%); }
       #tg-card-title { font-size:14px; font-weight:600; color:#111; }
       #tg-card-subtitle { font-size:12px; color:#aaa; margin-top:1px; }
-      #tg-summary { padding:4px 0; max-height:700px; overflow-y:scroll; overscroll-behavior:contain; pointer-events:all; }
+      #tg-summary { padding:4px 0; flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain; pointer-events:all; }
       #tg-summary-loading { padding:28px 20px; display:flex; align-items:center; gap:12px; color:#888; font-size:13px; }
       #tg-spinner { width:20px; height:20px; border:2px solid #ebebeb; border-top-color:#1a1aff; border-radius:50%; animation:tg-spin 0.75s linear infinite; flex-shrink:0; }
       @keyframes tg-spin { to { transform:rotate(360deg); } }
@@ -145,6 +169,7 @@ function showGuardianOverlay(event, cachedResult = null, sourceButton = null) {
       .tg-eval-failed   { background:#fff0f0; color:#c0392b; border:1px solid #f5c6c6; }
       #tg-card-footer { display:none; gap:10px; padding:14px 20px; border-top:1px solid #f0f0f0; align-items:center; }
       #tg-card-footer.tg-ready { display:flex; }
+      #tg-card button { appearance:none; -webkit-appearance:none; text-transform:none; letter-spacing:normal; line-height:normal; margin:0; }
       #tg-proceed { flex:1 1 0; min-width:0; height:40px; padding:0 10px; background:#9ca3af; color:#fff; border:none; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; }
       #tg-proceed:hover { background:#6b7280; }
       #tg-leave { flex:1 1 0; min-width:0; height:40px; padding:0 10px; background:#b91c1c; color:#fff; border:none; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; }
@@ -176,14 +201,14 @@ function showGuardianOverlay(event, cachedResult = null, sourceButton = null) {
   document.body.appendChild(overlay);
 
   const revealActions = () => {
-    document.getElementById("tg-card-footer")?.classList.add("tg-ready");
+    overlayRoot.getElementById("tg-card-footer")?.classList.add("tg-ready");
   };
 
-  document.getElementById("tg-summary").addEventListener("wheel", (e) => {
+  overlayRoot.getElementById("tg-summary").addEventListener("wheel", (e) => {
     e.stopPropagation();
   }, { passive: true });
 
-  document.getElementById("tg-proceed").addEventListener("click", () => {
+  overlayRoot.getElementById("tg-proceed").addEventListener("click", () => {
     interceptActive = false;
     acknowledgedDomains.add(window.location.hostname);
     overlay.remove();
@@ -199,13 +224,13 @@ function showGuardianOverlay(event, cachedResult = null, sourceButton = null) {
     }, 0);
   });
 
-  document.getElementById("tg-leave").addEventListener("click", () => {
+  overlayRoot.getElementById("tg-leave").addEventListener("click", () => {
     interceptActive = false;
     overlay.remove();
   });
 
   if (cachedResult) {
-    const summaryEl = document.getElementById("tg-summary");
+    const summaryEl = overlayRoot.getElementById("tg-summary");
     if (summaryEl) {
       summaryEl.innerHTML = formatSummary(
         cachedResult.summary || "Could not load cached analysis.",
@@ -220,7 +245,7 @@ function showGuardianOverlay(event, cachedResult = null, sourceButton = null) {
   let analysisResponded = false;
   const analysisTimer = setTimeout(() => {
     if (analysisResponded) return;
-    const summaryEl = document.getElementById("tg-summary");
+    const summaryEl = overlayRoot.getElementById("tg-summary");
     if (summaryEl) {
       summaryEl.innerHTML = formatSummary(
         "TOS Guardian is still analyzing this agreement. Some sites take longer because legal pages and opt-out links have to be fetched and checked.",
@@ -240,7 +265,7 @@ function showGuardianOverlay(event, cachedResult = null, sourceButton = null) {
       if (analysisResponded) return;
       analysisResponded = true;
       clearTimeout(analysisTimer);
-      const summaryEl = document.getElementById("tg-summary");
+      const summaryEl = overlayRoot.getElementById("tg-summary");
       if (summaryEl) {
         if (browser.runtime.lastError) {
           summaryEl.innerHTML = formatSummary(
@@ -270,8 +295,11 @@ document.addEventListener("click", (event) => {
   if (acknowledgedDomains.has(window.location.hostname)) return;
   if (interceptActive) return;
 
-  const hookedEl = findHookedAncestor(event.target, event.composedPath());
+  const eventPath = event.composedPath();
+  const hookedEl = findHookedAncestor(event.target, eventPath) ||
+    findAgreeControl(event.target, eventPath);
   if (!hookedEl) return;
+  if (hookedEl.dataset) hookedEl.dataset.tgHooked = "true";
 
   event.preventDefault();
   event.stopImmediatePropagation();
