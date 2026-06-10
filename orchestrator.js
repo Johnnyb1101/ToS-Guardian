@@ -139,6 +139,7 @@ const displayOptOutLinks = [
   console.log(`[Orchestrator] Evaluator — Label: ${evaluation.label}, Score: ${evaluation.score}`);
 
   // --- ESCALATION (ESCALATION-002, ESCALATION-003, ESCALATION-006) ---
+  let escalatedAccepted = false;
   if (evaluation.escalate) {
     const capKey = 'opusEscalationData';
     const capData = await browser.storage.local.get(capKey);
@@ -174,6 +175,7 @@ const displayOptOutLinks = [
           result = escalatedResult;
           evaluation = escalatedEvaluation;
           criticVerdict = escalatedCritic;
+          escalatedAccepted = true;
           console.log(`[Orchestrator] Opus result accepted`);
         } else {
           console.log(`[Orchestrator] Opus result not better — keeping Haiku result`);
@@ -181,9 +183,11 @@ const displayOptOutLinks = [
 
         stored.count = escalationCount + 1;
         await browser.storage.local.set({ [capKey]: stored });
-        if (domain && isCacheableEvaluation(evaluation)) {
-          writeToSupabase(domain, result.summary, 'anthropic-escalated', displayOptOutLinks, cacheVerificationText);
-        }
+        // The Supabase write happens once, in Step 6 below, after the trusted
+        // verdict badge is composed. Writing here too would race that write
+        // (both fire-and-forget on the same domain) and persist a pre-badge
+        // duplicate tagged 'anthropic-escalated' even when the Haiku result
+        // was kept.
       }
     } else {
       console.log(`[Orchestrator] Opus cap reached (${escalationCount}/${CAP}) — using Haiku result. Resets ${new Date(stored.resetAt).toLocaleTimeString()}`);
@@ -219,7 +223,8 @@ const displayOptOutLinks = [
 
   // --- STEP 6: SAVE TO MEMORY ---
   if (domain && isCacheableEvaluation(evaluation)) {
-    saveAnalysis(domain, result.summary, cacheVerificationText, displayOptOutLinks);
+    saveAnalysis(domain, result.summary, cacheVerificationText, displayOptOutLinks,
+      escalatedAccepted ? 'anthropic-escalated' : 'anthropic');
     console.log("[Orchestrator] Analysis saved to memory for:", domain);
   } else if (domain) {
     console.log("[Orchestrator] Analysis not saved — quality gate did not pass:", evaluation.label);

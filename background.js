@@ -54,13 +54,13 @@ async function writeToSupabase(domain, summary, aiProvider, optOutLinks = [], pr
 }
 
 // Save an analysis result for a domain
-function saveAnalysis(domain, summary, tosText, optOutLinks = []) {
+function saveAnalysis(domain, summary, tosText, optOutLinks = [], aiProvider = 'anthropic') {
   browser.storage.local.get("tosAcknowledged", (result) => {
     const ack = result.tosAcknowledged || {};
     delete ack[domain];
     browser.storage.local.set({ tosAcknowledged: ack });
   });
-  writeToSupabase(domain, summary, 'anthropic', optOutLinks, tosText);
+  writeToSupabase(domain, summary, aiProvider, optOutLinks, tosText);
 }
 
 async function readFromSupabase(domain, privacyText = '') {
