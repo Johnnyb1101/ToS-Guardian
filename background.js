@@ -497,9 +497,7 @@ function fetchWithHiddenTab(url, { maxWait = 12000, pollInterval = 700, minLengt
 
 // Helper: strip HTML tags to get plain text
 function stripHtml(html) {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
+  return stripScriptAndStyle(html)
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/p>/gi, "\n")
     .replace(/<\/li>/gi, "\n")

@@ -105,7 +105,7 @@ function formatSummary(raw, optOutLinks = []) {
   // Build opt-out links HTML once
   const validLinks = (optOutLinks || [])
     .map(url => url ? url.trim().replace(/\s+/g, '') : '')
-    .filter(url => url && url.startsWith('http'));
+    .filter(url => url && url.startsWith('https://'));
   const optOutHtml = validLinks.length > 0 ? `
     <div class="tg-optout-links">
       <div class="tg-optout-title">Opt-Out Links Found</div>
@@ -296,12 +296,21 @@ function validateLinkFollowerUrl(url) {
   return validateDocumentUrl(url);
 }
 
+// Remove <script> and <style> blocks (the tags AND everything inside them) from
+// HTML. Shared by stripHtml (HTML → readable text) and sanitizeForPrompt (defang
+// text before the LLM) so the security-relevant "drop runnable/style content"
+// step has ONE definition both rely on and can never drift apart.
+function stripScriptAndStyle(text) {
+  if (!text) return "";
+  return text
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "");
+}
+
 function sanitizeForPrompt(text) {
   if (!text || typeof text !== "string") return "";
 
-  return text
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
+  return stripScriptAndStyle(text)
     .replace(/<[^>]+>/g, " ")
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
     .replace(/[\u200B-\u200D\u2060\uFEFF\u00AD]/g, "")
