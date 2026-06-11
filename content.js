@@ -215,7 +215,7 @@ function showGuardianOverlay(event, sourceButton = null) {
       #tg-card-shield { width:34px; height:34px; background:#1a1aff; border-radius:8px; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
       #tg-card-shield-icon { width:16px; height:18px; background:#fff; clip-path:polygon(50% 0%,100% 25%,100% 70%,50% 100%,0% 70%,0% 25%); }
       #tg-card-title { font-size:14px; font-weight:600; color:#111; }
-      #tg-card-subtitle { font-size:12px; color:#aaa; margin-top:1px; }
+      #tg-card-subtitle { font-size:12px; color:#555; margin-top:1px; }
       #tg-summary { padding:4px 0; flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain; pointer-events:all; }
       #tg-summary-loading { padding:28px 20px; display:flex; align-items:center; gap:12px; color:#888; font-size:13px; }
       #tg-spinner { width:20px; height:20px; border:2px solid #ebebeb; border-top-color:#1a1aff; border-radius:50%; animation:tg-spin 0.75s linear infinite; flex-shrink:0; }
