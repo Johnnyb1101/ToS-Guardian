@@ -221,7 +221,7 @@ function showGuardianOverlay(event, sourceButton = null) {
       #tg-spinner { width:20px; height:20px; border:2px solid #ebebeb; border-top-color:#1a1aff; border-radius:50%; animation:tg-spin 0.75s linear infinite; flex-shrink:0; }
       @keyframes tg-spin { to { transform:rotate(360deg); } }
       .tg-category { padding:11px 20px; border-bottom:1px solid #f5f5f5; }
-      .tg-category-title { font-size:10px; font-weight:600; letter-spacing:0.06em; text-transform:uppercase; color:#aaa; margin-bottom:4px; display:block; }
+      .tg-category-title { font-size:10px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; color:#000; margin-bottom:4px; display:block; }
       .tg-category-body { font-size:13px; color:#333; line-height:1.6; }
       .tg-optout-links { margin:10px 20px; padding:10px 12px; background:#f5fff8; border:1px solid #b2dfc0; border-radius:8px; }
       .tg-optout-title { font-size:11px; font-weight:600; color:#1a7a3c; margin-bottom:6px; }
