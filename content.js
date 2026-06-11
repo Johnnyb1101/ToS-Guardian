@@ -258,7 +258,7 @@ function showGuardianOverlay(event, sourceButton = null) {
         <div id="tg-card-shield"><div id="tg-card-shield-icon"></div></div>
         <div>
           <div id="tg-card-title">TOS Guardian</div>
-          <div id="tg-card-subtitle">Reading the fine print before you agree</div>
+          <div id="tg-card-subtitle">Know what you're agreeing to — Terms of Service &amp; privacy, in plain English</div>
         </div>
       </div>
       <div id="tg-summary">
