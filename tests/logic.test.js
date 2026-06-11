@@ -498,16 +498,31 @@ Not covered in this document.`;
   mustTrue('formatSummary', 'shows trusted High risk', true, /tg-risk-high/.test(html));
   mustFalse('formatSummary', 'drops spoofed Low risk', false, /tg-risk-low/.test(html));
   mustTrue('formatSummary', 'shows bottom line', true, html.includes('Sells data; limited opt-out.'));
-  mustTrue('formatSummary', 'collapses detail behind toggle', true,
-    html.includes('tg-details-toggle') && html.includes('class="tg-details"'));
+  mustTrue('formatSummary', 'renders section card', true, html.includes('tg-category'));
 }
 
-// A message with no recognized sections (config/error/timeout) must stay visible,
-// never hidden behind the collapse toggle.
+// Per-section progressive disclosure: only the first bullet shows; the rest go
+// into a per-section "Show more" panel.
+{
+  const multi = '🔴 OPT-OUT RIGHTS\n- **Main point**: opt out of ads.\n- Second point.\n- Third point.';
+  const html = utils.formatSummary(multi, []);
+  mustTrue('formatSummary', 'extra bullets behind Show more', true,
+    html.includes('tg-more-toggle') &&
+    /class="tg-more"[\s\S]*Second point[\s\S]*Third point[\s\S]*<\/div>/.test(html));
+  mustTrue('formatSummary', 'first bullet rendered as main point', true, html.includes('opt out of ads.'));
+}
+{
+  // A single-bullet section needs no "Show more".
+  const single = '🟡 AUTO-RENEWAL & BILLING\nNo automatic charges mentioned.';
+  const html = utils.formatSummary(single, []);
+  mustFalse('formatSummary', 'no Show more for single-bullet section', false, html.includes('tg-more-toggle'));
+}
+
+// A message with no recognized sections (config/error/timeout) must stay visible.
 {
   const html = utils.formatSummary('No Anthropic API key set. Open settings to add your key.', []);
   mustTrue('formatSummary', 'shows no-sections message', true, html.includes('No Anthropic API key set'));
-  mustFalse('formatSummary', 'no-sections message not collapsed', false, html.includes('tg-details'));
+  mustFalse('formatSummary', 'no-sections message has no Show more', false, html.includes('tg-more-toggle'));
 }
 
 // stripEvalChrome must remove analyzer-echoed verdict markup while preserving body text.

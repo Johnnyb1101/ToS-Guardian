@@ -238,10 +238,10 @@ function showGuardianOverlay(event, sourceButton = null) {
       .tg-risk-moderate { background:#fff8ee; color:#b7770d; border:1px solid #f5dfa0; }
       .tg-risk-high { background:#fff0f0; color:#c0392b; border:1px solid #f5c6c6; }
       .tg-risk-unknown { background:#f3f4f6; color:#555; border:1px solid #d1d5db; }
-      .tg-details-toggle { margin:6px 20px; padding:6px 0; background:none; border:none; color:#1a1aff; font-size:12px; font-weight:600; cursor:pointer; display:block; text-align:left; }
-      .tg-details-toggle:hover { text-decoration:underline; }
-      .tg-details { display:none; }
-      .tg-details.tg-open { display:block; }
+      .tg-more-toggle { margin:2px 0 2px; padding:2px 0; background:none; border:none; color:#1a1aff; font-size:11px; font-weight:600; cursor:pointer; display:block; text-align:left; }
+      .tg-more-toggle:hover { text-decoration:underline; }
+      .tg-more { display:none; }
+      .tg-more.tg-open { display:block; }
       .tg-confidence-note { margin:10px 20px 0; font-size:11px; color:#aaa; text-align:center; }
       #tg-card-footer { display:none; gap:10px; padding:14px 20px; border-top:1px solid #f0f0f0; align-items:center; }
       #tg-card-footer.tg-ready { display:flex; }
@@ -343,16 +343,16 @@ function showGuardianOverlay(event, sourceButton = null) {
           result?.summary || "Could not analyze this page.",
           result?.optOutLinks || []
         );
-        // Wire the "Show full breakdown" expander (progressive disclosure):
-        // the five detailed sections stay collapsed until the user asks.
-        const detailsToggle = overlayRoot.getElementById("tg-details-toggle");
-        const detailsPanel = overlayRoot.getElementById("tg-details");
-        if (detailsToggle && detailsPanel) {
-          detailsToggle.addEventListener("click", () => {
-            const open = detailsPanel.classList.toggle("tg-open");
-            detailsToggle.textContent = open ? "Hide full breakdown ▴" : "Show full breakdown ▾";
+        // Wire each section's "Show more" expander (per-section progressive
+        // disclosure): only the main point shows until the reader expands a section.
+        overlayRoot.querySelectorAll(".tg-more-toggle").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            const panel = overlayRoot.getElementById(btn.getAttribute("data-target"));
+            if (!panel) return;
+            const open = panel.classList.toggle("tg-open");
+            btn.textContent = open ? "Show less ▴" : "Show more ▾";
           });
-        }
+        });
         revealActions();
       }
     }

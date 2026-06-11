@@ -211,7 +211,20 @@ function formatSummary(raw, optOutLinks = []) {
           && !l.match(/^It.s your right to/i)
           && !l.match(/^[-\s|]+$/));
 
-      const bodyHtml = bodyLines.map(l => `<p style="margin:0 0 6px 0;">${l}</p>`).join("");
+      // Show only the first (most important) bullet by default; the rest live
+      // in a per-section "Show more" panel. (Per-section progressive disclosure.)
+      let bodyHtml = "";
+      if (bodyLines.length > 0) {
+        const [mainLine, ...restLines] = bodyLines;
+        bodyHtml += `<p style="margin:0 0 6px 0;">${mainLine}</p>`;
+        if (restLines.length > 0) {
+          const panelId = `tg-more-${renderedSections}`;
+          bodyHtml += `<div class="tg-more" id="${panelId}">` +
+            restLines.map(l => `<p style="margin:0 0 6px 0;">${l}</p>`).join("") +
+            `</div>`;
+          bodyHtml += `<button class="tg-more-toggle" type="button" data-target="${panelId}">Show more ▾</button>`;
+        }
+      }
 
       details += `
         <div class="tg-category">
@@ -265,16 +278,11 @@ function formatSummary(raw, optOutLinks = []) {
       </div>`;
   }
 
-  // --- Assemble: visible TL;DR head, then a collapsible breakdown. ---
-  // Head (always visible): injection warning, bottom line, risk, any failure
-  // warning, opt-out links, and any no-sections fallback message.
-  let html = injectionWarning + bottomLineHtml + riskHtml + evalWarning + optOutHtml + fallback;
-
-  // Collapsible detail: the five sections, hidden until the user asks.
-  if (details) {
-    html += `<button id="tg-details-toggle" class="tg-details-toggle" type="button">Show full breakdown ▾</button>`;
-    html += `<div id="tg-details" class="tg-details">${details}</div>`;
-  }
+  // --- Assemble: TL;DR head, then the sections (each shows one main point with
+  // its own per-section "Show more"). ---
+  // Head: injection warning, bottom line, risk, any failure warning, opt-out
+  // links, any no-sections fallback message — then the section cards.
+  let html = injectionWarning + bottomLineHtml + riskHtml + evalWarning + optOutHtml + fallback + details;
 
   // Confidence small print + AI disclaimer (disclaimer required per ESCALATION-005).
   html += confidenceNote;
