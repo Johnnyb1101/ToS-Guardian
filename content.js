@@ -232,6 +232,17 @@ function showGuardianOverlay(event, sourceButton = null) {
       .tg-eval-strong   { background:#f0fff4; color:#1a7a3c; border:1px solid #b2dfc0; }
       .tg-eval-adequate { background:#fff8ee; color:#b7770d; border:1px solid #f5dfa0; }
       .tg-eval-failed   { background:#fff0f0; color:#c0392b; border:1px solid #f5c6c6; }
+      .tg-bottomline { margin:16px 20px 6px; font-size:15px; font-weight:600; color:#111; line-height:1.45; }
+      .tg-risk { margin:2px 20px 10px; padding:6px 14px; border-radius:20px; font-size:13px; font-weight:700; display:inline-block; }
+      .tg-risk-low { background:#f0fff4; color:#1a7a3c; border:1px solid #b2dfc0; }
+      .tg-risk-moderate { background:#fff8ee; color:#b7770d; border:1px solid #f5dfa0; }
+      .tg-risk-high { background:#fff0f0; color:#c0392b; border:1px solid #f5c6c6; }
+      .tg-risk-unknown { background:#f3f4f6; color:#555; border:1px solid #d1d5db; }
+      .tg-details-toggle { margin:6px 20px; padding:6px 0; background:none; border:none; color:#1a1aff; font-size:12px; font-weight:600; cursor:pointer; display:block; text-align:left; }
+      .tg-details-toggle:hover { text-decoration:underline; }
+      .tg-details { display:none; }
+      .tg-details.tg-open { display:block; }
+      .tg-confidence-note { margin:10px 20px 0; font-size:11px; color:#aaa; text-align:center; }
       #tg-card-footer { display:none; gap:10px; padding:14px 20px; border-top:1px solid #f0f0f0; align-items:center; }
       #tg-card-footer.tg-ready { display:flex; }
       #tg-card button { appearance:none; -webkit-appearance:none; text-transform:none; letter-spacing:normal; line-height:normal; margin:0; }
@@ -332,6 +343,16 @@ function showGuardianOverlay(event, sourceButton = null) {
           result?.summary || "Could not analyze this page.",
           result?.optOutLinks || []
         );
+        // Wire the "Show full breakdown" expander (progressive disclosure):
+        // the five detailed sections stay collapsed until the user asks.
+        const detailsToggle = overlayRoot.getElementById("tg-details-toggle");
+        const detailsPanel = overlayRoot.getElementById("tg-details");
+        if (detailsToggle && detailsPanel) {
+          detailsToggle.addEventListener("click", () => {
+            const open = detailsPanel.classList.toggle("tg-open");
+            detailsToggle.textContent = open ? "Hide full breakdown ▴" : "Show full breakdown ▾";
+          });
+        }
         revealActions();
       }
     }

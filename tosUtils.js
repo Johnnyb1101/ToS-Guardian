@@ -52,6 +52,53 @@ function stripEvalChrome(text) {
     .trim();
 }
 
+// Allowed risk verdicts. 'Unknown' is the trusted fallback used when the
+// document couldn't be assessed — it is never proposed by the model.
+const RISK_LEVELS = ['Low', 'Moderate', 'High'];
+
+// Pull the analyzer's PROPOSED one-line bottom line and risk word out of its
+// 🧭 BOTTOM LINE / 🧭 RISK LEVEL blocks (run after normalizeAnalysisHeaders so the
+// markers are canonical). These are only proposals — the orchestrator validates
+// the risk against RISK_LEVELS and gates it by analysis confidence before it is
+// ever shown, so a poisoned document can't force a reassuring verdict.
+function extractAnalyzerHeadline(summary) {
+  if (!summary) return { bottomLine: null, risk: null };
+  const NEXT_MARKER = /[🧭🔴📋🟡🟢]/;
+
+  const blockAfter = (label) => {
+    const idx = summary.indexOf(label);
+    if (idx === -1) return null;
+    const after = summary.slice(idx + label.length);
+    const endRel = after.search(NEXT_MARKER);
+    return (endRel === -1 ? after : after.slice(0, endRel));
+  };
+
+  const blBlock = blockAfter('🧭 BOTTOM LINE');
+  const bottomLine = blBlock ? (blBlock.replace(/\*\*/g, '').replace(/\s+/g, ' ').trim() || null) : null;
+
+  let risk = null;
+  const rlBlock = blockAfter('🧭 RISK LEVEL');
+  if (rlBlock) {
+    const m = rlBlock.match(/\b(low|moderate|high)\b/i);
+    if (m) risk = m[1][0].toUpperCase() + m[1].slice(1).toLowerCase();
+  }
+
+  return { bottomLine, risk };
+}
+
+// Remove the headline blocks (🧭 BOTTOM LINE / RISK LEVEL) AND any echoed
+// tg-risk / tg-bottomline markup from a body of text. Mirrors stripEvalChrome:
+// the genuine bottom line + risk badge are composed by the orchestrator as
+// trusted chrome, so the body the model produced must never contribute its own.
+function stripHeadlineChrome(text) {
+  if (!text) return "";
+  return text
+    .replace(/<div\s+class="tg-(?:risk|bottomline)\b[^"]*"[^>]*>[\s\S]*?<\/div>/gi, "")
+    .replace(/🧭\s*BOTTOM LINE[\s\S]*?(?=[🧭🔴📋🟡🟢]|$)/gi, "")
+    .replace(/🧭\s*RISK LEVEL[\s\S]*?(?=[🧭🔴📋🟡🟢]|$)/gi, "")
+    .trim();
+}
+
 function stripInjectionWarning(text) {
   if (!text) return "";
   return text
@@ -77,32 +124,57 @@ function formatSummary(raw, optOutLinks = []) {
   }
 
   let evalWarning = "";
-  let evalBadge = "";
 
-  // The trusted verdict is composed LAST by the orchestrator (warning prepended,
-  // badge appended). An attacker-echoed badge would appear EARLIER in the blob, so
-  // we deliberately select the FIRST warning and the LAST badge, then strip ALL
-  // eval-chrome from the body so no forged badge can leak into the rendered output.
+  // Trusted chrome (eval warning/badge, bottom line, risk) is composed LAST by the
+  // orchestrator. An attacker-echoed copy would appear EARLIER in the blob, so for
+  // each we deliberately take the LAST match, rebuild it from escaped text, then
+  // strip ALL such chrome from the body so no forged copy can leak into the output.
   // (SECURITY-022 — output-render verdict spoofing; see also SECURITY-021)
+  const lastMatch = (re) => { const m = [...raw.matchAll(re)]; return m.length ? m[m.length - 1] : null; };
   const warningMatch = raw.match(/<div class="tg-eval-warning"[^>]*>(.*?)<\/div>/s);
-  const badgeMatches = [...raw.matchAll(/<div class="tg-eval-badge\s+(tg-eval-\w+)"[^>]*>(.*?)<\/div>/gs)];
-  const badgeMatch   = badgeMatches.length ? badgeMatches[badgeMatches.length - 1] : null;
+  const badgeMatch   = lastMatch(/<div class="tg-eval-badge\s+(tg-eval-\w+)"[^>]*>(.*?)<\/div>/gs);
+  const riskMatch    = lastMatch(/<div class="tg-risk\s+(tg-risk-\w+)"[^>]*>(.*?)<\/div>/gs);
+  const bottomMatch  = lastMatch(/<div class="tg-bottomline"[^>]*>(.*?)<\/div>/gs);
 
-  // Rebuild eval HTML from extracted text to prevent cache-poisoned markup (SECURITY-021)
   if (warningMatch) {
     evalWarning = `<div class="tg-eval-warning">${escapeHtml(warningMatch[1].replace(/<[^>]+>/g, '').trim())}</div>`;
   }
+
+  // Confidence — demoted to muted small print (it measures how sure we are of the
+  // READING, not how safe the site is, so it must not look like the headline verdict).
+  let confidenceNote = "";
   if (badgeMatch) {
-    const badgeClass = /^tg-eval-(strong|adequate|failed)$/.test(badgeMatch[1]) ? badgeMatch[1] : 'tg-eval-failed';
-    evalBadge = `<div class="tg-eval-badge ${badgeClass}">${escapeHtml(badgeMatch[2].replace(/<[^>]+>/g, '').trim())}</div>`;
+    confidenceNote = `<div class="tg-confidence-note">${escapeHtml(badgeMatch[2].replace(/<[^>]+>/g, '').trim())}</div>`;
   }
-  // Remove every eval-chrome div from the body (including any forged earlier badges)
-  raw = stripEvalChrome(raw);
+
+  // The bottom line — one plain sentence, shown first and prominently.
+  let bottomLineHtml = "";
+  if (bottomMatch) {
+    const text = escapeHtml(bottomMatch[1].replace(/<[^>]+>/g, '').trim());
+    if (text) bottomLineHtml = `<div class="tg-bottomline">${text}</div>`;
+  }
+
+  // The risk verdict — the loud, prominent signal. Label is derived from the
+  // validated class (not echoed text) so wording is always ours.
+  let riskHtml = "";
+  if (riskMatch) {
+    const riskClass = /^tg-risk-(low|moderate|high|unknown)$/.test(riskMatch[1]) ? riskMatch[1] : 'tg-risk-unknown';
+    const riskLabels = {
+      'tg-risk-low': '✓ Low concern',
+      'tg-risk-moderate': '⚠️ Moderate concern',
+      'tg-risk-high': '⚠️ High concern',
+      'tg-risk-unknown': "❓ Couldn't assess — read it yourself"
+    };
+    riskHtml = `<div class="tg-risk ${riskClass}">${riskLabels[riskClass]}</div>`;
+  }
+
+  // Strip every trusted-chrome div from the body so none render inline or twice.
+  raw = stripHeadlineChrome(stripEvalChrome(raw));
 
   const categoryMarkers = ["🔴", "📋", "🟡", "🟢"];
   const lines = raw.split("\n").map(l => l.trim()).filter(l => l !== "" && l !== "•");
 
-  // Build opt-out links HTML once
+  // Build opt-out links HTML once — shown up top (visible), since it's actionable.
   const validLinks = (optOutLinks || [])
     .map(url => url ? url.trim().replace(/\s+/g, '') : '')
     .filter(url => url && url.startsWith('https://'));
@@ -112,10 +184,10 @@ function formatSummary(raw, optOutLinks = []) {
       ${validLinks.map(url => `<a class="tg-optout-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a>`).join("")}
     </div>` : "";
 
-  let html = injectionWarning + evalWarning;
+  // The five detailed sections build into `details` (collapsed by default).
+  let details = "";
   let currentTitle = "";
   let currentBody  = [];
-  let optOutInserted = false;
   let renderedSections = 0;
 
   const flush = () => {
@@ -141,17 +213,12 @@ function formatSummary(raw, optOutLinks = []) {
 
       const bodyHtml = bodyLines.map(l => `<p style="margin:0 0 6px 0;">${l}</p>`).join("");
 
-      html += `
+      details += `
         <div class="tg-category">
           <span class="tg-category-title">${escapeHtml(currentTitle)}</span>
           <div class="tg-category-body">${bodyHtml}</div>
         </div>`;
       renderedSections++;
-
-      if (!optOutInserted && currentTitle.includes("OPT-OUT RIGHTS") && optOutHtml) {
-        html += optOutHtml;
-        optOutInserted = true;
-      }
 
       currentBody = [];
       currentTitle = "";
@@ -184,24 +251,33 @@ function formatSummary(raw, optOutLinks = []) {
   }
   flush();
 
+  // No recognized sections (e.g. a configuration/error/timeout message). This must
+  // stay VISIBLE, not be tucked behind the collapse toggle.
+  let fallback = "";
   if (renderedSections === 0 && lines.length > 0) {
     const bodyHtml = lines
       .map(line => `<p style="margin:0 0 6px 0;">${escapeHtml(line)}</p>`)
       .join("");
-    html += `
+    fallback = `
       <div class="tg-category">
         <span class="tg-category-title">TOS Guardian</span>
         <div class="tg-category-body">${bodyHtml}</div>
       </div>`;
   }
 
-  if (!optOutInserted && optOutHtml) {
-    html += optOutHtml;
+  // --- Assemble: visible TL;DR head, then a collapsible breakdown. ---
+  // Head (always visible): injection warning, bottom line, risk, any failure
+  // warning, opt-out links, and any no-sections fallback message.
+  let html = injectionWarning + bottomLineHtml + riskHtml + evalWarning + optOutHtml + fallback;
+
+  // Collapsible detail: the five sections, hidden until the user asks.
+  if (details) {
+    html += `<button id="tg-details-toggle" class="tg-details-toggle" type="button">Show full breakdown ▾</button>`;
+    html += `<div id="tg-details" class="tg-details">${details}</div>`;
   }
 
-  html += evalBadge;
-
-  // AI disclaimer — required on every result per ESCALATION-005
+  // Confidence small print + AI disclaimer (disclaimer required per ESCALATION-005).
+  html += confidenceNote;
   html += `<div style="margin:12px 20px 14px; padding-top:10px; border-top:1px solid #f0f0f0;
               font-size:11px; color:#999; text-align:center;">
     AI analysis may not be 100% accurate. Always review documents yourself for important decisions.
@@ -212,6 +288,8 @@ function formatSummary(raw, optOutLinks = []) {
 
 function normalizeAnalysisHeaders(summary) {
   const headerMap = [
+    { pattern: /[🧭🔴📋🟡🟢]*\s*\*{0,2}\s*[🧭]*\s*\*{0,2}\s*BOTTOM LINE\s*\*{0,2}/gi, replacement: '🧭 BOTTOM LINE' },
+    { pattern: /[🧭🔴📋🟡🟢]*\s*\*{0,2}\s*[🧭]*\s*\*{0,2}\s*RISK LEVEL\s*\*{0,2}/gi, replacement: '🧭 RISK LEVEL' },
     { pattern: /[🔴📋🟡🟢]*\s*\*{0,2}\s*[🔴📋🟡🟢]*\s*\*{0,2}\s*DATA SELLING\s*[&]\s*SHARING\s*\*{0,2}/gi, replacement: '🔴 DATA SELLING & SHARING' },
     { pattern: /[🔴📋🟡🟢]*\s*\*{0,2}\s*[🔴📋🟡🟢]*\s*\*{0,2}\s*OPT[- ]?OUT RIGHTS\s*\*{0,2}/gi, replacement: '🔴 OPT-OUT RIGHTS' },
     { pattern: /[🔴📋🟡🟢]*\s*\*{0,2}\s*[🔴📋🟡🟢]*\s*\*{0,2}\s*HOW TO OPT OUT RIGHT NOW\s*\*{0,2}/gi, replacement: '📋 HOW TO OPT OUT RIGHT NOW' },

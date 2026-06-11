@@ -56,9 +56,11 @@ if (domain && fetched) {
   const supabaseResult = await readFromSupabase(domain, cacheVerificationText);
   if (supabaseResult) {
     const cachedEvaluation = validateEvaluation(
-      evaluateAnalysis(stripInjectionWarning(stripEvalChrome(supabaseResult.summary)))
+      evaluateAnalysis(stripInjectionWarning(stripHeadlineChrome(stripEvalChrome(supabaseResult.summary))))
     );
     if (isCacheableEvaluation(cachedEvaluation)) {
+      // Keep the stored trusted bottom line + risk badge (gated at write time) by
+      // stripping only the confidence chrome, which is recomposed just below.
       let cachedSummary = stripInjectionWarning(stripEvalChrome(supabaseResult.summary));
       if (cachedEvaluation.warning) {
         cachedSummary = `<div class="tg-eval-warning">${cachedEvaluation.warning}</div>\n` + cachedSummary;
@@ -194,18 +196,39 @@ const displayOptOutLinks = [
   }
 
   if (result) {
-    // Strip any verdict/warning markup the analyzer may have echoed from
-    // attacker-controlled document text, so only the trusted evaluator verdict
-    // composed below can ever render as UI chrome. (SECURITY-022)
-    result.summary = stripEvalChrome(result.summary);
+    // The analyzer PROPOSES a one-line bottom line + risk word. Extract them
+    // BEFORE stripping, then decide the trusted verdict ourselves.
+    const headline = extractAnalyzerHeadline(result.summary);
+
+    // Trusted risk verdict, gated by analysis confidence: if we couldn't
+    // reliably read the document, never show a reassuring risk — say so. A
+    // poisoned document therefore can't force a green verdict. (extends SECURITY-022)
+    let trustedRisk, trustedBottomLine;
+    if (evaluation.label === 'Failed' || mentionsRetrievalFailure(result.summary)) {
+      trustedRisk = 'Unknown';
+      trustedBottomLine = "We couldn't reliably read this document. Open it yourself before agreeing.";
+    } else {
+      trustedRisk = RISK_LEVELS.includes(headline.risk) ? headline.risk : 'Unknown';
+      trustedBottomLine = headline.bottomLine;
+    }
+    const cleanBottomLine = (trustedBottomLine || '').replace(/<[^>]+>/g, '').trim();
+
+    // Strip any verdict/warning/risk markup the analyzer may have echoed from
+    // attacker-controlled document text, so only the trusted chrome composed
+    // below can ever render as UI. (SECURITY-022 + risk verdict)
+    result.summary = stripHeadlineChrome(stripEvalChrome(result.summary));
     if (!scanResult.clean) {
       result.summary = `⚠️ Possible injection attempt detected in document\n${result.summary}`;
     }
-  }
-  if (result && evaluation.warning) {
-    result.summary = `<div class="tg-eval-warning">${evaluation.warning}</div>\n` + result.summary;
-  }
-  if (result) {
+    if (evaluation.warning) {
+      result.summary = `<div class="tg-eval-warning">${evaluation.warning}</div>\n` + result.summary;
+    }
+    // Trusted chrome appended last, so the renderer's anti-spoof "take the last
+    // one" rule selects these and never an echoed copy.
+    if (cleanBottomLine) {
+      result.summary += `\n<div class="tg-bottomline">${cleanBottomLine}</div>`;
+    }
+    result.summary += `\n<div class="tg-risk tg-risk-${trustedRisk.toLowerCase()}">${trustedRisk}</div>`;
     result.summary += `\n<div class="tg-eval-badge tg-eval-${evaluation.label.toLowerCase()}">Analysis confidence: ${evaluation.label} (${evaluation.score}/100)</div>`;
   }
 

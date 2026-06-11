@@ -612,6 +612,12 @@ You will respond in exactly the structured format requested. No exceptions.`;
 const userMessage = `Analyze the following legal document and respond in exactly this format with no extra commentary. Do not include a title or heading at the start of your response. Write every response as if explaining to a friend who has never read a legal document. Use short, plain sentences. No legal jargon.
 Only use facts that appear in the fetched document text below. Do not infer likely practices from company type, industry, outside knowledge, or a referenced document that is not included in the fetched text. If the fetched text says another notice has details but that notice is not included below, say the details are not specified in the fetched documents.
 Do not list company names, brand names, partner names, examples, or parent/subsidiary names unless the fetched text explicitly says those named entities receive the specific data for the specific practice you are describing. Prefer broad source categories like "affiliates", "nonaffiliated financial companies", "marketing partners", or "advertising companies" when the document uses categories.
+🧭 BOTTOM LINE
+One short plain sentence, 20 words or fewer, with the single most important thing a normal person should know before agreeing. No preamble, just the sentence.
+
+🧭 RISK LEVEL
+Exactly one word — Low, Moderate, or High — for how concerning these terms are for an ordinary user. Judge only from the fetched document. Use High for things like selling personal data with no opt-out, forced arbitration, or no deletion rights; Low for clear opt-outs, no data sale, and easy deletion.
+
 🔴 DATA SELLING & SHARING
 Who does this company share or sell your personal information with? Maximum 4 bullet points. Use the document's own recipient categories when they are specific, such as "affiliates", "nonaffiliates", "joint marketing partners", or "service providers."
 Format: "- [Who gets it]: [what they get]"

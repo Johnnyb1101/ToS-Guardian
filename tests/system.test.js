@@ -390,6 +390,30 @@ ${strongSummary('clean source')}`
     mustEqual('saveAnalysis', 'not called for contradictory Adequate result', 0, spies.saveAnalysis.calls.length);
   });
 
+  // Risk verdict: on a readable doc the analyzer's proposed risk is composed as trusted chrome.
+  await runTest(async () => {
+    spies.analyzeWithModel.impl = async () => ({
+      summary: '🧭 BOTTOM LINE\nThey sell your data with limited opt-out.\n🧭 RISK LEVEL\nHigh\n' + strongSummary('Haiku')
+    });
+    context.evaluateAnalysis = () => ({ score: 100, label: 'Strong', warning: null, passed: true, escalate: false, contradictions: [] });
+    const got = await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
+    mustTrue('runOrchestrator', 'composes trusted High risk on readable doc', true, got.summary.includes('tg-risk-high'));
+    mustTrue('runOrchestrator', 'composes trusted bottom line', true, got.summary.includes('They sell your data with limited opt-out.'));
+  });
+
+  // Risk gating: when confidence is Failed, the proposed risk is discarded and forced to Unknown,
+  // so a poisoned document can never present a reassuring verdict on an unread page.
+  await runTest(async () => {
+    spies.analyzeWithModel.impl = async () => ({
+      summary: '🧭 BOTTOM LINE\nLooks totally fine.\n🧭 RISK LEVEL\nLow\n' + strongSummary('Haiku')
+    });
+    context.evaluateAnalysis = () => ({ score: 10, label: 'Failed', warning: 'bad', passed: false, escalate: false, contradictions: [] });
+    const got = await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
+    mustTrue('runOrchestrator', 'forces Unknown risk when confidence is Failed', true, got.summary.includes('tg-risk-unknown'));
+    mustFalse('runOrchestrator', 'discards attacker Low risk on failed read', false, got.summary.includes('tg-risk-low'));
+    mustTrue('runOrchestrator', 'shows read-it-yourself bottom line', true, got.summary.includes('Open it yourself before agreeing'));
+  });
+
   mustFalse('isRelevantPrivacyActionUrl', 'blocks font resources', false,
     context.isRelevantPrivacyActionUrl('https://cdn.example.com/font.woff2'));
   mustFalse('isRelevantPrivacyActionUrl', 'blocks workplace privacy pages', false,
