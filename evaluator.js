@@ -79,7 +79,17 @@ const RETRIEVAL_FAILURE_PATTERNS = [
   /\bdocument (content|text) is only\b/i,
   /\bappears to be (a |an )?(navigation|menu|landing|placeholder|error|login)\b/i,
   /\b(could not|couldn't|unable to|failed to) (retrieve|fetch|access|load|read) the (document|policy|terms|page|content)\b/i,
-  /\bnot (the )?(actual|real|full) (policy|terms|privacy|document) (text|content|page)\b/i
+  /\bnot (the )?(actual|real|full) (policy|terms|privacy|document) (text|content|page)\b/i,
+  // "Links/overview page, not the policy" family — the model often describes a
+  // scraped landing page that only points to the real documents. (Navy Federal
+  // Opus case: "This page only lists privacy policy links", "overview page",
+  // "lists section headings but no actual...", "contents/details are not included".)
+  /\b(overview|landing|index|directory) page\b/i,
+  /\b(only|just|merely)\s+(lists?|links?|points? to|redirects?|contains? links?|provides? links?)\b/i,
+  /\b(lists?|shows?|contains?|displays?)\s+(the\s+)?section headings?\b/i,
+  /\bsection headings?\b[^.]{0,40}\bbut\s+(no|not|none)\b/i,
+  /\b(contents?|details?)\s+(are|is)\s+not\s+(included|present|shown|provided|contained)\b/i,
+  /\bnot\s+included\s+(here|in this (text|page|document))\b/i
 ];
 
 function mentionsRetrievalFailure(text) {
@@ -171,7 +181,10 @@ function isSectionUnavailable(sectionText) {
 
   return NOT_COVERED_PHRASES.some(phrase => {
     if (compact === phrase) return true;
-    return compact.startsWith(`${phrase}.`) || compact.startsWith(`${phrase} —`) || compact.startsWith(`${phrase} -`);
+    // The phrase may be followed by punctuation and a clause that merely explains
+    // the absence ("Not specified: the text only lists section headings"). Opus
+    // favors the colon/comma form, which earlier slipped through and looked filled.
+    return /^[\s.:,;—-]/.test(compact.slice(phrase.length)) && compact.startsWith(phrase);
   });
 }
 
