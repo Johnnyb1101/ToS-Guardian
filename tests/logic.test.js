@@ -680,6 +680,33 @@ Not covered in this document.`;
     got.issues.includes('critic: dataCollection unsupported by source'));
 }
 
+// Auto-Renewal & Billing is hidden in the overlay when there's no real charge
+// concern, but still shows when there is — and OTHER "Not covered" sections stay.
+// (Use realistic multi-section input: a lone hidden section would trip the
+// no-sections fallback, which doesn't happen on a real 6-section overlay.)
+{
+  const otherSections = '\n\n🟢 DATA DELETION RIGHTS\nYou can request deletion via the portal.';
+
+  const empty = '🟡 AUTO-RENEWAL & BILLING\nNo automatic charges mentioned.' + otherSections;
+  const emptyHtml = utils.formatSummary(empty, []);
+  mustFalse('formatSummary', 'hides empty auto-renewal section', false, emptyHtml.includes('AUTO-RENEWAL'));
+  mustTrue('formatSummary', 'other sections still render when auto-renewal hidden', true,
+    emptyHtml.includes('DATA DELETION'));
+
+  const notCovered = '🟡 AUTO-RENEWAL & BILLING\nNot covered in this document.' + otherSections;
+  mustFalse('formatSummary', 'hides not-covered auto-renewal section', false,
+    utils.formatSummary(notCovered, []).includes('AUTO-RENEWAL'));
+
+  const real = '🟡 AUTO-RENEWAL & BILLING\nYou will be charged $9.99/month automatically after the free trial.' + otherSections;
+  mustTrue('formatSummary', 'shows auto-renewal when there is a real charge', true,
+    utils.formatSummary(real, []).includes('AUTO-RENEWAL'));
+
+  // A "Not covered" in a DIFFERENT section must still render (absence is meaningful).
+  const deletionEmpty = '🔴 OPT-OUT RIGHTS\nYou can opt out of ads.\n\n🟢 DATA DELETION RIGHTS\nNot covered in this document.';
+  mustTrue('formatSummary', 'keeps not-covered deletion section visible', true,
+    utils.formatSummary(deletionEmpty, []).includes('DATA DELETION'));
+}
+
 // A message with no recognized sections (config/error/timeout) must stay visible.
 {
   const html = utils.formatSummary('No Anthropic API key set. Open settings to add your key.', []);

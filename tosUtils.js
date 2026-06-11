@@ -342,6 +342,22 @@ function formatSummary(raw, optOutLinks = []) {
           && !l.match(/^It.s your right to/i)
           && !l.match(/^[-\s|]+$/));
 
+      // Auto-Renewal & Billing is HIDDEN when it carries no actual charge concern —
+      // on privacy-heavy sites it's almost always "No automatic charges mentioned" /
+      // "Not covered", which is dead weight. It still renders when there IS a charge
+      // to warn about (subscription/streaming signups). Other "Not covered" sections
+      // are deliberately kept — an absent deletion/opt-out right is itself meaningful.
+      if (currentTitle === '🟡 AUTO-RENEWAL & BILLING') {
+        const plain = currentBody.join(' ').toLowerCase();
+        const noConcern = bodyLines.length === 0 ||
+          /\b(no automatic charges|not covered|not mentioned|not applicable|none mentioned|no auto[- ]?renew|does not (auto[- ]?renew|charge))\b/.test(plain);
+        if (noConcern) {
+          currentBody = [];
+          currentTitle = "";
+          return;
+        }
+      }
+
       // Show only the first (most important) bullet by default; the rest live
       // in a per-section "Show more" panel. (Per-section progressive disclosure.)
       let bodyHtml = "";
