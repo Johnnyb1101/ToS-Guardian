@@ -707,6 +707,26 @@ Not covered in this document.`;
     utils.formatSummary(deletionEmpty, []).includes('DATA DELETION'));
 }
 
+// normalizeAnalysisHeaders also fixes the "DATA SHARING & SHARING" model typo.
+{
+  mustTrue('normalizeAnalysisHeaders', 'canonicalizes "DATA SHARING & SHARING" typo', true,
+    utils.normalizeAnalysisHeaders('🔴 DATA SHARING & SHARING\n- stuff').includes('🔴 DATA SELLING & SHARING'));
+  mustTrue('normalizeAnalysisHeaders', 'still canonicalizes the correct DATA SELLING header', true,
+    utils.normalizeAnalysisHeaders('**DATA SELLING & SHARING**\n- stuff').includes('🔴 DATA SELLING & SHARING'));
+}
+
+// isCurrentSchemaSummary: a cached summary is "current" only with BOTH the risk
+// verdict and the collection section; otherwise it's treated as a cache miss.
+{
+  const current = '📥 WHAT THEY COLLECT\n- SSN\n<div class="tg-risk tg-risk-moderate">⚠️ Moderate concern</div>';
+  mustTrue('isCurrentSchemaSummary', 'accepts risk + collection', true, utils.isCurrentSchemaSummary(current));
+  mustFalse('isCurrentSchemaSummary', 'rejects missing risk verdict (pre-redesign)', false,
+    utils.isCurrentSchemaSummary('📥 WHAT THEY COLLECT\n- SSN'));
+  mustFalse('isCurrentSchemaSummary', 'rejects missing collection (pre-collection)', false,
+    utils.isCurrentSchemaSummary('🔴 DATA SELLING & SHARING\n- x\n<div class="tg-risk tg-risk-low">ok</div>'));
+  mustFalse('isCurrentSchemaSummary', 'rejects empty', false, utils.isCurrentSchemaSummary(''));
+}
+
 // A message with no recognized sections (config/error/timeout) must stay visible.
 {
   const html = utils.formatSummary('No Anthropic API key set. Open settings to add your key.', []);

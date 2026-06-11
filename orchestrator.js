@@ -54,7 +54,9 @@ const cacheVerificationText = buildCacheVerificationText(textToAnalyze);
 // Cache reads happen only after fetching current text, so Supabase can verify similarity.
 if (domain && fetched) {
   const supabaseResult = await readFromSupabase(domain, cacheVerificationText);
-  if (supabaseResult) {
+  if (supabaseResult && !isCurrentSchemaSummary(supabaseResult.summary)) {
+    console.log("[Orchestrator] Cached summary predates the current overlay schema (missing risk verdict or 'What They Collect') — re-analyzing to refresh");
+  } else if (supabaseResult) {
     const cachedEvaluation = validateEvaluation(
       evaluateAnalysis(stripInjectionWarning(stripHeadlineChrome(stripEvalChrome(supabaseResult.summary))))
     );

@@ -178,6 +178,10 @@ function reset() {
 
 function strongSummary(marker = '') {
   return `
+📥 WHAT THEY COLLECT
+- Government ID: Social Security number and driver's license.
+- Financial data: account balances and transaction history.
+
 🔴 DATA SELLING & SHARING
 - Affiliates: transaction information and creditworthiness information. ${marker}
 - Nonaffiliates: creditworthiness information for marketing.
@@ -201,6 +205,9 @@ You can request deletion through Manage Your Data.`.repeat(2);
 
 function failedSummary(marker = '') {
   return `
+📥 WHAT THEY COLLECT
+Not covered in this document.
+
 🔴 DATA SELLING & SHARING
 Not covered in this document. ${marker}
 
@@ -221,6 +228,14 @@ function adequateSummary(marker = '') {
   return strongSummary(marker).replace('You can request deletion through Manage Your Data.', 'Not covered in this document.');
 }
 
+// A stored Supabase entry carries the trusted risk verdict appended at write time.
+// Cached fixtures must include it (the collection section comes from the summary
+// helpers) so they pass the current-schema freshness check in the cache-read path
+// and actually exercise the cache logic rather than being re-analyzed as stale.
+function cachedEntry(summary) {
+  return summary + '\n<div class="tg-risk tg-risk-moderate">⚠️ Moderate concern</div>';
+}
+
 async function runTest(fn) {
   reset();
   await fn();
@@ -238,7 +253,7 @@ async function runTest(fn) {
 
   // A semantic cache hit should skip model analysis and return the cached payload.
   await runTest(async () => {
-    const cachedSummary = strongSummary('Cached');
+    const cachedSummary = cachedEntry(strongSummary('Cached'));
     spies.readFromSupabase.impl = async () => ({ summary: cachedSummary, optOutLinks: ['https://example.com/optout'] });
     const got = await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
     mustEqual('analyzeWithModel', 'not called on semantic cache hit', 0, spies.analyzeWithModel.calls.length);
@@ -247,9 +262,18 @@ async function runTest(fn) {
     mustDeep('runOrchestrator', 'returns cached opt-out links', ['https://example.com/optout'], got.optOutLinks);
   });
 
+  // A cached summary that predates the current overlay schema (no trusted risk
+  // verdict) must be treated as a miss and re-analyzed, not served stale.
+  await runTest(async () => {
+    spies.readFromSupabase.impl = async () => ({ summary: strongSummary('pre-redesign, no risk div'), optOutLinks: ['https://example.com/old'] });
+    await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
+    mustEqual('analyzeWithModel', 're-analyzes a pre-schema cached summary', 1,
+      spies.analyzeWithModel.calls.filter(args => args[2] !== true).length);
+  });
+
   // A cached privacy-empty summary must be rejected and replaced by fresh analysis.
   await runTest(async () => {
-    spies.readFromSupabase.impl = async () => ({ summary: failedSummary('stale bad cache'), optOutLinks: [] });
+    spies.readFromSupabase.impl = async () => ({ summary: cachedEntry(failedSummary('stale bad cache')), optOutLinks: [] });
     const got = await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
     mustEqual('analyzeWithModel', 'called when cached summary fails quality gate', 1,
       spies.analyzeWithModel.calls.filter(args => args[2] !== true).length);
@@ -282,7 +306,7 @@ async function runTest(fn) {
             issues: []
           };
     };
-    spies.readFromSupabase.impl = async () => ({ summary: adequateSummary('contradictory cache'), optOutLinks: [] });
+    spies.readFromSupabase.impl = async () => ({ summary: cachedEntry(adequateSummary('contradictory cache')), optOutLinks: [] });
     await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
     mustEqual('analyzeWithModel', 'called when cached summary has contradictions', 1,
       spies.analyzeWithModel.calls.filter(args => args[2] !== true).length);

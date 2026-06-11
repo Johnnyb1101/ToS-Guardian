@@ -442,6 +442,18 @@ function formatSummary(raw, optOutLinks = []) {
   return html;
 }
 
+// A cached summary predates the current overlay schema if it lacks the trusted
+// risk verdict (pre-redesign) or the "What They Collect" section (pre-collection).
+// The orchestrator treats such entries as a cache MISS so they refresh to the
+// current format instead of rendering stale until the 15-day TTL expires. Cost is
+// one re-analysis per stale domain (the fresh write then carries both markers).
+function isCurrentSchemaSummary(summary) {
+  if (!summary || typeof summary !== 'string') return false;
+  const hasRiskVerdict = /class="tg-risk\b/.test(summary);
+  const hasCollectionSection = /WHAT THEY COLLECT/i.test(summary);
+  return hasRiskVerdict && hasCollectionSection;
+}
+
 function normalizeAnalysisHeaders(summary) {
   const headerMap = [
     { pattern: /[🧭🔴📋🟡🟢]*\s*\*{0,2}\s*[🧭]*\s*\*{0,2}\s*BOTTOM LINE\s*\*{0,2}/gi, replacement: '🧭 BOTTOM LINE' },
@@ -450,7 +462,7 @@ function normalizeAnalysisHeaders(summary) {
     // NOT the bare "information/data we collect", which appears constantly in body
     // prose and would be corrupted into a header.
     { pattern: /[🔴📋🟡🟢📥]*\s*\*{0,2}\s*[🔴📋🟡🟢📥]*\s*\*{0,2}\s*WHAT\s+(DATA\s+)?(THEY|WE)\s+COLLECT\s*\*{0,2}/gi, replacement: '📥 WHAT THEY COLLECT' },
-    { pattern: /[🔴📋🟡🟢]*\s*\*{0,2}\s*[🔴📋🟡🟢]*\s*\*{0,2}\s*DATA SELLING\s*[&]\s*SHARING\s*\*{0,2}/gi, replacement: '🔴 DATA SELLING & SHARING' },
+    { pattern: /[🔴📋🟡🟢]*\s*\*{0,2}\s*[🔴📋🟡🟢]*\s*\*{0,2}\s*DATA\s+(SELLING|SHARING)\s*(?:&|and)\s*SHARING\s*\*{0,2}/gi, replacement: '🔴 DATA SELLING & SHARING' },
     { pattern: /[🔴📋🟡🟢]*\s*\*{0,2}\s*[🔴📋🟡🟢]*\s*\*{0,2}\s*OPT[- ]?OUT RIGHTS\s*\*{0,2}/gi, replacement: '🔴 OPT-OUT RIGHTS' },
     { pattern: /[🔴📋🟡🟢]*\s*\*{0,2}\s*[🔴📋🟡🟢]*\s*\*{0,2}\s*HOW TO OPT OUT RIGHT NOW\s*\*{0,2}/gi, replacement: '📋 HOW TO OPT OUT RIGHT NOW' },
     { pattern: /[🔴📋🟡🟢]*\s*\*{0,2}\s*[🔴📋🟡🟢]*\s*\*{0,2}\s*AUTO[- ]?RENEWAL\s*[&]\s*BILLING\s*\*{0,2}/gi, replacement: '🟡 AUTO-RENEWAL & BILLING' },
