@@ -62,6 +62,11 @@ function knownFalse(fn, name, expected, got, note) {
 
 function fullAnalysis(extra = '') {
   return `
+📥 WHAT THEY COLLECT
+- Government ID: Social Security number and driver's license.
+- Financial data: account balances, transaction history, and payment details.
+- Online activity: device information, IP address, and cookies.
+
 🔴 DATA SELLING & SHARING
 - Affiliates: transaction information, experience information, and creditworthiness information.
 - Nonaffiliates: creditworthiness information for marketing purposes.
@@ -87,6 +92,9 @@ ${extra}`.repeat(2);
 
 function notCoveredAnalysis() {
   return `
+📥 WHAT THEY COLLECT
+Not covered in this document.
+
 🔴 DATA SELLING & SHARING
 Not covered in this document.
 
@@ -643,6 +651,33 @@ Not covered in this document.`;
     html.includes('<strong>Affiliates and subsidiaries</strong>'));
   mustFalse('formatSummary', 'no literal "- " dash before bullet', false,
     /<p[^>]*>\s*-\s/.test(html));
+}
+
+// "What They Collect" category — recognized as a section, normalized from variants,
+// scored like any other section, and rendered (with sensitive items first).
+{
+  // normalizeAnalysisHeaders canonicalizes header variants but never body prose.
+  mustTrue('normalizeAnalysisHeaders', 'canonicalizes "What We Collect" variant', true,
+    utils.normalizeAnalysisHeaders('📥 What We Collect\n- SSN').includes('📥 WHAT THEY COLLECT'));
+  mustTrue('normalizeAnalysisHeaders', 'canonicalizes "What Data They Collect" variant', true,
+    utils.normalizeAnalysisHeaders('**What Data They Collect**\n- SSN').includes('📥 WHAT THEY COLLECT'));
+  mustFalse('normalizeAnalysisHeaders', 'does NOT turn body "information we collect" into a header', false,
+    utils.normalizeAnalysisHeaders('We explain the information we collect about you.').includes('📥 WHAT THEY COLLECT'));
+
+  // formatSummary renders the collection section with its title + main point.
+  const html = utils.formatSummary(
+    '📥 WHAT THEY COLLECT\n- **Government ID**: Social Security number.\n- Device data: cookies.', []);
+  mustTrue('formatSummary', 'renders WHAT THEY COLLECT title', true, html.includes('WHAT THEY COLLECT'));
+  mustTrue('formatSummary', 'shows the most-sensitive item first', true,
+    html.includes('<strong>Government ID</strong>'));
+
+  // Evaluator parses it as a real section (an unsupported collection claim penalizes).
+  const got = evaluator.evaluateAnalysis(fullAnalysis(), {
+    dataCollection: 'unsupported', dataSelling: 'grounded', optOutRights: 'grounded',
+    howToOptOut: 'grounded', autoRenewal: 'skipped', dataDeletion: 'grounded'
+  });
+  mustTrue('evaluateAnalysis', 'penalizes unsupported collection section', true,
+    got.issues.includes('critic: dataCollection unsupported by source'));
 }
 
 // A message with no recognized sections (config/error/timeout) must stay visible.

@@ -698,7 +698,10 @@ BULLET STYLE (applies to every bulleted section below): write each bullet as ONE
 One short plain sentence, 20 words or fewer, with the single most important thing a normal person should know before agreeing. No preamble, just the sentence.
 
 🧭 RISK LEVEL
-Exactly one word — Low, Moderate, or High — for how concerning these terms are for an ordinary user. Judge only from the fetched document. Use High for things like selling personal data with no opt-out, forced arbitration, or no deletion rights; Low for clear opt-outs, no data sale, and easy deletion.
+Exactly one word — Low, Moderate, or High — for how concerning these terms are for an ordinary user. Judge only from the fetched document. Use High for things like selling personal data with no opt-out, collecting highly sensitive data (Social Security number, precise location, biometric or health data) AND sharing it broadly, forced arbitration, or no deletion rights; Low for clear opt-outs, no data sale, minimal collection, and easy deletion.
+
+📥 WHAT THEY COLLECT
+What personal information does this company collect about you? Maximum 4 bullet points. Put the MOST SENSITIVE items FIRST — government IDs (Social Security number, driver's license), financial / account / transaction data, precise location, biometric or health data — then broader categories (contact details, device and online-activity data, cookies). Use the document's own categories and group long lists into a few bullets. If the document does not describe what is collected, say "Not covered in this document."
 
 🔴 DATA SELLING & SHARING
 Who does this company share or sell your personal information with? Maximum 4 bullet points. Use the document's own recipient categories when they are specific, such as "affiliates", "nonaffiliates", "joint marketing partners", or "service providers."

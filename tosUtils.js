@@ -299,7 +299,7 @@ function formatSummary(raw, optOutLinks = []) {
   // Strip every trusted-chrome div from the body so none render inline or twice.
   raw = stripHeadlineChrome(stripEvalChrome(raw));
 
-  const categoryMarkers = ["🔴", "📋", "🟡", "🟢"];
+  const categoryMarkers = ["📥", "🔴", "📋", "🟡", "🟢"];
   const lines = raw.split("\n").map(l => l.trim()).filter(l => l !== "" && l !== "•");
 
   // Build opt-out links HTML once — shown up top (visible), since it's actionable.
@@ -370,6 +370,7 @@ function formatSummary(raw, optOutLinks = []) {
   };
 
   const knownHeaders = [
+    '📥 WHAT THEY COLLECT',
     '🔴 DATA SELLING & SHARING',
     '🔴 OPT-OUT RIGHTS',
     '📋 HOW TO OPT OUT RIGHT NOW',
@@ -429,6 +430,10 @@ function normalizeAnalysisHeaders(summary) {
   const headerMap = [
     { pattern: /[🧭🔴📋🟡🟢]*\s*\*{0,2}\s*[🧭]*\s*\*{0,2}\s*BOTTOM LINE\s*\*{0,2}/gi, replacement: '🧭 BOTTOM LINE' },
     { pattern: /[🧭🔴📋🟡🟢]*\s*\*{0,2}\s*[🧭]*\s*\*{0,2}\s*RISK LEVEL\s*\*{0,2}/gi, replacement: '🧭 RISK LEVEL' },
+    // Only the header-shaped phrasing ("WHAT THEY/WE [DATA] COLLECT") — deliberately
+    // NOT the bare "information/data we collect", which appears constantly in body
+    // prose and would be corrupted into a header.
+    { pattern: /[🔴📋🟡🟢📥]*\s*\*{0,2}\s*[🔴📋🟡🟢📥]*\s*\*{0,2}\s*WHAT\s+(DATA\s+)?(THEY|WE)\s+COLLECT\s*\*{0,2}/gi, replacement: '📥 WHAT THEY COLLECT' },
     { pattern: /[🔴📋🟡🟢]*\s*\*{0,2}\s*[🔴📋🟡🟢]*\s*\*{0,2}\s*DATA SELLING\s*[&]\s*SHARING\s*\*{0,2}/gi, replacement: '🔴 DATA SELLING & SHARING' },
     { pattern: /[🔴📋🟡🟢]*\s*\*{0,2}\s*[🔴📋🟡🟢]*\s*\*{0,2}\s*OPT[- ]?OUT RIGHTS\s*\*{0,2}/gi, replacement: '🔴 OPT-OUT RIGHTS' },
     { pattern: /[🔴📋🟡🟢]*\s*\*{0,2}\s*[🔴📋🟡🟢]*\s*\*{0,2}\s*HOW TO OPT OUT RIGHT NOW\s*\*{0,2}/gi, replacement: '📋 HOW TO OPT OUT RIGHT NOW' },

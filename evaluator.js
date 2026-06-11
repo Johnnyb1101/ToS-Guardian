@@ -18,6 +18,7 @@ const NOT_COVERED_PHRASES = [
 ];
 
 const SECTION_HEADERS = [
+  '📥 WHAT THEY COLLECT',
   '🔴 DATA SELLING & SHARING',
   '🔴 OPT-OUT RIGHTS',
   '📋 HOW TO OPT OUT RIGHT NOW',
@@ -250,10 +251,12 @@ function evaluateAnalysis(analysisText, criticVerdict = null) {
     }
   }
 
+  // Referenced by name (not index) so adding/reordering sections can't silently
+  // point this "document not retrieved" check at the wrong sections.
   const corePrivacySections = [
-    sections[SECTION_HEADERS[0]],
-    sections[SECTION_HEADERS[1]],
-    sections[SECTION_HEADERS[4]]
+    sections['🔴 DATA SELLING & SHARING'],
+    sections['🔴 OPT-OUT RIGHTS'],
+    sections['🟢 DATA DELETION RIGHTS']
   ];
   if (corePrivacySections.every(isSectionUnavailable)) {
     score -= 30;
@@ -272,7 +275,7 @@ function evaluateAnalysis(analysisText, criticVerdict = null) {
 
   // Check 6: Critic/Judge verdicts — penalize unsupported or vague sections
   if (criticVerdict) {
-    const criticFields = ['dataSelling', 'optOutRights', 'howToOptOut', 'autoRenewal', 'dataDeletion'];
+    const criticFields = ['dataCollection', 'dataSelling', 'optOutRights', 'howToOptOut', 'autoRenewal', 'dataDeletion'];
     for (const field of criticFields) {
       if (criticVerdict[field] === 'unsupported') {
         score -= 20;

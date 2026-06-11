@@ -24,7 +24,7 @@ Accept faithful plain-English paraphrases of legal table labels. For example, if
 Do not invent other verdict labels. Do not use "partially_grounded", "partially supported", "mixed", or "unclear". If support is partial, use "unsupported". If a section is true but underspecified, use "vague".
 
 Respond in ONLY this JSON format, no other text:
-{"dataSelling":"verdict","optOutRights":"verdict","howToOptOut":"verdict","autoRenewal":"verdict","dataDeletion":"verdict","flags":["short explanation of any unsupported or vague finding"]}`;
+{"dataCollection":"verdict","dataSelling":"verdict","optOutRights":"verdict","howToOptOut":"verdict","autoRenewal":"verdict","dataDeletion":"verdict","flags":["short explanation of any unsupported or vague finding"]}`;
 
 async function runCritic(analysisSummary, sourceText) {
   if (!analysisSummary || !sourceText) return null;
@@ -138,9 +138,16 @@ ${trimmedSource}`;
     const verdict = JSON.parse(jsonMatch[0]);
 
     const validVerdicts = ['grounded', 'unsupported', 'vague', 'skipped'];
-    const fields = ['dataSelling', 'optOutRights', 'howToOptOut', 'autoRenewal', 'dataDeletion'];
+    const fields = ['dataCollection', 'dataSelling', 'optOutRights', 'howToOptOut', 'autoRenewal', 'dataDeletion'];
     for (const field of fields) {
       const rawVerdict = verdict[field];
+      // A field the model omitted entirely can't be judged — treat as 'skipped'
+      // (no penalty) rather than 'unsupported', so a malformed/partial response
+      // doesn't wrongly tank the score (matters most for newer fields).
+      if (rawVerdict === undefined || rawVerdict === null || rawVerdict === '') {
+        verdict[field] = 'skipped';
+        continue;
+      }
       const normalized = normalizeCriticVerdict(rawVerdict);
       if (!validVerdicts.includes(normalized)) {
         console.warn(`[Critic] Invalid verdict for ${field}: ${rawVerdict} — treating as unsupported`);
