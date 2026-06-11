@@ -92,10 +92,9 @@ const privacyUrl = fetched ? fetched.privacyUrl : null;
 const { text: enrichedText, optOutLinks } = await linkFollowerStub(safeText, source, privacyHtml, privacyUrl, fetched?.hasSupplementalPrivacy || false);
 logStage("link follower");
 const displayOptOutLinks = [
-  ...new Set([
-    ...(fetched?.documentLinks || []),
-    ...optOutLinks
-  ])
+  ...new Set(
+    [...(fetched?.documentLinks || []), ...optOutLinks].map(upgradeInsecureUrl)
+  )
 ].filter(url => validateLinkFollowerUrl(url) && isRelevantPrivacyActionUrl(url));
 
   // --- STEP 4: ANALYZER AGENT ---
@@ -319,7 +318,8 @@ async function linkFollowerStub(text, source, privacyHtml = null, privacyUrl = n
 // Scan plain text for full URLs
   const linkMatches = [...text.matchAll(/https?:\/\/[^\s"'<>)]+/g)]
     .map(m => m[0])
-    .filter(url => priorityKeywords.some(keyword => url.toLowerCase().includes(keyword)));
+    .filter(url => priorityKeywords.some(keyword => url.toLowerCase().includes(keyword)))
+    .map(upgradeInsecureUrl);
 
   // Scan privacy policy HTML for opt-out hrefs — this is where they actually live
   const htmlToScan = privacyHtml || text;
@@ -337,6 +337,7 @@ async function linkFollowerStub(text, source, privacyHtml = null, privacyUrl = n
       } catch(e) { return null; }
     })
     .filter(Boolean)
+    .map(upgradeInsecureUrl)
     .filter(url => validateLinkFollowerUrl(url));
 
   const allLinks = [...new Set([...linkMatches, ...relativeMatches])]

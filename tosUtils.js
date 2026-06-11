@@ -296,6 +296,21 @@ function validateLinkFollowerUrl(url) {
   return validateDocumentUrl(url);
 }
 
+// Upgrade an http:// URL to https://. Documents sometimes link useful pages
+// insecurely — the canonical ad opt-out portals optout.aboutads.info and
+// optout.networkadvertising.org are commonly written as http — and the
+// https-only gate in validateDocumentUrl would otherwise drop them. Both those
+// sites, and effectively every modern legal/opt-out destination, serve https;
+// if a target genuinely doesn't, the later fetch simply fails and the link is
+// dropped. Apply this BEFORE validation so the gate still does the real
+// security work: it keeps rejecting localhost, private IPs, and credentials
+// even after the scheme is upgraded. Non-http(s) schemes pass through unchanged
+// so the gate can still reject them.
+function upgradeInsecureUrl(url) {
+  if (typeof url !== "string") return url;
+  return url.replace(/^http:\/\//i, "https://");
+}
+
 // Remove <script> and <style> blocks (the tags AND everything inside them) from
 // HTML. Shared by stripHtml (HTML → readable text) and sanitizeForPrompt (defang
 // text before the LLM) so the security-relevant "drop runnable/style content"

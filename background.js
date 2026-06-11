@@ -84,7 +84,7 @@ async function readFromSupabase(domain, privacyText = '') {
     const data = await response.json();
     if (data.result) {
       console.log('[Supabase] Community cache hit for', domain);
-      const validatedLinks = (data.opt_out_links || []).filter(url => {
+      const validatedLinks = (data.opt_out_links || []).map(upgradeInsecureUrl).filter(url => {
         try { return validateLinkFollowerUrl(url); }
         catch { return false; }
       });

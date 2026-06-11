@@ -290,6 +290,24 @@ mustFalse('validateDocumentUrl', 'blocks unique-local IPv6 literal', false, util
 
 // A real multi-label public domain must still be allowed (no over-blocking).
 mustTrue('validateDocumentUrl', 'allows public subdomain host', true, utils.validateDocumentUrl('https://help.example.co.uk/legal/terms'));
+
+// upgradeInsecureUrl: http→https recovery for links the document wrote insecurely.
+mustEqual('upgradeInsecureUrl', 'upgrades http to https', 'https://optout.aboutads.info/#!',
+  utils.upgradeInsecureUrl('http://optout.aboutads.info/#!'));
+mustEqual('upgradeInsecureUrl', 'leaves https untouched', 'https://example.com/privacy',
+  utils.upgradeInsecureUrl('https://example.com/privacy'));
+mustEqual('upgradeInsecureUrl', 'only upgrades the scheme prefix, not http in the path', 'https://example.com/go?u=http://x',
+  utils.upgradeInsecureUrl('http://example.com/go?u=http://x'));
+// The real win: a real opt-out portal linked over http now passes the gate once upgraded.
+mustFalse('validateDocumentUrl', 'still blocks raw http opt-out link', false,
+  utils.validateDocumentUrl('http://optout.networkadvertising.org/#!'));
+mustTrue('validateDocumentUrl', 'allows the upgraded https opt-out link', true,
+  utils.validateDocumentUrl(utils.upgradeInsecureUrl('http://optout.networkadvertising.org/#!')));
+// Security must survive the upgrade: an http link to an internal host stays blocked.
+mustFalse('validateDocumentUrl', 'upgraded localhost still blocked', false,
+  utils.validateDocumentUrl(utils.upgradeInsecureUrl('http://localhost/terms')));
+mustFalse('validateDocumentUrl', 'upgraded private IP still blocked', false,
+  utils.validateDocumentUrl(utils.upgradeInsecureUrl('http://192.168.1.1/terms')));
 mustTrue('isLikelyResourcePageUrl', 'blocks MakingCents article with terms in slug', true,
   utils.isLikelyResourcePageUrl('https://www.navyfederal.org/makingcents/investing/investing-terms-you-should-know.html'));
 mustFalse('isLikelyResourcePageUrl', 'allows real legal terms path', false,
