@@ -51,57 +51,120 @@ const FULL_DOC_LINK_PATTERNS = {
 // when no general document link exists.
 const NARROW_LEGAL_QUALIFIERS = /\b(california|ccpa|cpra|nevada|virginia|colorado|workplace|employee|job applicant|recruit|children|kids|coppa|cookie|ad ?choices|advertising|health|hipaa|glba)\b/i;
 
-// Banks, credit unions, and insurers commonly land you on a "Privacy & Security"
-// HUB page that merely LINKS to the real policy documents instead of containing
-// them. Given such a page's HTML, return the best deeper link to the actual full
-// document for `kind` ('privacy' | 'tos'), resolved absolute against baseUrl — or
-// null if none. Pure/synchronous so it is unit-testable; the caller fetches it.
-// Security: the caller MUST still pass the returned URL through validateDocumentUrl
-// before fetching, since the href comes from page HTML.
-function extractDeeperLegalLink(html, baseUrl, kind = 'privacy') {
-  if (!html || typeof html !== 'string') return null;
-  const pattern = FULL_DOC_LINK_PATTERNS[kind] || FULL_DOC_LINK_PATTERNS.privacy;
+// COMPLEMENTARY privacy notices that ADD coverage beyond the main policy — the
+// canonical extra documents a single site splits its disclosures across. Used to
+// gather supplemental notices (combine-then-summarize), NOT to find the main doc.
+// Deliberately targeted so we never pull a second copy of the main "privacy policy".
+const SUPPLEMENTAL_PRIVACY_LINK_PATTERNS = [
+  // GLBA / financial "Consumer Privacy" notice — carries the canonical sharing
+  // table ("Reasons we can share / Does X share? / Can you limit?").
+  /\bconsumer privacy (policy|notice|disclosure)\b/i,
+  /\b(glba|gramm[- ]?leach[- ]?bliley)\b/i,
+  /\bfinancial privacy (notice|policy|disclosure)\b/i,
+  /\bwhat do(es)? .{0,40} do with your personal information\b/i,
+  // State consumer-rights notices.
+  /\b(ccpa|cpra)\b/i,
+  /\bcalifornia (consumer )?privacy( rights| notice| policy| statement)?\b/i,
+  /\byour (california )?privacy (rights|choices)\b/i,
+  /\bstate[- ]?(specific )?privacy (notice|rights|disclosures?)\b/i
+];
+// Highest-value supplement: the financial/GLBA consumer notice (the sharing grid).
+const FINANCIAL_PRIVACY_LINK = /\b(consumer privacy|glba|gramm|financial privacy|what do(es)? .{0,40} do with your personal information)\b/i;
+// State consumer-rights notices — classified BEFORE the financial notice so that
+// "California Consumer Privacy Notice" isn't mistaken for the GLBA one (it contains
+// the substring "consumer privacy").
+const STATE_PRIVACY_LINK = /\b(california|ccpa|cpra|nevada|virginia|colorado|texas|state[- ]?specific|state privacy)\b/i;
 
+// Scan a page's anchors for links whose visible text satisfies `textMatches`,
+// returning [{ url, text, pathname }] with all the safety filtering applied:
+// https only, same registrable host (no off-site jumps), no self-loop, dedupe,
+// and skipping blog/FAQ resource pages. Shared by the hub-follow and supplemental
+// gatherers. Security: callers MUST still pass each url through validateDocumentUrl
+// before fetching, since hrefs come from page HTML.
+function scanLegalAnchors(html, baseUrl, textMatches) {
+  if (!html || typeof html !== 'string') return [];
   let base;
-  try { base = new URL(baseUrl); } catch (e) { return null; }
+  try { base = new URL(baseUrl); } catch (e) { return []; }
   const baseHref = base.href.replace(/#.*$/, '');
   const baseRoot = base.hostname.replace(/^www\./, '');
 
   const anchors = [...html.matchAll(/<a\s[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi)];
   const seen = new Set();
-  const candidates = [];
+  const out = [];
 
   for (const m of anchors) {
     const text = m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-    if (!text || !pattern.test(text)) continue;
+    if (!text || !textMatches(text)) continue;
 
     let abs;
     try { abs = new URL(m[1], base); } catch (e) { continue; }
     if (abs.protocol !== 'https:') continue;
-    // Same registrable host only — don't chase off-site jumps.
-    if (abs.hostname.replace(/^www\./, '') !== baseRoot) continue;
+    if (abs.hostname.replace(/^www\./, '') !== baseRoot) continue; // same host only
     const cleanHref = abs.href.replace(/#.*$/, '');
     if (cleanHref === baseHref) continue;            // no self-loop
     if (isLikelyResourcePageUrl(cleanHref)) continue; // skip blog/FAQ/etc.
     if (seen.has(cleanHref)) continue;
     seen.add(cleanHref);
 
-    const narrow = NARROW_LEGAL_QUALIFIERS.test(text) || NARROW_LEGAL_QUALIFIERS.test(abs.pathname);
-    const isPdf = /\.pdf($|\?)/i.test(abs.pathname);
+    out.push({ url: cleanHref, text, pathname: abs.pathname });
+  }
+  return out;
+}
+
+// Banks, credit unions, and insurers commonly land you on a "Privacy & Security"
+// HUB page that merely LINKS to the real policy documents instead of containing
+// them. Given such a page's HTML, return the best deeper link to the actual full
+// document for `kind` ('privacy' | 'tos'), resolved absolute against baseUrl — or
+// null if none. Pure/synchronous so it is unit-testable; the caller fetches it.
+function extractDeeperLegalLink(html, baseUrl, kind = 'privacy') {
+  const pattern = FULL_DOC_LINK_PATTERNS[kind] || FULL_DOC_LINK_PATTERNS.privacy;
+  const links = scanLegalAnchors(html, baseUrl, t => pattern.test(t));
+  if (links.length === 0) return null;
+
+  const scored = links.map(l => {
+    const narrow = NARROW_LEGAL_QUALIFIERS.test(l.text) || NARROW_LEGAL_QUALIFIERS.test(l.pathname);
+    const isPdf = /\.pdf($|\?)/i.test(l.pathname);
     // Prefer the general document over a jurisdiction-specific one, an HTML page
     // over a PDF (scanned PDFs often can't be extracted), the bare document name
     // over long marketing text, and a legal-looking path.
     let score = 0;
     if (!narrow) score += 100;
     if (!isPdf) score += 20;
-    if (text.length <= 45) score += 10;
-    if (/\/(privacy|policy|policies|legal|terms)/i.test(abs.pathname)) score += 5;
-    candidates.push({ url: cleanHref, score });
-  }
+    if (l.text.length <= 45) score += 10;
+    if (/\/(privacy|policy|policies|legal|terms)/i.test(l.pathname)) score += 5;
+    return { url: l.url, score };
+  });
+  scored.sort((a, b) => b.score - a.score);
+  return scored[0].url;
+}
 
-  if (candidates.length === 0) return null;
-  candidates.sort((a, b) => b.score - a.score);
-  return candidates[0].url;
+// Gather up to `limit` COMPLEMENTARY privacy notices linked from a page (the
+// GLBA/Consumer financial notice and any state/CCPA notices) so their text can be
+// combined with the main policy for one unified analysis (combine-then-summarize).
+// `exclude` holds urls already fetched (e.g. the primary policy) so we don't
+// double-count. Returns absolute urls, highest-value first. Security: caller MUST
+// still validateDocumentUrl each url before fetching.
+function extractSupplementalPrivacyLinks(html, baseUrl, { exclude = [], limit = 2 } = {}) {
+  const excludeSet = new Set((exclude || []).map(u => (u || '').replace(/#.*$/, '')));
+  const links = scanLegalAnchors(html, baseUrl, t => SUPPLEMENTAL_PRIVACY_LINK_PATTERNS.some(re => re.test(t)))
+    .filter(l => !excludeSet.has(l.url));
+  if (links.length === 0) return [];
+
+  const scored = links.map(l => {
+    const isState = STATE_PRIVACY_LINK.test(l.text) || STATE_PRIVACY_LINK.test(l.pathname);
+    const isFinancial = FINANCIAL_PRIVACY_LINK.test(l.text) || FINANCIAL_PRIVACY_LINK.test(l.pathname);
+    let score = 0;
+    // The financial/GLBA consumer notice carries the sharing grid — most valuable.
+    // Classify state FIRST so a "California Consumer Privacy" notice isn't scored
+    // as the GLBA one just because it contains the words "consumer privacy".
+    if (isState) score += 20;
+    else if (isFinancial) score += 50;
+    else score += 20;
+    if (!/\.pdf($|\?)/i.test(l.pathname)) score += 5; // readable HTML slightly preferred
+    return { url: l.url, score };
+  });
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, limit).map(s => s.url);
 }
 
 // Remove evaluator-chrome markup (verdict badge / warning divs, and the textual

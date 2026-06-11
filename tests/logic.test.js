@@ -368,6 +368,47 @@ mustFalse('looksLikeLegalDocument', 'rejects empty input', false, utils.looksLik
     utils.extractDeeperLegalLink('<a href="/about.html">About Us</a>', base, 'privacy'));
 }
 
+// extractSupplementalPrivacyLinks: gather the COMPLEMENTARY notices (GLBA/Consumer
+// + state/CCPA) for combine-then-summarize — without pulling a second copy of the
+// main policy or the irrelevant workplace notice.
+{
+  const hubHtml = `
+    <nav>
+      <a href="/policy/privacy.html">Navy Federal Online Privacy Policy</a>
+      <a href="/content/dam/nfculibs/pdfs/membership/nfcu_198_privacypolicy.pdf">Consumer Privacy Policy</a>
+      <a href="/policy/ccpa.html">California Consumer Privacy Notice</a>
+      <a href="/policy/workplace-privacy.html">Workplace Privacy Notice</a>
+      <a href="/security-tips/article.html">Security Tips Blog</a>
+    </nav>`;
+  const base = 'https://www.navyfederal.org/policy.html';
+
+  const supps = utils.extractSupplementalPrivacyLinks(hubHtml, base, {
+    exclude: ['https://www.navyfederal.org/policy/privacy.html'], limit: 2
+  });
+  mustTrue('extractSupplementalPrivacyLinks', 'includes the GLBA/Consumer financial notice', true,
+    supps.includes('https://www.navyfederal.org/content/dam/nfculibs/pdfs/membership/nfcu_198_privacypolicy.pdf'));
+  mustTrue('extractSupplementalPrivacyLinks', 'includes the CCPA notice', true,
+    supps.includes('https://www.navyfederal.org/policy/ccpa.html'));
+  mustTrue('extractSupplementalPrivacyLinks', 'never includes the main Online Privacy Policy', true,
+    !supps.includes('https://www.navyfederal.org/policy/privacy.html'));
+  mustTrue('extractSupplementalPrivacyLinks', 'excludes the irrelevant workplace notice', true,
+    !supps.some(u => /workplace/.test(u)));
+  mustTrue('extractSupplementalPrivacyLinks', 'ranks the financial notice first', true,
+    /nfcu_198_privacypolicy\.pdf$/.test(supps[0]));
+  mustEqual('extractSupplementalPrivacyLinks', 'respects the limit', 2, supps.length);
+
+  // An honored exclude list drops an already-fetched notice.
+  const excludeConsumer = utils.extractSupplementalPrivacyLinks(hubHtml, base, {
+    exclude: ['https://www.navyfederal.org/content/dam/nfculibs/pdfs/membership/nfcu_198_privacypolicy.pdf']
+  });
+  mustTrue('extractSupplementalPrivacyLinks', 'honors exclude list', true,
+    !excludeConsumer.some(u => /nfcu_198/.test(u)));
+
+  // A site with no complementary notices → empty (zero extra fetches).
+  mustEqual('extractSupplementalPrivacyLinks', 'empty when no supplemental notices', 0,
+    utils.extractSupplementalPrivacyLinks('<a href="/privacy.html">Privacy Policy</a>', base).length);
+}
+
 {
   const privacyEmpty = `
 🔴 DATA SELLING & SHARING

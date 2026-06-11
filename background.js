@@ -437,7 +437,7 @@ async function tryFetchCandidates(candidates, kind = null) {
   // Candidates are priority-ordered, but most are misses on unknown sites.
   // Race them with bounded concurrency so a page of dead guesses no longer
   // costs one full hidden-tab timeout each in series.
-  return firstSuccessful(validCandidates, async (url) => {
+  const winner = await firstSuccessful(validCandidates, async (url) => {
     const base = await fetchSingleCandidate(url);
     if (!base) return null;
 
@@ -461,6 +461,51 @@ async function tryFetchCandidates(candidates, kind = null) {
     console.log(`[Fetcher] Found at: ${url}${looksLikeLegalDocument(base.text) ? '' : ' (nav shell — no legal content rendered)'}`);
     return base;
   });
+
+  // Combine-then-summarize: a single site often splits its privacy disclosures
+  // across several documents (e.g. a bank's Online Privacy Policy PLUS its GLBA
+  // "Consumer Privacy" notice with the sharing grid PLUS a state/CCPA notice). The
+  // primary doc usually links to them, so gather those complementary notices and
+  // fold their text into the winner for ONE unified analysis. (Privacy only; one
+  // hop; capped; skips anything not readable. Zero extra fetches when none exist.)
+  if (winner && kind === 'privacy' && winner.html) {
+    await enrichWithSupplementalNotices(winner);
+  }
+  return winner;
+}
+
+// Mutates `primary` in place: appends up to 2 complementary privacy notices linked
+// from its HTML (GLBA/Consumer + state/CCPA) to primary.text, source-tagged so the
+// analyzer sees the document boundaries. Records the urls on primary.supplementalUrls.
+async function enrichWithSupplementalNotices(primary) {
+  const supplementalUrls = extractSupplementalPrivacyLinks(primary.html, primary.sourceUrl, {
+    exclude: [primary.sourceUrl],
+    limit: 3 // fetch a few; keep the first 2 that actually yield a readable notice
+  }).filter(url => {
+    if (validateDocumentUrl(url)) return true;
+    console.warn(`[Fetcher] Supplemental notice blocked by validation gate: ${url}`);
+    return false;
+  });
+  if (supplementalUrls.length === 0) return;
+
+  console.log(`[Fetcher] Gathering supplemental privacy notices: ${supplementalUrls.join(', ')}`);
+  const fetched = await Promise.all(supplementalUrls.map(url => fetchSingleCandidate(url)));
+
+  const kept = [];
+  for (const doc of fetched) {
+    if (kept.length >= 2) break;
+    if (doc && looksLikeLegalDocument(doc.text)) kept.push(doc);
+  }
+  if (kept.length === 0) {
+    console.log(`[Fetcher] No supplemental notice yielded readable legal content`);
+    return;
+  }
+
+  primary.supplementalUrls = kept.map(d => d.sourceUrl);
+  primary.text += '\n\n' + kept
+    .map(d => `=== SUPPLEMENTAL PRIVACY NOTICE: ${d.sourceUrl} ===\n${d.text}`)
+    .join('\n\n');
+  console.log(`[Fetcher] Combined ${kept.length} supplemental privacy notice(s): ${primary.supplementalUrls.join(', ')}`);
 }
 
 // Opens a hidden tab and polls until it has rendered usable content, then grabs
@@ -618,9 +663,20 @@ async function analyzeWithModel(text, source = "this page", escalate = false) {
   const privacySection = privacyIndex > -1 ? text.slice(privacyIndex) : '';
   const otherSection = privacyIndex > -1 ? text.slice(0, privacyIndex) : text;
 
+  // Within the privacy budget, reserve a slice for any combined supplemental
+  // notices (GLBA/Consumer sharing grid, state/CCPA) so they survive truncation —
+  // they're appended last, but they carry the most actionable sharing/opt-out
+  // detail, so a very long primary policy must not crowd them out.
+  const privacyBudget = Math.floor(totalBudget * 0.7);
+  const suppIndex = privacySection.indexOf('=== SUPPLEMENTAL PRIVACY NOTICE');
+  const primaryPrivacy = suppIndex > -1 ? privacySection.slice(0, suppIndex) : privacySection;
+  const suppPrivacy = suppIndex > -1 ? privacySection.slice(suppIndex) : '';
+  const suppBudget = suppPrivacy ? Math.min(16000, suppPrivacy.length) : 0;
+
   const trimmedText = [
     sanitizeForPrompt(otherSection).slice(0, Math.floor(totalBudget * 0.3)),
-    sanitizeForPrompt(privacySection).slice(0, Math.floor(totalBudget * 0.7))
+    sanitizeForPrompt(primaryPrivacy).slice(0, privacyBudget - suppBudget),
+    sanitizeForPrompt(suppPrivacy).slice(0, suppBudget)
   ].filter(Boolean).join('\n\n');
 
   console.log('[Analyzer] trimmedText length:', trimmedText.length);
