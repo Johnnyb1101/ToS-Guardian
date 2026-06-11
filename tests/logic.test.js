@@ -517,6 +517,16 @@ Not covered in this document.`;
   const html = utils.formatSummary(single, []);
   mustFalse('formatSummary', 'no Show more for single-bullet section', false, html.includes('tg-more-toggle'));
 }
+{
+  // Markdown bullet dashes the analyzer emits must be stripped from the rendered
+  // bullet — but the "**" of a bold lead must survive (becomes <strong>).
+  const dashed = '🔴 DATA SELLING & SHARING\n- **Affiliates and subsidiaries**: shared data.';
+  const html = utils.formatSummary(dashed, []);
+  mustTrue('formatSummary', 'bold lead survives as <strong>', true,
+    html.includes('<strong>Affiliates and subsidiaries</strong>'));
+  mustFalse('formatSummary', 'no literal "- " dash before bullet', false,
+    /<p[^>]*>\s*-\s/.test(html));
+}
 
 // A message with no recognized sections (config/error/timeout) must stay visible.
 {

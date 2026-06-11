@@ -196,6 +196,9 @@ function formatSummary(raw, optOutLinks = []) {
         .map(l => {
           let cleaned = l
             .replace(/^•\s*/, "")
+            // Strip a leading markdown bullet marker ("- " / "* ") the analyzer emits.
+            // Requires trailing whitespace so it never eats the "**" of a bold lead.
+            .replace(/^[-*]\s+/, "")
             .replace(/\|[-\s|]+\|/g, '')
             .replace(/^\|\s*/g, '')
             .replace(/\s*\|$/g, '')
