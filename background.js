@@ -108,12 +108,12 @@ async function fetcherAgent(pageUrl, pageHtml = "", knownUrls = null) {
     if (knownUrls) {
       console.log("[Fetcher] Using site database URLs — skipping candidate guessing");
       const [tosResult, privacyResult] = await Promise.all([
-        tryFetchCandidates([knownUrls.tos]),
-        tryFetchCandidates([knownUrls.privacy])
+        tryFetchCandidates([knownUrls.tos], 'tos'),
+        tryFetchCandidates([knownUrls.privacy], 'privacy')
       ]);
       if (tosResult || privacyResult) {
         const supplementalResults = knownUrls.supplemental
-          ? (await Promise.all(knownUrls.supplemental.map(url => tryFetchCandidates([url])))).filter(Boolean)
+          ? (await Promise.all(knownUrls.supplemental.map(url => tryFetchCandidates([url], 'privacy')))).filter(Boolean)
           : [];
         const combined = [
           tosResult ? `=== TERMS OF SERVICE ===\n${tosResult.text}` : "",
@@ -162,8 +162,8 @@ async function fetcherAgent(pageUrl, pageHtml = "", knownUrls = null) {
       console.log(`[Fetcher] Found ${tosHrefs.length} ToS links and ${privacyHrefs.length} privacy links in page HTML`);
 
       const [tosFromPage, privacyFromPage] = await Promise.all([
-        tryFetchCandidates([...new Set(tosHrefs)]),
-        tryFetchCandidates([...new Set(privacyHrefs)])
+        tryFetchCandidates([...new Set(tosHrefs)], 'tos'),
+        tryFetchCandidates([...new Set(privacyHrefs)], 'privacy')
       ]);
 
       if (tosFromPage || privacyFromPage) {
@@ -207,8 +207,8 @@ async function fetcherAgent(pageUrl, pageHtml = "", knownUrls = null) {
         console.log(`[Fetcher] Link text scan found ${tosTextHrefs.length} ToS and ${privacyTextHrefs.length} privacy links`);
 
         const [tosFromText, privacyFromText] = await Promise.all([
-          tosTextHrefs.length > 0 ? tryFetchCandidates([...new Set(tosTextHrefs)]) : null,
-          privacyTextHrefs.length > 0 ? tryFetchCandidates([...new Set(privacyTextHrefs)]) : null
+          tosTextHrefs.length > 0 ? tryFetchCandidates([...new Set(tosTextHrefs)], 'tos') : null,
+          privacyTextHrefs.length > 0 ? tryFetchCandidates([...new Set(privacyTextHrefs)], 'privacy') : null
         ]);
 
         if (tosFromText || privacyFromText) {
@@ -261,8 +261,8 @@ async function fetcherAgent(pageUrl, pageHtml = "", knownUrls = null) {
             if (homeTosHrefs.length > 0 || homePrivacyHrefs.length > 0) {
               console.log(`[Fetcher] Homepage footer found ${homeTosHrefs.length} ToS and ${homePrivacyHrefs.length} privacy links`);
               const [tosFromHome, privacyFromHome] = await Promise.all([
-                homeTosHrefs.length > 0 ? tryFetchCandidates([...new Set(homeTosHrefs)]) : null,
-                homePrivacyHrefs.length > 0 ? tryFetchCandidates([...new Set(homePrivacyHrefs)]) : null
+                homeTosHrefs.length > 0 ? tryFetchCandidates([...new Set(homeTosHrefs)], 'tos') : null,
+                homePrivacyHrefs.length > 0 ? tryFetchCandidates([...new Set(homePrivacyHrefs)], 'privacy') : null
               ]);
               if (tosFromHome || privacyFromHome) {
                 const combined = [
@@ -321,8 +321,8 @@ async function fetcherAgent(pageUrl, pageHtml = "", knownUrls = null) {
     ];
 
     const [tosResult, privacyResult] = await Promise.all([
-      tryFetchCandidates(tosCandidates),
-      tryFetchCandidates(privacyCandidates)
+      tryFetchCandidates(tosCandidates, 'tos'),
+      tryFetchCandidates(privacyCandidates, 'privacy')
     ]);
 
     if (tosResult || privacyResult) {
@@ -410,7 +410,23 @@ async function firstSuccessful(items, worker, concurrency = 3) {
   return found;
 }
 
-async function tryFetchCandidates(candidates) {
+// Fetch a single URL: hidden tab first (renders JS), proxy as fallback. Returns
+// { text, html, sourceUrl } or null. Does NOT follow hubs — one hop only.
+async function fetchSingleCandidate(url) {
+  // Hidden tab first — renders JavaScript, gets real content. Keep polling past
+  // the nav shell until the text actually looks like a legal document, so SPA
+  // legal pages aren't captured as navigation chrome.
+  const tabResult = await fetchWithHiddenTab(url, { accept: looksLikeLegalDocument });
+  if (tabResult && tabResult.text && tabResult.text.length > 500) {
+    return { text: tabResult.text, html: tabResult.html, sourceUrl: url };
+  }
+  // Proxy fallback — for CORS-restricted or Next.js sites
+  const nextResult = await fetchNextJsDocument(url);
+  if (nextResult) return { text: nextResult.text, html: nextResult.html, sourceUrl: url };
+  return null;
+}
+
+async function tryFetchCandidates(candidates, kind = null) {
   // Central URL validation gate (SECURITY-020)
   const validCandidates = candidates.filter(url => {
     if (validateDocumentUrl(url)) return true;
@@ -422,19 +438,28 @@ async function tryFetchCandidates(candidates) {
   // Race them with bounded concurrency so a page of dead guesses no longer
   // costs one full hidden-tab timeout each in series.
   return firstSuccessful(validCandidates, async (url) => {
-    // Hidden tab first — renders JavaScript, gets real content. Keep polling past
-    // the nav shell until the text actually looks like a legal document, so SPA
-    // legal pages aren't captured as navigation chrome.
-    const tabResult = await fetchWithHiddenTab(url, { accept: looksLikeLegalDocument });
-    if (tabResult && tabResult.text && tabResult.text.length > 500) {
-      console.log(`[Fetcher] Found at: ${url}${looksLikeLegalDocument(tabResult.text) ? '' : ' (nav shell — no legal content rendered)'}`);
-      return { text: tabResult.text, html: tabResult.html, sourceUrl: url };
+    const base = await fetchSingleCandidate(url);
+    if (!base) return null;
+
+    // Hub-follow: bank/credit-union/insurer sites often land on a "Privacy &
+    // Security" page that only LINKS to the real policy. If what we fetched isn't
+    // itself a legal document but its HTML points to the full one, follow that
+    // link once and prefer it. (Navy Federal: policy.html → /policy/privacy.html)
+    if (base.html && !looksLikeLegalDocument(base.text)) {
+      const deeperUrl = extractDeeperLegalLink(base.html, url, kind || 'privacy');
+      if (deeperUrl && validateDocumentUrl(deeperUrl)) {
+        console.log(`[Fetcher] ${url} looks like a legal hub — following deeper link: ${deeperUrl}`);
+        const deep = await fetchSingleCandidate(deeperUrl);
+        if (deep && looksLikeLegalDocument(deep.text)) {
+          console.log(`[Fetcher] Deeper link yielded real legal content: ${deeperUrl}`);
+          return deep;
+        }
+        console.log(`[Fetcher] Deeper link did not yield a real document — keeping ${url}`);
+      }
     }
 
-    // Proxy fallback — for CORS-restricted or Next.js sites
-    const nextResult = await fetchNextJsDocument(url);
-    if (nextResult) return { text: nextResult.text, html: nextResult.html, sourceUrl: url };
-    return null;
+    console.log(`[Fetcher] Found at: ${url}${looksLikeLegalDocument(base.text) ? '' : ' (nav shell — no legal content rendered)'}`);
+    return base;
   });
 }
 

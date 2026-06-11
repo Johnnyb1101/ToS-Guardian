@@ -330,6 +330,44 @@ mustFalse('isLikelyResourcePageUrl', 'allows real legal terms path', false,
 // Empty / non-string input is not a document.
 mustFalse('looksLikeLegalDocument', 'rejects empty input', false, utils.looksLikeLegalDocument(''));
 
+// extractDeeperLegalLink: follow a legal "hub" page to the real full document.
+// (Navy Federal and most banks land you on a Privacy & Security hub that only
+// links to the actual policies.)
+{
+  const hubHtml = `
+    <nav>
+      <a href="/policy/privacy.html">Navy Federal Online Privacy Policy</a>
+      <a href="/content/dam/nfculibs/pdfs/membership/nfcu_198_privacypolicy.pdf">Consumer Privacy Policy</a>
+      <a href="/policy/ccpa.html">California Consumer Privacy Notice</a>
+      <a href="/policy/workplace-privacy.html">Workplace Privacy Notice</a>
+      <a href="/content/dam/nfculibs/pdfs/membership/nfcu_652a.pdf">Mobile and Online Banking Terms and Conditions</a>
+      <a href="/security-tips/article.html">Security Tips Blog</a>
+    </nav>`;
+  const base = 'https://www.navyfederal.org/policy.html';
+
+  const privacy = utils.extractDeeperLegalLink(hubHtml, base, 'privacy');
+  mustEqual('extractDeeperLegalLink', 'prefers general HTML privacy policy over PDF/CCPA',
+    'https://www.navyfederal.org/policy/privacy.html', privacy);
+
+  const tos = utils.extractDeeperLegalLink(hubHtml, base, 'tos');
+  mustEqual('extractDeeperLegalLink', 'follows terms & conditions link',
+    'https://www.navyfederal.org/content/dam/nfculibs/pdfs/membership/nfcu_652a.pdf', tos);
+
+  // No self-loop: the hub linking to itself must not be followed.
+  const selfLoop = '<a href="/policy.html">Privacy Policy</a>';
+  mustEqual('extractDeeperLegalLink', 'never follows a self-link', null,
+    utils.extractDeeperLegalLink(selfLoop, base, 'privacy'));
+
+  // Off-site links are not chased.
+  const offsite = '<a href="https://tracker.example.com/privacy-policy">Privacy Policy</a>';
+  mustEqual('extractDeeperLegalLink', 'does not chase off-site links', null,
+    utils.extractDeeperLegalLink(offsite, base, 'privacy'));
+
+  // No matching link → null.
+  mustEqual('extractDeeperLegalLink', 'returns null when no document link present', null,
+    utils.extractDeeperLegalLink('<a href="/about.html">About Us</a>', base, 'privacy'));
+}
+
 {
   const privacyEmpty = `
 🔴 DATA SELLING & SHARING

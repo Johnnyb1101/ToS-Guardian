@@ -39,6 +39,71 @@ function looksLikeLegalDocument(text) {
   return (text.length >= 2000 && hits >= 4) || hits >= 7;
 }
 
+// Visible-text patterns for a link that points to the FULL document of a given
+// kind (as opposed to a marketing/section link). Used to follow a legal "hub".
+const FULL_DOC_LINK_PATTERNS = {
+  privacy: /\b(online |consumer |full |complete |general |website )?privacy (policy|notice|statement)\b/i,
+  tos: /\b(terms of (service|use)|terms (and|&) conditions|user agreement|cardholder agreement|membership agreement|deposit account agreement|account agreement)\b/i
+};
+
+// Qualifier words that mark a NARROW/jurisdiction-specific variant (e.g. the
+// California or workplace notice) rather than the general policy. Only followed
+// when no general document link exists.
+const NARROW_LEGAL_QUALIFIERS = /\b(california|ccpa|cpra|nevada|virginia|colorado|workplace|employee|job applicant|recruit|children|kids|coppa|cookie|ad ?choices|advertising|health|hipaa|glba)\b/i;
+
+// Banks, credit unions, and insurers commonly land you on a "Privacy & Security"
+// HUB page that merely LINKS to the real policy documents instead of containing
+// them. Given such a page's HTML, return the best deeper link to the actual full
+// document for `kind` ('privacy' | 'tos'), resolved absolute against baseUrl — or
+// null if none. Pure/synchronous so it is unit-testable; the caller fetches it.
+// Security: the caller MUST still pass the returned URL through validateDocumentUrl
+// before fetching, since the href comes from page HTML.
+function extractDeeperLegalLink(html, baseUrl, kind = 'privacy') {
+  if (!html || typeof html !== 'string') return null;
+  const pattern = FULL_DOC_LINK_PATTERNS[kind] || FULL_DOC_LINK_PATTERNS.privacy;
+
+  let base;
+  try { base = new URL(baseUrl); } catch (e) { return null; }
+  const baseHref = base.href.replace(/#.*$/, '');
+  const baseRoot = base.hostname.replace(/^www\./, '');
+
+  const anchors = [...html.matchAll(/<a\s[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi)];
+  const seen = new Set();
+  const candidates = [];
+
+  for (const m of anchors) {
+    const text = m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!text || !pattern.test(text)) continue;
+
+    let abs;
+    try { abs = new URL(m[1], base); } catch (e) { continue; }
+    if (abs.protocol !== 'https:') continue;
+    // Same registrable host only — don't chase off-site jumps.
+    if (abs.hostname.replace(/^www\./, '') !== baseRoot) continue;
+    const cleanHref = abs.href.replace(/#.*$/, '');
+    if (cleanHref === baseHref) continue;            // no self-loop
+    if (isLikelyResourcePageUrl(cleanHref)) continue; // skip blog/FAQ/etc.
+    if (seen.has(cleanHref)) continue;
+    seen.add(cleanHref);
+
+    const narrow = NARROW_LEGAL_QUALIFIERS.test(text) || NARROW_LEGAL_QUALIFIERS.test(abs.pathname);
+    const isPdf = /\.pdf($|\?)/i.test(abs.pathname);
+    // Prefer the general document over a jurisdiction-specific one, an HTML page
+    // over a PDF (scanned PDFs often can't be extracted), the bare document name
+    // over long marketing text, and a legal-looking path.
+    let score = 0;
+    if (!narrow) score += 100;
+    if (!isPdf) score += 20;
+    if (text.length <= 45) score += 10;
+    if (/\/(privacy|policy|policies|legal|terms)/i.test(abs.pathname)) score += 5;
+    candidates.push({ url: cleanHref, score });
+  }
+
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates[0].url;
+}
+
 // Remove evaluator-chrome markup (verdict badge / warning divs, and the textual
 // "Analysis confidence:" line) that the analyzer LLM may have echoed from
 // attacker-controlled document text. The genuine verdict is composed by the
