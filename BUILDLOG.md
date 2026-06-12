@@ -10,7 +10,7 @@ Public changelog. Technical architecture details are maintained separately.
 - Fetcher Agent — hidden tab rendering for JS-heavy legal pages
 - Dual document fetch — retrieves both Terms of Service and Privacy Policy in parallel
 - Link Follower Agent — follows opt-out and privacy links buried in documents
-- Memory Agent — 15-day cache with change detection fingerprinting and integrity verification
+- Memory Agent — community cache (90-day TTL backstop) with full-doc-set content-fingerprint change detection (re-analyzes when source docs materially change) and integrity verification
 - Site Database — 30+ static entries for instant lookup, self-learning for unknown sites
 - Analyzer — 6-category structured privacy analysis via AI
 - Evaluator Agent — quality scoring with confidence badge before results reach UI

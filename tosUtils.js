@@ -144,10 +144,27 @@ function extractDeeperLegalLink(html, baseUrl, kind = 'privacy') {
 // `exclude` holds urls already fetched (e.g. the primary policy) so we don't
 // double-count. Returns absolute urls, highest-value first. Security: caller MUST
 // still validateDocumentUrl each url before fetching.
+// Build a normalization KEY (not a fetchable url) for comparing two supplemental
+// links: lowercase host with a leading www. stripped (mirrors baseRoot above),
+// trailing slash removed, and hash + query dropped. Legal notices are not
+// query-parameterized, so this safely collapses www/apex, trailing-slash, and
+// tracking-param variants that otherwise survive scanLegalAnchors' exact-href
+// dedupe and would waste a fetch + one of the two reserved supplemental slots.
+function supplementalDedupeKey(rawUrl) {
+  try {
+    const u = new URL(rawUrl);
+    const host = u.hostname.replace(/^www\./, '').toLowerCase();
+    const path = u.pathname.replace(/\/+$/, '');
+    return host + path;
+  } catch (e) {
+    return (rawUrl || '').toLowerCase();
+  }
+}
+
 function extractSupplementalPrivacyLinks(html, baseUrl, { exclude = [], limit = 2 } = {}) {
-  const excludeSet = new Set((exclude || []).map(u => (u || '').replace(/#.*$/, '')));
+  const excludeSet = new Set((exclude || []).map(supplementalDedupeKey));
   const links = scanLegalAnchors(html, baseUrl, t => SUPPLEMENTAL_PRIVACY_LINK_PATTERNS.some(re => re.test(t)))
-    .filter(l => !excludeSet.has(l.url));
+    .filter(l => !excludeSet.has(supplementalDedupeKey(l.url)));
   if (links.length === 0) return [];
 
   const scored = links.map(l => {
@@ -164,7 +181,18 @@ function extractSupplementalPrivacyLinks(html, baseUrl, { exclude = [], limit = 
     return { url: l.url, score };
   });
   scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, limit).map(s => s.url);
+  // Drop equivalents (same notice via trailing-slash/www/query variants) before
+  // the cap, keeping the highest-scored occurrence, so the two slots always hold
+  // two genuinely distinct notices.
+  const seenKeys = new Set();
+  const deduped = [];
+  for (const s of scored) {
+    const key = supplementalDedupeKey(s.url);
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    deduped.push(s.url);
+  }
+  return deduped.slice(0, limit);
 }
 
 // Remove evaluator-chrome markup (verdict badge / warning divs, and the textual
@@ -254,8 +282,10 @@ function stripInjectionWarning(text) {
 function formatSummary(raw, optOutLinks = []) {
   if (!raw) return "";
 
-  // Drop the cache-schema stamp (invisible marker) so it never renders.
+  // Drop the cache-schema + content-fingerprint stamps (invisible markers) so
+  // they never render.
   raw = raw.replace(/<!--\s*tg-schema:\d+\s*-->/g, "");
+  raw = raw.replace(/<!--\s*tg-fp:[0-9a-f]+\s*-->/gi, "");
 
   let injectionWarning = "";
   const injectionPattern = /⚠️\s*Possible injection attempt detected in document[^\n]*/i;
@@ -468,7 +498,10 @@ function formatSummary(raw, optOutLinks = []) {
 // stamps every fresh analysis with this version (an invisible HTML comment inside
 // the summary) and treats any cached entry below it as a MISS → re-analyze. Cost
 // is one re-analysis per domain after a bump (then it carries the new version).
-const CACHE_SCHEMA_VERSION = 1;
+// v2 (2026-06-11): cache entries now carry a content fingerprint (tg-fp). Bumping
+// from 1 flushes every legacy/unstamped entry once so each domain re-analyzes and
+// is rewritten with a fingerprint (and any lingering bug-window entries retire).
+const CACHE_SCHEMA_VERSION = 2;
 
 // Read the schema version stamped into a stored summary (0 if unstamped/legacy).
 function cacheSchemaVersion(summary) {
@@ -488,6 +521,74 @@ function cacheSchemaStamp() {
 function isCurrentSchemaSummary(summary) {
   if (!summary || typeof summary !== 'string') return false;
   return cacheSchemaVersion(summary) >= CACHE_SCHEMA_VERSION;
+}
+
+// --- Content fingerprint (cache freshness / change detection) -------------
+//
+// A deterministic, full-doc-set fingerprint of the SOURCE documents we analyzed
+// (the combined "=== TERMS === / === PRIVACY === / === SUPPLEMENTAL ===" text).
+// Stamped into the cached summary at write time and recomputed from the live
+// fetched documents on read; a mismatch means the documents materially changed,
+// so we re-analyze instead of serving a stale summary.
+//
+// This is the real change-detector — it covers the WHOLE set (the old pgvector
+// 0.95 check only "saw" the first ~256 tokens of the privacy section, excluding
+// the ToS and supplementals entirely). It is normalized so that trivial edits
+// (revision dates, whitespace/reflow, cache-busting supplemental URLs) do NOT
+// flip it; a genuine wording change does.
+
+// Strip volatile boilerplate and collapse formatting so cosmetic edits don't
+// change the fingerprint.
+function normalizeForFingerprint(text) {
+  if (!text || typeof text !== 'string') return '';
+  return text
+    .toLowerCase()
+    // Collapse the supplemental-notice URL (can carry session/cache-bust params)
+    // down to the bare marker, so a changing URL alone doesn't flip the hash.
+    .replace(/===\s*supplemental privacy notice:[^\n]*===/g, '=== supplemental privacy notice ===')
+    // Revision/effective dates ("last updated: January 1, 2026", etc.)
+    .replace(/\b(?:last\s+updated|last\s+modified|effective|revised|modified|as\s+of|updated)\b\s*:?\s*(?:on\s+)?[a-z0-9 ,\/\-]{0,24}/g, ' ')
+    // Standalone dates: Month DD, YYYY / MM/DD/YYYY / YYYY-MM-DD
+    .replace(/\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},?\s+\d{4}\b/g, ' ')
+    .replace(/\b\d{1,2}\/\d{1,2}\/\d{2,4}\b/g, ' ')
+    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, ' ')
+    // Copyright years and page markers
+    .replace(/(?:©|\(c\)|copyright)\s*\d{4}(?:\s*[-–]\s*\d{4})?/g, ' ')
+    .replace(/\bpage\s+\d+\s+of\s+\d+\b/g, ' ')
+    // Collapse all whitespace
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// FNV-1a 32-bit hash → hex. Synchronous, dependency-free, deterministic.
+function contentFingerprint(text) {
+  const normalized = normalizeForFingerprint(text);
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < normalized.length; i++) {
+    hash ^= normalized.charCodeAt(i);
+    // 32-bit FNV prime multiply via shifts, kept in unsigned 32-bit range.
+    hash = (hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24))) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
+// The invisible stamp appended to a fresh summary so later reads can compare.
+function contentFingerprintStamp(text) {
+  return `<!--tg-fp:${contentFingerprint(text)}-->`;
+}
+
+// Extract the stamped fingerprint from a cached summary (null if absent/legacy).
+function cachedContentFingerprint(summary) {
+  const m = /<!--\s*tg-fp:([0-9a-f]+)\s*-->/i.exec(summary || '');
+  return m ? m[1] : null;
+}
+
+// True only if the cached summary's stamped fingerprint matches the live docs.
+// Absent stamp → false (forces a refresh that adds one).
+function contentFingerprintMatches(summary, liveText) {
+  const stamped = cachedContentFingerprint(summary);
+  if (!stamped) return false;
+  return stamped === contentFingerprint(liveText);
 }
 
 function normalizeAnalysisHeaders(summary) {

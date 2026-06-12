@@ -159,7 +159,7 @@ function reset() {
   for (const spy of Object.values(spies)) spy.reset();
   spies.lookupSite.impl = async () => ({ tos: 'https://example.com/terms', privacy: 'https://example.com/privacy' });
   spies.fetcherAgent.impl = async () => ({
-    text: '=== TERMS OF SERVICE ===\nTerms.\n\n=== PRIVACY POLICY ===\nPrivacy text with affiliates, nonaffiliates, joint marketing, service providers, opt out, delete, and contact instructions.',
+    text: DEFAULT_FETCHED_TEXT,
     sourceUrl: 'https://example.com/terms',
     privacyUrl: 'https://example.com/privacy',
     privacyHtml: '',
@@ -228,14 +228,22 @@ function adequateSummary(marker = '') {
   return strongSummary(marker).replace('You can request deletion through Manage Your Data.', 'Not covered in this document.');
 }
 
-// A stored Supabase entry carries the cache-schema stamp the orchestrator appends
-// at write time. Cached fixtures must include it so they pass the freshness check
-// in the cache-read path and actually exercise the cache logic rather than being
-// re-analyzed as stale. (Also keeps a risk div for the badge-rebuild assertions.)
-function cachedEntry(summary) {
+// The combined source-doc text the mocked fetcher returns by default. Shared so a
+// cached fixture's content fingerprint can be stamped to MATCH what the fetcher
+// produces (otherwise the freshness gate would treat every fixture as changed).
+const DEFAULT_FETCHED_TEXT = '=== TERMS OF SERVICE ===\nTerms.\n\n=== PRIVACY POLICY ===\nPrivacy text with affiliates, nonaffiliates, joint marketing, service providers, opt out, delete, and contact instructions.';
+
+// A stored Supabase entry carries the cache-schema stamp AND a content fingerprint
+// the orchestrator appends at write time. Cached fixtures must include both so they
+// pass the freshness checks in the cache-read path and actually exercise the cache
+// logic rather than being re-analyzed as stale. (Also keeps a risk div for the
+// badge-rebuild assertions.) `fingerprintText` defaults to the fetcher's text so
+// the fingerprint matches; pass different text to simulate a changed document.
+function cachedEntry(summary, fingerprintText = DEFAULT_FETCHED_TEXT) {
   return summary +
     '\n<div class="tg-risk tg-risk-moderate">⚠️ Moderate concern</div>' +
-    '\n' + context.cacheSchemaStamp();
+    '\n' + context.cacheSchemaStamp() +
+    '\n' + context.contentFingerprintStamp(fingerprintText);
 }
 
 async function runTest(fn) {
@@ -270,6 +278,16 @@ async function runTest(fn) {
     spies.readFromSupabase.impl = async () => ({ summary: strongSummary('pre-redesign, no risk div'), optOutLinks: ['https://example.com/old'] });
     await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
     mustEqual('analyzeWithModel', 're-analyzes a pre-schema cached summary', 1,
+      spies.analyzeWithModel.calls.filter(args => args[2] !== true).length);
+  });
+
+  // A current-schema cached summary whose fingerprint no longer matches the live
+  // source documents (they changed) must be treated as a miss and re-analyzed.
+  await runTest(async () => {
+    const changedDocFp = DEFAULT_FETCHED_TEXT + '\n\nNEW ARBITRATION CLAUSE: you waive your right to sue.';
+    spies.readFromSupabase.impl = async () => ({ summary: cachedEntry(strongSummary('stale fp'), changedDocFp), optOutLinks: [] });
+    await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
+    mustEqual('analyzeWithModel', 're-analyzes when source docs changed (fingerprint mismatch)', 1,
       spies.analyzeWithModel.calls.filter(args => args[2] !== true).length);
   });
 

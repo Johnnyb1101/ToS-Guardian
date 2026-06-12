@@ -415,6 +415,25 @@ mustFalse('looksLikeLegalDocument', 'rejects empty input', false, utils.looksLik
   // A site with no complementary notices → empty (zero extra fetches).
   mustEqual('extractSupplementalPrivacyLinks', 'empty when no supplemental notices', 0,
     utils.extractSupplementalPrivacyLinks('<a href="/privacy.html">Privacy Policy</a>', base).length);
+
+  // (a) The same notice linked via equivalent variants (trailing slash, www vs
+  // apex host) collapses to ONE before the cap — the LinkedIn double-count bug.
+  const dupHtml = `
+    <a href="https://www.linkedin.com/legal/california-privacy-disclosure">California Privacy Notice</a>
+    <a href="https://www.linkedin.com/legal/california-privacy-disclosure/">California Privacy Notice</a>
+    <a href="https://linkedin.com/legal/california-privacy-disclosure?src=nav">California Privacy Notice</a>`;
+  const dupBase = 'https://www.linkedin.com/legal/privacy-policy';
+  const dupSupps = utils.extractSupplementalPrivacyLinks(dupHtml, dupBase, { exclude: [dupBase] });
+  mustEqual('extractSupplementalPrivacyLinks', 'collapses duplicate supplemental URLs to one', 1,
+    dupSupps.filter(u => /california-privacy-disclosure/.test(u)).length);
+
+  // (b) A supplemental URL equal to the primary winner is dropped even when it
+  // differs only by a trailing slash from the excluded primary.
+  const primaryDupSupps = utils.extractSupplementalPrivacyLinks(dupHtml, dupBase, {
+    exclude: ['https://www.linkedin.com/legal/california-privacy-disclosure']
+  });
+  mustTrue('extractSupplementalPrivacyLinks', 'drops supplemental equal to the primary winner', true,
+    !primaryDupSupps.some(u => /california-privacy-disclosure/.test(u)));
 }
 
 {
@@ -764,6 +783,42 @@ Not covered in this document.`;
   const html = utils.formatSummary('No Anthropic API key set. Open settings to add your key.', []);
   mustTrue('formatSummary', 'shows no-sections message', true, html.includes('No Anthropic API key set'));
   mustFalse('formatSummary', 'no-sections message has no Show more', false, html.includes('tg-more-toggle'));
+}
+
+// Content fingerprint: the full-doc-set change detector. Stable across trivial
+// edits (dates, whitespace, cache-busting supplemental URLs), flips on real
+// wording changes anywhere in the set (including the ToS — the old embedding
+// check excluded it).
+{
+  const base = '=== TERMS OF SERVICE ===\nYou agree to binding arbitration.\n\n=== PRIVACY POLICY ===\nLast updated: January 1, 2026\nWe share data with affiliates for marketing.';
+
+  // Trivial edits must NOT change the fingerprint.
+  const dateBumped = base.replace('January 1, 2026', 'March 15, 2026');
+  mustEqual('contentFingerprint', 'stable across revision-date change', utils.contentFingerprint(base), utils.contentFingerprint(dateBumped));
+  const reflowed = base.replace(/\n/g, '\n   ').replace('We share', 'We  share');
+  mustEqual('contentFingerprint', 'stable across whitespace/reflow', utils.contentFingerprint(base), utils.contentFingerprint(reflowed));
+  const suppA = base + '\n\n=== SUPPLEMENTAL PRIVACY NOTICE: https://x.com/ccpa?v=1 ===\nCCPA text.';
+  const suppB = base + '\n\n=== SUPPLEMENTAL PRIVACY NOTICE: https://x.com/ccpa?v=2 ===\nCCPA text.';
+  mustEqual('contentFingerprint', 'stable across cache-busting supplemental URL', utils.contentFingerprint(suppA), utils.contentFingerprint(suppB));
+
+  // Real wording changes MUST flip the fingerprint — anywhere in the set.
+  const privacyChanged = base.replace('affiliates for marketing', 'anyone, including data brokers, for any purpose');
+  mustFalse('contentFingerprint', 'flips on a privacy clause change', false, utils.contentFingerprint(base) === utils.contentFingerprint(privacyChanged));
+  const tosChanged = base.replace('You agree to binding arbitration.', 'You may sue us in court.');
+  mustFalse('contentFingerprint', 'flips on a ToS clause change (gap-2 regression)', false, utils.contentFingerprint(base) === utils.contentFingerprint(tosChanged));
+  const suppChanged = suppA.replace('CCPA text.', 'We now sell your precise location.');
+  mustFalse('contentFingerprint', 'flips on a supplemental-notice content change', false, utils.contentFingerprint(suppA) === utils.contentFingerprint(suppChanged));
+
+  // Stamp ↔ extract ↔ match round-trip.
+  const stamped = '🔴 DATA SELLING & SHARING\nThey share data.\n' + utils.contentFingerprintStamp(base);
+  mustEqual('cachedContentFingerprint', 'extracts the stamped fingerprint', utils.contentFingerprint(base), utils.cachedContentFingerprint(stamped));
+  mustTrue('contentFingerprintMatches', 'matches the same source docs', true, utils.contentFingerprintMatches(stamped, base));
+  mustFalse('contentFingerprintMatches', 'mismatches changed source docs', false, utils.contentFingerprintMatches(stamped, privacyChanged));
+  mustFalse('contentFingerprintMatches', 'treats an unstamped legacy entry as a miss', false, utils.contentFingerprintMatches('no stamp here', base));
+
+  // The stamp is invisible — it must never render in the overlay.
+  mustFalse('formatSummary', 'strips the content-fingerprint stamp', false,
+    /tg-fp/.test(utils.formatSummary('🔴 OPT-OUT RIGHTS\nYou can opt out.\n' + utils.contentFingerprintStamp(base), [])));
 }
 
 // stripEvalChrome must remove analyzer-echoed verdict markup while preserving body text.

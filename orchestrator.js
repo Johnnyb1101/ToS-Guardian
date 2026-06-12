@@ -56,6 +56,8 @@ if (domain && fetched) {
   const supabaseResult = await readFromSupabase(domain, cacheVerificationText);
   if (supabaseResult && !isCurrentSchemaSummary(supabaseResult.summary)) {
     console.log("[Orchestrator] Cached summary predates the current overlay schema (missing risk verdict or 'What They Collect') — re-analyzing to refresh");
+  } else if (supabaseResult && !contentFingerprintMatches(supabaseResult.summary, textToAnalyze)) {
+    console.log("[Orchestrator] Source documents changed since cached (fingerprint mismatch) — re-analyzing");
   } else if (supabaseResult) {
     const cachedEvaluation = validateEvaluation(
       evaluateAnalysis(stripInjectionWarning(stripHeadlineChrome(stripEvalChrome(supabaseResult.summary))))
@@ -235,6 +237,9 @@ const displayOptOutLinks = [
     // Stamp the current cache-schema version so this entry is recognized as fresh
     // on later reads (and so a future version bump retires it). (See tosUtils.)
     result.summary += `\n${cacheSchemaStamp()}`;
+    // Stamp a fingerprint of the full source doc set so a later read can detect
+    // when the underlying documents have materially changed and re-analyze.
+    result.summary += `\n${contentFingerprintStamp(textToAnalyze)}`;
   }
 
   if (!result) {
