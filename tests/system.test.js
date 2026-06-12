@@ -228,12 +228,14 @@ function adequateSummary(marker = '') {
   return strongSummary(marker).replace('You can request deletion through Manage Your Data.', 'Not covered in this document.');
 }
 
-// A stored Supabase entry carries the trusted risk verdict appended at write time.
-// Cached fixtures must include it (the collection section comes from the summary
-// helpers) so they pass the current-schema freshness check in the cache-read path
-// and actually exercise the cache logic rather than being re-analyzed as stale.
+// A stored Supabase entry carries the cache-schema stamp the orchestrator appends
+// at write time. Cached fixtures must include it so they pass the freshness check
+// in the cache-read path and actually exercise the cache logic rather than being
+// re-analyzed as stale. (Also keeps a risk div for the badge-rebuild assertions.)
 function cachedEntry(summary) {
-  return summary + '\n<div class="tg-risk tg-risk-moderate">⚠️ Moderate concern</div>';
+  return summary +
+    '\n<div class="tg-risk tg-risk-moderate">⚠️ Moderate concern</div>' +
+    '\n' + context.cacheSchemaStamp();
 }
 
 async function runTest(fn) {

@@ -254,6 +254,9 @@ function stripInjectionWarning(text) {
 function formatSummary(raw, optOutLinks = []) {
   if (!raw) return "";
 
+  // Drop the cache-schema stamp (invisible marker) so it never renders.
+  raw = raw.replace(/<!--\s*tg-schema:\d+\s*-->/g, "");
+
   let injectionWarning = "";
   const injectionPattern = /⚠️\s*Possible injection attempt detected in document[^\n]*/i;
   const injectionMatch = raw.match(injectionPattern);
@@ -458,16 +461,33 @@ function formatSummary(raw, optOutLinks = []) {
   return html;
 }
 
-// A cached summary predates the current overlay schema if it lacks the trusted
-// risk verdict (pre-redesign) or the "What They Collect" section (pre-collection).
-// The orchestrator treats such entries as a cache MISS so they refresh to the
-// current format instead of rendering stale until the 15-day TTL expires. Cost is
-// one re-analysis per stale domain (the fresh write then carries both markers).
+// Cache schema version. BUMP THIS whenever a change should retire previously
+// cached analyses — a new/renamed section, a scoring/verdict fix, or any change
+// to what gets BAKED INTO a stored summary (things derived at render time, like
+// section formatting, auto-heal on read and do NOT need a bump). The orchestrator
+// stamps every fresh analysis with this version (an invisible HTML comment inside
+// the summary) and treats any cached entry below it as a MISS → re-analyze. Cost
+// is one re-analysis per domain after a bump (then it carries the new version).
+const CACHE_SCHEMA_VERSION = 1;
+
+// Read the schema version stamped into a stored summary (0 if unstamped/legacy).
+function cacheSchemaVersion(summary) {
+  const m = /<!--\s*tg-schema:(\d+)\s*-->/.exec(summary || '');
+  return m ? parseInt(m[1], 10) : 0;
+}
+
+// The trusted chrome the orchestrator appends so a fresh analysis is stamped as
+// current before it's cached. Appended once at write time.
+function cacheSchemaStamp() {
+  return `<!--tg-schema:${CACHE_SCHEMA_VERSION}-->`;
+}
+
+// A cached summary is current only if its stamped version is at least the current
+// one. Anything older (or unstamped) is treated as a cache MISS so it refreshes
+// instead of rendering stale until the 15-day TTL expires.
 function isCurrentSchemaSummary(summary) {
   if (!summary || typeof summary !== 'string') return false;
-  const hasRiskVerdict = /class="tg-risk\b/.test(summary);
-  const hasCollectionSection = /WHAT THEY COLLECT/i.test(summary);
-  return hasRiskVerdict && hasCollectionSection;
+  return cacheSchemaVersion(summary) >= CACHE_SCHEMA_VERSION;
 }
 
 function normalizeAnalysisHeaders(summary) {

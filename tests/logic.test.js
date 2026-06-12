@@ -741,16 +741,22 @@ Not covered in this document.`;
     utils.normalizeAnalysisHeaders('**DATA SELLING & SHARING**\n- stuff').includes('🔴 DATA SELLING & SHARING'));
 }
 
-// isCurrentSchemaSummary: a cached summary is "current" only with BOTH the risk
-// verdict and the collection section; otherwise it's treated as a cache miss.
+// isCurrentSchemaSummary: a cached summary is current only if its stamped schema
+// version is at least the current one. Unstamped/older entries → cache miss.
 {
-  const current = '📥 WHAT THEY COLLECT\n- SSN\n<div class="tg-risk tg-risk-moderate">⚠️ Moderate concern</div>';
-  mustTrue('isCurrentSchemaSummary', 'accepts risk + collection', true, utils.isCurrentSchemaSummary(current));
-  mustFalse('isCurrentSchemaSummary', 'rejects missing risk verdict (pre-redesign)', false,
-    utils.isCurrentSchemaSummary('📥 WHAT THEY COLLECT\n- SSN'));
-  mustFalse('isCurrentSchemaSummary', 'rejects missing collection (pre-collection)', false,
-    utils.isCurrentSchemaSummary('🔴 DATA SELLING & SHARING\n- x\n<div class="tg-risk tg-risk-low">ok</div>'));
+  const stamped = '📥 WHAT THEY COLLECT\n- SSN\n' + utils.cacheSchemaStamp();
+  mustTrue('isCurrentSchemaSummary', 'accepts a current-version stamp', true,
+    utils.isCurrentSchemaSummary(stamped));
+  mustFalse('isCurrentSchemaSummary', 'rejects an unstamped legacy entry', false,
+    utils.isCurrentSchemaSummary('📥 WHAT THEY COLLECT\n- SSN\n<div class="tg-risk tg-risk-low">ok</div>'));
+  mustFalse('isCurrentSchemaSummary', 'rejects an older stamped version', false,
+    utils.isCurrentSchemaSummary('body\n<!--tg-schema:0-->'));
   mustFalse('isCurrentSchemaSummary', 'rejects empty', false, utils.isCurrentSchemaSummary(''));
+  mustEqual('cacheSchemaVersion', 'reads the stamped version', 7,
+    utils.cacheSchemaVersion('body\n<!--tg-schema:7-->'));
+  // The stamp is invisible — it must never render in the overlay.
+  mustFalse('formatSummary', 'strips the cache-schema stamp', false,
+    /tg-schema/.test(utils.formatSummary('🔴 OPT-OUT RIGHTS\nYou can opt out.\n' + utils.cacheSchemaStamp(), [])));
 }
 
 // A message with no recognized sections (config/error/timeout) must stay visible.

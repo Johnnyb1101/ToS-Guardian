@@ -232,6 +232,9 @@ const displayOptOutLinks = [
     }
     result.summary += `\n<div class="tg-risk tg-risk-${trustedRisk.toLowerCase()}">${trustedRisk}</div>`;
     result.summary += `\n<div class="tg-eval-badge tg-eval-${evaluation.label.toLowerCase()}">Analysis confidence: ${evaluation.label} (${evaluation.score}/100)</div>`;
+    // Stamp the current cache-schema version so this entry is recognized as fresh
+    // on later reads (and so a future version bump retires it). (See tosUtils.)
+    result.summary += `\n${cacheSchemaStamp()}`;
   }
 
   if (!result) {
