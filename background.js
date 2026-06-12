@@ -647,7 +647,7 @@ async function analyzeWithModel(text, source = "this page", escalate = false) {
   };
 
   const defaultModels = {
-    anthropic: 'claude-haiku-4-5-20251001',
+    anthropic: 'claude-sonnet-4-6',
     openai: 'gpt-4o-mini'
   };
 

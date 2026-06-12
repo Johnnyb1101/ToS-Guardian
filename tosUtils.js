@@ -191,7 +191,7 @@ const RISK_LEVELS = ['Low', 'Moderate', 'High'];
 // ever shown, so a poisoned document can't force a reassuring verdict.
 function extractAnalyzerHeadline(summary) {
   if (!summary) return { bottomLine: null, risk: null };
-  const NEXT_MARKER = /[🧭🔴📋🟡🟢]/;
+  const NEXT_MARKER = /🧭|📥|🔴|📋|🟡|🟢/;
 
   const blockAfter = (label) => {
     const idx = summary.indexOf(label);
@@ -202,7 +202,17 @@ function extractAnalyzerHeadline(summary) {
   };
 
   const blBlock = blockAfter('🧭 BOTTOM LINE');
-  const bottomLine = blBlock ? (blBlock.replace(/\*\*/g, '').replace(/\s+/g, ' ').trim() || null) : null;
+  let bottomLine = blBlock ? (blBlock.replace(/\*\*/g, '').replace(/\s+/g, ' ').trim() || null) : null;
+
+  // Fallback: some models (notably Sonnet) occasionally drop the "🧭 BOTTOM LINE"
+  // label and just write the sentence first. Recover it from the leading text
+  // before the first 🧭/section marker so the overlay still gets a top summary.
+  if (!bottomLine) {
+    const firstMarker = summary.search(NEXT_MARKER);
+    const lead = firstMarker === -1 ? '' : summary.slice(0, firstMarker);
+    const cleaned = lead.replace(/<[^>]+>/g, '').replace(/\*\*/g, '').replace(/\s+/g, ' ').trim();
+    if (cleaned && cleaned.length <= 320) bottomLine = cleaned;
+  }
 
   let risk = null;
   const rlBlock = blockAfter('🧭 RISK LEVEL');
@@ -224,6 +234,12 @@ function stripHeadlineChrome(text) {
     .replace(/<div\s+class="tg-(?:risk|bottomline)\b[^"]*"[^>]*>[\s\S]*?<\/div>/gi, "")
     .replace(/🧭\s*BOTTOM LINE[\s\S]*?(?=[🧭🔴📋🟡🟢]|$)/gi, "")
     .replace(/🧭\s*RISK LEVEL[\s\S]*?(?=[🧭🔴📋🟡🟢]|$)/gi, "")
+    // Any prose still left BEFORE the first section header is headline residue —
+    // e.g. a bottom-line sentence the model wrote without its "🧭 BOTTOM LINE"
+    // label. The trusted bottom line is recomposed by the orchestrator, so this
+    // leftover must not leak into the body. (Only fires when a section marker
+    // exists, so config/error messages with no sections are left intact.)
+    .replace(/^[\s\S]*?(?=📥|🔴|📋|🟡|🟢)/, "")
     .trim();
 }
 

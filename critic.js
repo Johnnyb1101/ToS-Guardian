@@ -6,7 +6,7 @@ const CRITIC_SOURCE_BUDGET = 100000;
 const CRITIC_MAX_TOKENS = 600;
 
 const CRITIC_MODELS = {
-  anthropic: 'claude-haiku-4-5-20251001',
+  anthropic: 'claude-sonnet-4-6',
   openai: 'gpt-4o-mini',
   ollama: 'llama3'
 };

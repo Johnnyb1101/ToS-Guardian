@@ -599,6 +599,16 @@ Not covered in this document.`;
   mustEqual('extractAnalyzerHeadline', 'no headline → null bottom line', null, out.bottomLine);
   mustEqual('extractAnalyzerHeadline', 'no headline → null risk', null, out.risk);
 }
+// Model dropped the "🧭 BOTTOM LINE" label and wrote the sentence bare (the
+// Netflix/Sonnet case) — recover it from the leading text so the overlay still
+// shows a top summary, and still read the risk from the RISK LEVEL block.
+{
+  const out = utils.extractAnalyzerHeadline(
+    'Netflix collects a wide range of data and forces arbitration.\n🧭 RISK LEVEL\nHigh\n📥 WHAT THEY COLLECT\n- Payment data');
+  mustEqual('extractAnalyzerHeadline', 'recovers bare bottom line (no label)',
+    'Netflix collects a wide range of data and forces arbitration.', out.bottomLine);
+  mustEqual('extractAnalyzerHeadline', 'still reads risk when label dropped', 'High', out.risk);
+}
 
 // stripHeadlineChrome removes the 🧭 blocks AND any echoed risk/bottomline divs.
 {
@@ -608,6 +618,22 @@ Not covered in this document.`;
   mustFalse('stripHeadlineChrome', 'removes RISK LEVEL block', false, /RISK LEVEL/.test(stripped));
   mustFalse('stripHeadlineChrome', 'removes echoed risk div', false, /tg-risk/.test(stripped));
   mustTrue('stripHeadlineChrome', 'preserves real section body', true, stripped.includes('real body'));
+}
+// When the bottom-line label is dropped, the orphan sentence before the first
+// section must be removed from the body (it's recomposed as trusted chrome).
+{
+  const body = 'Netflix collects a wide range of data and forces arbitration.\n🧭 RISK LEVEL\nHigh\n📥 WHAT THEY COLLECT\n- Payment data';
+  const stripped = utils.stripHeadlineChrome(body);
+  mustFalse('stripHeadlineChrome', 'drops orphan bottom-line sentence', false,
+    /Netflix collects a wide range/.test(stripped));
+  mustTrue('stripHeadlineChrome', 'keeps the collection section', true, stripped.includes('WHAT THEY COLLECT'));
+  mustTrue('stripHeadlineChrome', 'keeps the section body', true, stripped.includes('Payment data'));
+}
+// A no-sections message (config/error) must be left fully intact.
+{
+  const msg = 'No Anthropic API key set. Open settings to add your key.';
+  mustEqual('stripHeadlineChrome', 'leaves a no-sections message intact', msg,
+    utils.stripHeadlineChrome(msg));
 }
 
 // formatSummary: collapses sections, surfaces a trusted risk verdict, and the LAST
