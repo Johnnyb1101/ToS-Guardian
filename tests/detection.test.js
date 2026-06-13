@@ -32,7 +32,9 @@ function makeCtx(page = {}) {
     documentElement: { innerHTML: '' }
   };
   const urlPath = page.path || '/';
-  const win = { location: { hostname: 'example.com', href: `https://example.com${urlPath}`, pathname: urlPath } };
+  const host = page.host || 'example.com';
+  const search = page.search || '';
+  const win = { location: { hostname: host, href: `https://${host}${urlPath}${search}`, pathname: urlPath, search } };
   win.top = win; // not a frame
   const browser = {
     runtime: { onMessage: { addListener: noop }, sendMessage: noop, lastError: null },
@@ -122,6 +124,14 @@ check('bare "Sign up", no context → no fire',
 check('non-action "Learn more" never fires even with agreement context',
   { emails: [{}], bodyText: 'privacy policy and terms of service' }, btn({ text: 'Learn more' }), false);
 check('empty label → no fire', {}, btn({ text: '' }), false);
+// FIXPLAN #3 — search-results pages must never fire (result snippets carry other
+// sites' login/signup text; the page is the search engine, not the target site).
+check('Google SERP: "Log in to your PayPal account" snippet → no fire',
+  { host: 'www.google.com', path: '/search', search: '?q=paypal', emails: [{}], bodyText: 'paypal login sign up for paypal' },
+  btn({ text: 'Log in to your PayPal account' }), false);
+check('search results never fire even with an auth form present',
+  { host: 'www.bing.com', path: '/search', search: '?q=login', password: true },
+  btn({ text: 'Sign in' }), false);
 
 // --- Report --------------------------------------------------------------
 const widths = {

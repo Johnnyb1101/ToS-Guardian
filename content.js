@@ -57,6 +57,19 @@ function shouldRunInFrame() {
   return pageHasAuthForm() || pageHasAgreementContext();
 }
 
+// A search-results page is never an agreement moment. Its result snippets are full
+// of OTHER sites' "Log in"/"Sign up for X" text, which must not trigger an analysis
+// of the search engine itself. Scoped to real search-engine hosts with a query or
+// /search path, so it can't suppress normal sites. (FIXPLAN #3 — Google SERP bug.)
+function pageIsSearchResults() {
+  const host = (window.location?.hostname || "").toLowerCase();
+  const path = (window.location?.pathname || "").toLowerCase();
+  const search = (window.location?.search || "").toLowerCase();
+  const isSearchEngine = /(^|\.)(google|bing|duckduckgo|ecosia|yahoo|baidu|yandex|brave|startpage|qwant)\./.test(host);
+  if (!isSearchEngine) return false;
+  return /[?&](q|query|p)=/.test(search) || /\/search(\/|$)/.test(path);
+}
+
 // True when the URL path itself names an auth page (e.g. /login, /sign-up).
 function pageUrlLooksLikeAuth() {
   const path = (window.location?.pathname || "").toLowerCase();
@@ -90,6 +103,10 @@ function isAgreeButton(el) {
   const title = el.getAttribute?.("title")?.toLowerCase().trim() || "";
   const combined = text || value || ariaLabel || title;
   if (!combined) return false;
+
+  // Never fire on a search-results page (its snippets are full of other sites'
+  // login/signup text). (FIXPLAN #3)
+  if (pageIsSearchResults()) return false;
 
   // High confidence: explicit agree/accept/signup language — fire on the label alone.
   const highConfidence = [
@@ -145,8 +162,10 @@ function isAgreeButton(el) {
   // email box.
   if (generic && authForm && (pageUrlLooksLikeAuth() || hasAuthProximity(el))) return true;
 
-  // On domains we already know host legal docs, be more permissive.
-  if (domainIsKnown && (signin || signupIntent || authForm)) return true;
+  // On domains we already know host legal docs, be more permissive — but still
+  // require a real auth form on the page. Bare "Login"/"Sign up" TEXT alone must
+  // not fire (it appears in search-result snippets, nav, footers, etc.). (FIXPLAN #3)
+  if (domainIsKnown && authForm) return true;
 
   // Page-wide agreement context (SSO buttons, etc.).
   return pageHasAgreementContext();
