@@ -30,7 +30,10 @@ async function runOrchestrator(pageUrl, pageText, pageHtml) {
     stageStartedAt = now;
   };
 
-  const domain = pageUrl ? (() => { try { return new URL(pageUrl).hostname; } catch(e) { return null; } })() : null;
+  // Cache key is the REGISTRABLE domain (eTLD+1), not the hostname, so sibling
+  // subdomains (www / login / oak …) share one cache entry instead of each
+  // re-analyzing and writing a duplicate row. (FIXPLAN #1)
+  const domain = pageUrl ? (() => { try { return registrableDomain(new URL(pageUrl).hostname); } catch(e) { return null; } })() : null;
 
 // --- STEP 1: FETCHER AGENT ---
 const knownUrls = await lookupSite(pageUrl);

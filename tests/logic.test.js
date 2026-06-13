@@ -843,6 +843,22 @@ Not covered in this document.`;
   mustTrue('normalizeAnalysisHeaders', 'doubled emoji opt-out normalized', true, got.includes('🔴 OPT-OUT RIGHTS'));
 }
 
+// registrableDomain (eTLD+1) keying — sibling subdomains must collapse to one key
+// so cache/acknowledgments/relays don't fragment across www/login/oak/etc. (FIXPLAN #1)
+{
+  const rd = utils.registrableDomain;
+  mustEqual('registrableDomain', 'www collapses to bare domain', 'coinbase.com', rd('www.coinbase.com'));
+  mustEqual('registrableDomain', 'auth subdomain collapses to same key', 'coinbase.com', rd('login.coinbase.com'));
+  mustEqual('registrableDomain', 'www and auth subdomain share one key', rd('www.coinbase.com'), rd('login.coinbase.com'));
+  mustEqual('registrableDomain', 'deep subdomain (oak.acorns.com)', 'acorns.com', rd('oak.acorns.com'));
+  mustEqual('registrableDomain', 'bare two-label domain unchanged', 'fundrise.com', rd('fundrise.com'));
+  mustEqual('registrableDomain', 'multi-label public suffix kept (co.uk)', 'tesco.co.uk', rd('www.tesco.co.uk'));
+  mustEqual('registrableDomain', 'multi-label public suffix kept (com.au)', 'anz.com.au', rd('secure.anz.com.au'));
+  mustEqual('registrableDomain', 'accepts a full URL', 'capitalone.com', rd('https://www.capitalone.com/digital/terms/'));
+  mustEqual('registrableDomain', 'IPv4 literal left untouched', '127.0.0.1', rd('127.0.0.1'));
+  mustEqual('registrableDomain', 'case-insensitive + trailing dot', 'paypal.com', rd('WWW.PayPal.com.'));
+}
+
 function printTable() {
   const headers = ['status', 'function', 'case name', 'expected', 'got'];
   const data = rows.map(r => [r.status, r.fn, r.name, r.expected, r.got]);

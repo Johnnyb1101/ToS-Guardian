@@ -286,9 +286,9 @@ function showGuardianOverlay(event, sourceButton = null) {
 
   overlayRoot.getElementById("tg-proceed").addEventListener("click", () => {
     interceptActive = false;
-    acknowledgedDomains.add(window.location.hostname);
+    acknowledgedDomains.add(currentDomainKey());
     overlay.remove();
-    browser.runtime.sendMessage({ action: "acknowledge", domain: window.location.hostname });
+    browser.runtime.sendMessage({ action: "acknowledge", domain: currentDomainKey() });
     setTimeout(() => {
       if (!clickedButton || !clickedButton.isConnected) return;
       if (clickedButton instanceof HTMLFormElement) {
@@ -365,8 +365,13 @@ function showGuardianOverlay(event, sourceButton = null) {
 let interceptActive = false;
 const acknowledgedDomains = new Set();
 
+// Key acknowledgments + cache by REGISTRABLE domain (eTLD+1) so a "Sign In" on
+// www.x.com and the "Log In" on its auth subdomain login.x.com are treated as
+// one site — no double-fire across the landing→auth hop, shared cache. (FIXPLAN #1)
+function currentDomainKey() { return registrableDomain(window.location.hostname); }
+
 document.addEventListener("click", (event) => {
-  if (acknowledgedDomains.has(window.location.hostname)) return;
+  if (acknowledgedDomains.has(currentDomainKey())) return;
   if (interceptActive) return;
 
   const eventPath = event.composedPath();
@@ -383,7 +388,7 @@ document.addEventListener("click", (event) => {
 
   console.log('[TOS Guardian] Intercepted click on:', hookedEl.tagName);
 
-  const domain = window.location.hostname;
+  const domain = currentDomainKey();
 
   let responded = false;
   const fallbackTimer = setTimeout(() => {
@@ -417,7 +422,7 @@ document.addEventListener("click", (event) => {
 }, true);
 
 document.addEventListener("submit", (event) => {
-  if (acknowledgedDomains.has(window.location.hostname)) return;
+  if (acknowledgedDomains.has(currentDomainKey())) return;
   if (interceptActive) return;
 
   const form = event.target;
@@ -462,7 +467,7 @@ let domainIsKnown = false;
 function initTosGuardian() {
   if (!shouldRunInFrame()) return;
 
-  const domain = window.location.hostname;
+  const domain = currentDomainKey();
 
   let initResponded = false;
   const initFallback = setTimeout(() => {

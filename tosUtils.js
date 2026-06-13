@@ -14,6 +14,46 @@ function escapeHtml(text) {
     .replace(/'/g, "&#39;");
 }
 
+// --- Registrable-domain (eTLD+1) keying ---
+// Cache, acknowledgments and relays all key off the registrable domain so that
+// sibling subdomains (www.x.com / login.x.com / oak.x.com) share one cache entry
+// and don't double-fire or miss each other's analysis. This is a PRAGMATIC eTLD+1
+// derivation, not the full Public Suffix List: it handles plain TLDs plus a curated
+// set of common multi-label public suffixes (co.uk, com.au, ...). An unlisted
+// multi-label ccTLD degrades to last-two-labels (slightly too broad) — which can
+// only ever OVER-share a cache entry, and the 0.95 semantic check + content
+// fingerprint will re-analyze if the documents actually differ, so it stays safe.
+const MULTI_PART_TLDS = new Set([
+  'co.uk','org.uk','gov.uk','ac.uk','me.uk','ltd.uk','plc.uk','net.uk',
+  'com.au','net.au','org.au','edu.au','gov.au','id.au',
+  'co.nz','net.nz','org.nz','govt.nz',
+  'co.jp','or.jp','ne.jp','ac.jp','go.jp',
+  'co.kr','or.kr',
+  'co.in','net.in','org.in','gen.in','firm.in','ind.in',
+  'com.br','net.br','org.br','gov.br',
+  'com.mx','com.ar','com.sg','com.hk','com.tw','com.cn','net.cn','org.cn','gov.cn',
+  'co.za','org.za','co.il','com.tr','gov.tr',
+  'com.es','com.pl','com.ua','co.id','com.my','com.ph','com.vn'
+]);
+
+function registrableDomain(host) {
+  if (!host) return host;
+  let h = String(host).trim().toLowerCase().replace(/\.+$/, '');
+  // Tolerate a full URL slipping in instead of a bare hostname.
+  if (h.includes('/') || h.includes(':')) {
+    try { h = new URL(h.includes('://') ? h : `https://${h}`).hostname.toLowerCase(); }
+    catch (e) { h = h.split(/[\/:]/)[0]; }
+  }
+  if (!h) return h;
+  // Leave IP literals (incl. bracketed IPv6) untouched.
+  if (h.startsWith('[') || /^[0-9.]+$/.test(h)) return h;
+  const labels = h.split('.').filter(Boolean);
+  if (labels.length <= 2) return labels.join('.');
+  const lastTwo = labels.slice(-2).join('.');
+  if (MULTI_PART_TLDS.has(lastTwo)) return labels.slice(-3).join('.');
+  return lastTwo;
+}
+
 function isLikelyResourcePageUrl(url) {
   return /(?:^|[\/_-])(makingcents|blog|article|faq|tips|guide|learn|how-to|security-tips)(?:[\/_-]|$)/i.test(url || "");
 }
