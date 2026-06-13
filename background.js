@@ -107,13 +107,19 @@ async function fetcherAgent(pageUrl, pageHtml = "", knownUrls = null) {
 
     if (knownUrls) {
       console.log("[Fetcher] Using site database URLs — skipping candidate guessing");
+      // FIXPLAN #4 — avoid fetch fan-out that self-throttles against the proxy's own
+      // rate limiter. If we already have an explicit supplemental list, fetch those
+      // directly (enrich:false, so each one does NOT recursively gather its own
+      // sub-notices) and DON'T re-discover supplementals off the main privacy doc
+      // (which overlaps the explicit list). Only discover (enrich:true) when no list.
+      const hasKnownSupplemental = !!(knownUrls.supplemental && knownUrls.supplemental.length);
       const [tosResult, privacyResult] = await Promise.all([
         tryFetchCandidates([knownUrls.tos], 'tos'),
-        tryFetchCandidates([knownUrls.privacy], 'privacy')
+        tryFetchCandidates([knownUrls.privacy], 'privacy', !hasKnownSupplemental)
       ]);
       if (tosResult || privacyResult) {
-        const supplementalResults = knownUrls.supplemental
-          ? (await Promise.all(knownUrls.supplemental.map(url => tryFetchCandidates([url], 'privacy')))).filter(Boolean)
+        const supplementalResults = hasKnownSupplemental
+          ? (await Promise.all(knownUrls.supplemental.map(url => tryFetchCandidates([url], 'privacy', false)))).filter(Boolean)
           : [];
         const combined = [
           tosResult ? `=== TERMS OF SERVICE ===\n${tosResult.text}` : "",
@@ -426,7 +432,7 @@ async function fetchSingleCandidate(url) {
   return null;
 }
 
-async function tryFetchCandidates(candidates, kind = null) {
+async function tryFetchCandidates(candidates, kind = null, enrich = true) {
   // Central URL validation gate (SECURITY-020)
   const validCandidates = candidates.filter(url => {
     if (validateDocumentUrl(url)) return true;
@@ -468,7 +474,7 @@ async function tryFetchCandidates(candidates, kind = null) {
   // primary doc usually links to them, so gather those complementary notices and
   // fold their text into the winner for ONE unified analysis. (Privacy only; one
   // hop; capped; skips anything not readable. Zero extra fetches when none exist.)
-  if (winner && kind === 'privacy' && winner.html) {
+  if (enrich && winner && kind === 'privacy' && winner.html) {
     await enrichWithSupplementalNotices(winner);
   }
   return winner;
