@@ -306,6 +306,7 @@ function showGuardianOverlay(event, sourceButton = null) {
   overlayRoot.getElementById("tg-proceed").addEventListener("click", () => {
     interceptActive = false;
     acknowledgedDomains.add(currentDomainKey());
+    clearPendingOverlay();
     overlay.remove();
     browser.runtime.sendMessage({ action: "acknowledge", domain: currentDomainKey() });
     setTimeout(() => {
@@ -321,6 +322,7 @@ function showGuardianOverlay(event, sourceButton = null) {
 
   overlayRoot.getElementById("tg-leave").addEventListener("click", () => {
     interceptActive = false;
+    clearPendingOverlay();
     overlay.remove();
   });
 
@@ -389,6 +391,38 @@ const acknowledgedDomains = new Set();
 // one site — no double-fire across the landing→auth hop, shared cache. (FIXPLAN #1)
 function currentDomainKey() { return registrableDomain(window.location.hostname); }
 
+// --- "Show on the next page" (FIXPLAN #5) ---
+// An agree-click on a button that navigates (e.g. "Get Started" → a signup subdomain)
+// tears this page down before the overlay can be seen, while the analysis keeps
+// running in the background and caches under the registrable domain. We persist a
+// short-lived marker on intercept; the destination page (same registrable domain)
+// re-shows the overlay on load so the user still sees the analysis. Cleared on
+// proceed/leave so it doesn't re-fire on later same-domain navigation.
+const PENDING_OVERLAY_TTL_MS = 90000;
+function markPendingOverlay() {
+  try { browser.storage.local.set({ tosPendingOverlay: { domain: currentDomainKey(), ts: Date.now() } }); } catch (e) {}
+}
+function clearPendingOverlay() {
+  try { browser.storage.local.remove("tosPendingOverlay"); } catch (e) {}
+}
+function maybeShowPendingOverlay() {
+  if (acknowledgedDomains.has(currentDomainKey())) return;
+  if (document.getElementById("tos-guardian-overlay")) return;
+  browser.storage.local.get("tosPendingOverlay", (data) => {
+    const pending = data && data.tosPendingOverlay;
+    if (!pending || pending.domain !== currentDomainKey()) return;
+    if (Date.now() - pending.ts > PENDING_OVERLAY_TTL_MS) { clearPendingOverlay(); return; }
+    if (acknowledgedDomains.has(currentDomainKey())) { clearPendingOverlay(); return; }
+    if (document.getElementById("tos-guardian-overlay")) return;
+    console.log("[TOS Guardian] Re-showing analysis on the destination page after navigation");
+    interceptActive = true;
+    setTimeout(() => { interceptActive = false; }, 5000);
+    const synthetic = { preventDefault() {}, stopImmediatePropagation() {}, stopPropagation() {}, target: document.body, currentTarget: document.body };
+    showGuardianOverlay(synthetic, null);
+    clearPendingOverlay();
+  });
+}
+
 document.addEventListener("click", (event) => {
   if (acknowledgedDomains.has(currentDomainKey())) return;
   if (interceptActive) return;
@@ -408,6 +442,9 @@ document.addEventListener("click", (event) => {
   console.log('[TOS Guardian] Intercepted click on:', hookedEl.tagName);
 
   const domain = currentDomainKey();
+  // Persist BEFORE any navigation can tear this page down, so the destination page
+  // can re-show the analysis. (FIXPLAN #5)
+  markPendingOverlay();
 
   let responded = false;
   const fallbackTimer = setTimeout(() => {
@@ -461,6 +498,7 @@ document.addEventListener("submit", (event) => {
   const syntheticEvent = { preventDefault() {}, stopImmediatePropagation() {}, stopPropagation() {}, target: agreeBtn || form, currentTarget: form };
   interceptActive = true;
   setTimeout(() => { interceptActive = false; }, 5000);
+  markPendingOverlay(); // FIXPLAN #5 — survive a navigating submit
   showGuardianOverlay(syntheticEvent, agreeBtn || form);
 }, true);
 
@@ -509,6 +547,9 @@ function initTosGuardian() {
       if (response && response.acknowledged) acknowledgedDomains.add(domain);
     }
     attachToButtons();
+    // If an agree-click on this registrable domain got cut off by navigation, re-show
+    // the analysis here (it's cached under the registrable domain). (FIXPLAN #5)
+    maybeShowPendingOverlay();
     setTimeout(() => { attachToButtons(); }, 2000);
     setTimeout(() => { attachToButtons(); }, 4000);
   });
