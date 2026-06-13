@@ -59,7 +59,11 @@ if (domain && fetched) {
   const supabaseResult = await readFromSupabase(domain, cacheVerificationText);
   if (supabaseResult && !isCurrentSchemaSummary(supabaseResult.summary)) {
     console.log("[Orchestrator] Cached summary predates the current overlay schema (missing risk verdict or 'What They Collect') — re-analyzing to refresh");
-  } else if (supabaseResult && !contentFingerprintMatches(supabaseResult.summary, textToAnalyze)) {
+  } else if (supabaseResult && looksLikeLegalDocument(textToAnalyze) && !contentFingerprintMatches(supabaseResult.summary, textToAnalyze)) {
+    // Only re-analyze on a fingerprint mismatch when the FRESH fetch is itself a
+    // credible legal document. A nav-shell re-fetch (e.g. candidate-guessing on an
+    // auth subdomain that returns an empty SPA shell) must NOT invalidate a good
+    // cache and force a worse "couldn't read" re-analysis — serve the cache. (FIXPLAN #1b)
     console.log("[Orchestrator] Source documents changed since cached (fingerprint mismatch) — re-analyzing");
   } else if (supabaseResult) {
     const cachedEvaluation = validateEvaluation(

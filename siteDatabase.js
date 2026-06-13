@@ -51,7 +51,11 @@ const STATIC_SITES = {
 // ---------------------------------------------------------------------------
 async function lookupSite(pageUrl) {
   try {
-    const hostname = new URL(pageUrl).hostname.replace(/^www\./, "");
+    // Key by registrable domain (eTLD+1) so a learned site is found from ANY of its
+    // subdomains — e.g. signup.acorns.com / oak.acorns.com resolve to acorns.com's
+    // learned ToS+privacy URLs, so the fetcher gets the REAL docs instead of the auth
+    // subdomain's empty SPA shells (which otherwise defeat the cache). (FIXPLAN #1b)
+    const hostname = registrableDomain(new URL(pageUrl).hostname);
 
     if (STATIC_SITES[hostname]) {
       console.log(`[SiteDB] ✅ Static match: ${hostname}`);
@@ -106,7 +110,8 @@ async function lookupSite(pageUrl) {
 // ---------------------------------------------------------------------------
 async function learnSite(pageUrl, tosUrl, privacyUrl) {
   try {
-    const hostname = new URL(pageUrl).hostname.replace(/^www\./, "");
+    // Store under the registrable domain so every subdomain shares one entry. (FIXPLAN #1b)
+    const hostname = registrableDomain(new URL(pageUrl).hostname);
 
     if (STATIC_SITES[hostname]) return;
 

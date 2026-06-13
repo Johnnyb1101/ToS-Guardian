@@ -231,7 +231,10 @@ function adequateSummary(marker = '') {
 // The combined source-doc text the mocked fetcher returns by default. Shared so a
 // cached fixture's content fingerprint can be stamped to MATCH what the fetcher
 // produces (otherwise the freshness gate would treat every fixture as changed).
-const DEFAULT_FETCHED_TEXT = '=== TERMS OF SERVICE ===\nTerms.\n\n=== PRIVACY POLICY ===\nPrivacy text with affiliates, nonaffiliates, joint marketing, service providers, opt out, delete, and contact instructions.';
+// Shaped to pass looksLikeLegalDocument (≥7 legal markers) so the fingerprint-mismatch
+// path treats a CHANGED real doc as re-analyzable. (FIXPLAN #1b: a fingerprint mismatch
+// only re-analyzes when the fresh fetch is itself a credible legal document.)
+const DEFAULT_FETCHED_TEXT = '=== TERMS OF SERVICE ===\nYou agree to binding arbitration. Limitation of liability and indemnification apply.\n\n=== PRIVACY POLICY ===\nInformation we collect: personal information. We may share your information with affiliates, nonaffiliates, joint marketing partners, and service providers. Your rights include the ability to opt out and request deletion. Cookies and consent apply.';
 
 // A stored Supabase entry carries the cache-schema stamp AND a content fingerprint
 // the orchestrator appends at write time. Cached fixtures must include both so they
@@ -289,6 +292,26 @@ async function runTest(fn) {
     await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
     mustEqual('analyzeWithModel', 're-analyzes when source docs changed (fingerprint mismatch)', 1,
       spies.analyzeWithModel.calls.filter(args => args[2] !== true).length);
+  });
+
+  // FIXPLAN #1b — a nav-shell re-fetch (e.g. candidate-guessing on an auth subdomain
+  // that returns an empty SPA shell) must NOT invalidate a good cache via fingerprint
+  // mismatch. Even though the shell's fingerprint differs from the cached real docs,
+  // serve the cache rather than re-analyze the shell into a worse "couldn't read".
+  await runTest(async () => {
+    spies.fetcherAgent.impl = async () => ({
+      text: 'Welcome! Sign up. Enter your email address. Join today.', // nav shell — not a legal doc
+      sourceUrl: 'https://signup.example.com/terms',
+      privacyUrl: 'https://signup.example.com/privacy',
+      privacyHtml: '',
+      documentLinks: []
+    });
+    spies.readFromSupabase.impl = async () =>
+      ({ summary: cachedEntry(strongSummary('good cached'), 'a completely different set of real legal documents'), optOutLinks: [] });
+    const got = await context.runOrchestrator('https://signup.example.com/signup', 'page text', '<html></html>');
+    mustEqual('analyzeWithModel', 'nav-shell re-fetch does NOT re-analyze (serves cache)', 0,
+      spies.analyzeWithModel.calls.filter(args => args[2] !== true).length);
+    mustTrue('runOrchestrator', 'serves cached analysis on nav-shell re-fetch', true, got.summary.includes('good cached'));
   });
 
   // A cached privacy-empty summary must be rejected and replaced by fresh analysis.
