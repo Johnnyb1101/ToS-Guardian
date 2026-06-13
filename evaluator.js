@@ -189,6 +189,18 @@ function isSectionUnavailable(sectionText) {
   });
 }
 
+// CORE privacy/consumer-rights critic fields. Auto-renewal is deliberately EXCLUDED:
+// it's low-stakes and must never, on its own, drive an Opus escalation. Used by the
+// evaluator's importance-weighted escalate flag and by the orchestrator when deciding
+// whether to honor a stronger model's downgrade. (FIXPLAN #2)
+const CORE_CRITIC_FIELDS = ['dataCollection', 'dataSelling', 'optOutRights', 'howToOptOut', 'dataDeletion'];
+function coreCriticConcernCount(criticVerdict) {
+  if (!criticVerdict) return 0;
+  return CORE_CRITIC_FIELDS.filter(
+    f => criticVerdict[f] === 'unsupported' || criticVerdict[f] === 'vague'
+  ).length;
+}
+
 function evaluateAnalysis(analysisText, criticVerdict = null) {
   if (!analysisText || typeof analysisText !== 'string') {
     return {
@@ -316,8 +328,12 @@ function evaluateAnalysis(analysisText, criticVerdict = null) {
   }
 
   // escalate flag — read by Orchestrator to trigger Opus retry (ESCALATION-002)
-  // Failed always escalates. Adequate escalates unless session cap is hit.
-  const escalate = label === 'Failed' || label === 'Adequate';
+  // Importance-weighted (FIXPLAN #2a): Failed always escalates. Adequate escalates
+  // ONLY when something CORE is weak — never when auto-renewal is the sole ding (a
+  // low-stakes section must not burn an Opus call). Every deduction pushes an issue,
+  // so "the only issue is the auto-renewal critic flag" ⇒ no material weakness.
+  const hasMaterialWeakness = issues.some(i => !/^critic: autoRenewal /.test(i));
+  const escalate = label === 'Failed' || (label === 'Adequate' && hasMaterialWeakness);
   const passed = label === 'Strong' || label === 'Adequate';
 
   console.log(`[Evaluator] Score: ${score} | Label: ${label} | Contradictions: ${contradictions.length} | Critic: ${criticVerdict ? 'yes' : 'skipped'} | Issues: ${issues.join(', ') || 'none'}`);

@@ -389,6 +389,25 @@ ${strongSummary('clean source')}`
     mustTrue('runOrchestrator', 'rejects worse Opus result', true, got.summary.includes('Haiku kept'));
   });
 
+  // FIXPLAN #2b — escalation is a QUALITY GATE: when the escalated model is more
+  // skeptical about CORE grounding (lower score, but it flags core privacy sections
+  // unsupported the first pass passed), adopt its conservative verdict instead of
+  // serving the rosier first pass. (The USAA case: thin doc, optimistic Adequate
+  // first pass, Opus correctly finds the core claims ungrounded.)
+  await runTest(async () => {
+    spies.analyzeWithModel.impl = async (_text, _source, escalate = false) =>
+      ({ summary: escalate ? failedSummary('Opus skeptical') : adequateSummary('Haiku optimistic') });
+    spies.runCritic.impl = async (summary) => summary.includes('Opus skeptical')
+      ? { dataSelling: 'unsupported', optOutRights: 'unsupported', dataDeletion: 'vague' }
+      : { dataSelling: 'grounded', optOutRights: 'grounded', dataDeletion: 'grounded' };
+    context.evaluateAnalysis = (summary) => summary.includes('Opus skeptical')
+      ? { score: 40, label: 'Failed', warning: 'unreliable', passed: false, escalate: true, contradictions: [] }
+      : { score: 90, label: 'Adequate', warning: null, passed: true, escalate: true, contradictions: [] };
+    const got = await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
+    mustTrue('runOrchestrator', 'honors Opus core-grounding downgrade (adopts conservative)', true, got.summary.includes('Opus skeptical'));
+    mustTrue('runOrchestrator', 'conservative downgrade renders Failed confidence', true, got.summary.includes('Analysis confidence: Failed'));
+  });
+
   // Invalid evaluator schema should fail closed and never surface bogus labels or scores.
   await runTest(async () => {
     context.evaluateAnalysis = () => ({ score: 250, label: 'Bogus', warning: 'bad', passed: true, escalate: false });

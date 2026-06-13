@@ -179,14 +179,30 @@ const displayOptOutLinks = [
         const escalatedEvaluation = validateEvaluation(evaluateAnalysis(escalatedResult.summary, escalatedCritic));
         console.log(`[Orchestrator] Opus score: ${escalatedEvaluation.score} | Label: ${escalatedEvaluation.label}`);
 
+        // FIXPLAN #2b — escalation is a QUALITY GATE, not a score-maximizer. The
+        // stronger model may be MORE skeptical: if it finds the core privacy/
+        // consumer-rights claims less grounded than the first pass did, or detects a
+        // retrieval failure the first pass missed, that downgrade must be honored —
+        // not discarded for the rosier first pass (which would overstate confidence
+        // on a document we couldn't actually read).
+        const escalatedWorseGrounding =
+          (mentionsRetrievalFailure(escalatedResult.summary) && !mentionsRetrievalFailure(result.summary)) ||
+          coreCriticConcernCount(escalatedCritic) > coreCriticConcernCount(criticVerdict);
+
         if (escalatedEvaluation.score > evaluation.score) {
           result = escalatedResult;
           evaluation = escalatedEvaluation;
           criticVerdict = escalatedCritic;
           escalatedAccepted = true;
-          console.log(`[Orchestrator] Opus result accepted`);
+          console.log(`[Orchestrator] Opus result accepted — higher quality score`);
+        } else if (escalatedWorseGrounding) {
+          result = escalatedResult;
+          evaluation = escalatedEvaluation;
+          criticVerdict = escalatedCritic;
+          escalatedAccepted = true;
+          console.log(`[Orchestrator] Opus downgraded core grounding — adopting the more conservative result`);
         } else {
-          console.log(`[Orchestrator] Opus result not better — keeping Haiku result`);
+          console.log(`[Orchestrator] Opus result not better — keeping first-pass result`);
         }
 
         stored.count = escalationCount + 1;

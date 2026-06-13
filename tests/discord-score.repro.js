@@ -99,12 +99,15 @@ assertCase('no critic: legitimate not-covered/thin sections only', {
   escalate: false,
   issues: []
 });
+// FIXPLAN #2a: auto-renewal is LOW-STAKES — a vague auto-renewal alone stays Adequate
+// but must NOT burn an Opus escalation (contrast data-deletion below, a CORE field).
 assertCase('one critic vague: auto-renewal thin', {
   score: 90,
   label: 'Adequate',
-  escalate: true,
+  escalate: false,
   issues: ['critic: autoRenewal too vague']
 });
+// data deletion is a CORE consumer-rights section — a vague verdict here still escalates.
 assertCase('one critic vague: data deletion thin', {
   score: 90,
   label: 'Adequate',

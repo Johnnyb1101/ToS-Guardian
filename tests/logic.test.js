@@ -187,6 +187,33 @@ mustEqual('evaluateAnalysis thresholds', 'score 74 label', 'Failed', labelForSco
   mustFalse('evaluateAnalysis', 'Strong no escalation flag', false, got.escalate);
 }
 
+// FIXPLAN #2a — importance-weighted escalation: a low-stakes section (auto-renewal)
+// must NOT, on its own, trigger an Opus escalation; a CORE weakness still must.
+{
+  const onlyAuto = evaluator.evaluateAnalysis(fullAnalysis(), { autoRenewal: 'unsupported' });
+  mustEqual('evaluateAnalysis', 'auto-renewal-only stays Adequate', 'Adequate', onlyAuto.label);
+  mustFalse('evaluateAnalysis', 'auto-renewal-only does NOT escalate', false, onlyAuto.escalate);
+
+  const onlyAutoVague = evaluator.evaluateAnalysis(fullAnalysis(), { autoRenewal: 'vague' });
+  mustFalse('evaluateAnalysis', 'auto-renewal-vague-only does NOT escalate', false, onlyAutoVague.escalate);
+
+  const core = evaluator.evaluateAnalysis(fullAnalysis(), { dataSelling: 'unsupported' });
+  mustTrue('evaluateAnalysis', 'core section weakness escalates', true, core.escalate);
+
+  // Auto-renewal + a core weakness still escalates (the core reason carries it).
+  const both = evaluator.evaluateAnalysis(fullAnalysis(), { autoRenewal: 'vague', optOutRights: 'vague' });
+  mustEqual('evaluateAnalysis', 'auto-renewal + core stays Adequate', 'Adequate', both.label);
+  mustTrue('evaluateAnalysis', 'auto-renewal + core escalates', true, both.escalate);
+}
+
+// FIXPLAN #2 — coreCriticConcernCount: counts only core fields, ignores auto-renewal.
+{
+  mustEqual('coreCriticConcernCount', 'null verdict → 0', 0, evaluator.coreCriticConcernCount(null));
+  mustEqual('coreCriticConcernCount', 'ignores auto-renewal', 0, evaluator.coreCriticConcernCount({ autoRenewal: 'unsupported' }));
+  mustEqual('coreCriticConcernCount', 'counts unsupported + vague core fields, not grounded/auto', 3,
+    evaluator.coreCriticConcernCount({ dataSelling: 'unsupported', optOutRights: 'unsupported', howToOptOut: 'vague', autoRenewal: 'unsupported', dataCollection: 'grounded' }));
+}
+
 // A claim of no sharing plus opt-out rights should be detected as contradictory.
 {
   const text = fullAnalysis().replace('- Affiliates: transaction information, experience information, and creditworthiness information.', 'The company does not share personal data with third parties.');
