@@ -214,11 +214,28 @@ mustEqual('evaluateAnalysis thresholds', 'score 74 label', 'Failed', labelForSco
     evaluator.coreCriticConcernCount({ dataSelling: 'unsupported', optOutRights: 'unsupported', howToOptOut: 'vague', autoRenewal: 'unsupported', dataCollection: 'grounded' }));
 }
 
-// A claim of no sharing plus opt-out rights should be detected as contradictory.
+// A BLANKET "we don't share" claim plus opt-out rights should be detected as contradictory.
 {
-  const text = fullAnalysis().replace('- Affiliates: transaction information, experience information, and creditworthiness information.', 'The company does not share personal data with third parties.');
+  const text = fullAnalysis().replace(
+    /🔴 DATA SELLING & SHARING[\s\S]*?(?=🔴 OPT-OUT RIGHTS)/,
+    '🔴 DATA SELLING & SHARING\nThe company does not share your data with anyone.\n\n'
+  );
   const got = evaluator.detectContradictions(text).map(c => c.rule);
-  mustTrue('detectContradictions', 'sharing-vs-optout true positive', true, got.includes('sharing-vs-optout'));
+  mustTrue('detectContradictions', 'sharing-vs-optout true positive (blanket denial)', true, got.includes('sharing-vs-optout'));
+}
+
+// FIXPLAN #6 — a section that describes ACTUAL sharing (affiliates / business purposes)
+// alongside a category-level negation is GLBA-style nuance, NOT a blanket no-share claim.
+// It must not be flagged just because opt-out rights are listed. (Acorns false positive
+// that was blocking its cache.)
+{
+  const text = fullAnalysis().replace(
+    /🔴 DATA SELLING & SHARING[\s\S]*?(?=🔴 OPT-OUT RIGHTS)/,
+    '🔴 DATA SELLING & SHARING\nAffiliates: your transaction and account data for their everyday business purposes. They do not share with nonaffiliates for marketing.\n\n'
+  );
+  const got = evaluator.detectContradictions(text).map(c => c.rule);
+  mustFalse('detectContradictions', 'affirmative sharing + category negation is not a contradiction', false,
+    got.includes('sharing-vs-optout'));
 }
 
 // "Does not SELL" alongside sharing/ad opt-outs is a normal, lawful combination —

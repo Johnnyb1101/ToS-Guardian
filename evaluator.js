@@ -38,6 +38,14 @@ const CONTRADICTION_RULES = [
     // (Netflix's discarded Opus pass, Navy Federal).
     negatesA: ['does not share', 'do not share', 'does not disclose', 'do not disclose', 'will not share', 'never share', 'no third parties', 'no data sharing'],
     requiresB: ['opt out of', 'say no to', 'turn off', 'stop sharing', 'limit sharing', 'restrict'],
+    // A genuine contradiction is a BLANKET "we don't share" claim alongside sharing
+    // opt-outs. But GLBA/financial notices legitimately say "we don't share [category X]"
+    // while still sharing with affiliates / service providers for business purposes and
+    // offering opt-outs for other categories — that's nuance, not a contradiction. If the
+    // section affirmatively describes WHO it shares with or WHY, suppress. (FIXPLAN #6:
+    // Acorns false positive that was blocking its cache.) These tokens are chosen to NOT
+    // appear inside the negatesA phrases above, so they never cancel a real negation.
+    suppressIfA: ['affiliate', 'service provider', 'partner', 'everyday business', 'business purpose', 'for marketing', 'for advertising', 'targeted ad'],
     description: 'claims no data sharing but lists sharing opt-outs'
   },
   {
@@ -145,6 +153,10 @@ function detectContradictions(analysisText) {
     }
 
     if (!aTriggered) continue;
+
+    // Section A affirmatively describes sharing (recipients/purposes) → it's nuanced
+    // per-category sharing, not a blanket no-share claim. Don't flag. (FIXPLAN #6)
+    if (rule.suppressIfA && rule.suppressIfA.some(p => textA.includes(p))) continue;
 
     const bTriggered = rule.requiresB.some(p => textB.includes(p));
     if (!bTriggered) continue;
