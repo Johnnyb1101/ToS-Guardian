@@ -944,16 +944,76 @@ function printTable() {
   for (const row of data) console.log(format(row));
 }
 
-printTable();
+// FIXPLAN #13b — createInFlightDeduper: concurrent relays for the same registrable
+// domain must share one run; the slot must free after the run settles.
+async function testDeduper() {
+  const makeFn = () => {
+    let resolveInner;
+    const fn = () => { fn.calls++; return new Promise(r => { resolveInner = r; }); };
+    fn.calls = 0;
+    fn.resolve = (v) => resolveInner(v);
+    return fn;
+  };
 
-const passed = rows.filter(r => r.status === 'PASS').length;
-const failed = rows.filter(r => r.status === 'FAIL').length;
-const known = rows.filter(r => r.status === 'XFAIL').length;
-console.log('');
-console.log(`Summary: ${passed} passed, ${failed} failed, ${known} known-issues(XFAIL)`);
-if (xfails.length) {
-  console.log('Known issues:');
-  for (const item of xfails) console.log(`- ${item.fn} / ${item.name}: ${item.note}`);
+  // concurrent calls, same key → fn runs once; second joins and shares the promise
+  {
+    const dedupe = utils.createInFlightDeduper();
+    const fn = makeFn();
+    let joined = 0;
+    const p1 = dedupe('acorns.com', fn, () => { joined++; });
+    const p2 = dedupe('acorns.com', fn, () => { joined++; });
+    mustEqual('createInFlightDeduper', 'same key runs fn once', 1, fn.calls);
+    mustEqual('createInFlightDeduper', 'second caller joins (onJoin fired once)', 1, joined);
+    mustTrue('createInFlightDeduper', 'both callers share one promise', true, p1 === p2);
+    fn.resolve({ ok: true });
+    const [r1, r2] = await Promise.all([p1, p2]);
+    mustTrue('createInFlightDeduper', 'both resolve to the same result', true, r1 === r2 && r1.ok === true);
+  }
+
+  // different keys → independent runs
+  {
+    const dedupe = utils.createInFlightDeduper();
+    const fnA = makeFn();
+    const fnB = makeFn();
+    dedupe('a.com', fnA);
+    dedupe('b.com', fnB);
+    mustEqual('createInFlightDeduper', 'different keys each run', 2, fnA.calls + fnB.calls);
+  }
+
+  // null key → never deduped (e.g. an un-parseable page URL)
+  {
+    const dedupe = utils.createInFlightDeduper();
+    const fn = makeFn();
+    dedupe(null, fn);
+    dedupe(null, fn);
+    mustEqual('createInFlightDeduper', 'null key never deduped', 2, fn.calls);
+  }
+
+  // slot frees after the run settles → a later call for the same key re-runs
+  {
+    const dedupe = utils.createInFlightDeduper();
+    const fn = makeFn();
+    const p = dedupe('x.com', fn);
+    fn.resolve('done');
+    await p;
+    await Promise.resolve(); // let the finally() cleanup microtask run
+    dedupe('x.com', fn);
+    mustEqual('createInFlightDeduper', 'slot freed after settle (re-runs)', 2, fn.calls);
+  }
 }
 
-if (failed > 0) process.exit(1);
+testDeduper().then(() => {
+  printTable();
+
+  const passed = rows.filter(r => r.status === 'PASS').length;
+  const failed = rows.filter(r => r.status === 'FAIL').length;
+  const known = rows.filter(r => r.status === 'XFAIL').length;
+  console.log('');
+  console.log(`Summary: ${passed} passed, ${failed} failed, ${known} known-issues(XFAIL)`);
+  if (xfails.length) {
+    console.log('Known issues:');
+    for (const item of xfails) console.log(`- ${item.fn} / ${item.name}: ${item.note}`);
+  }
+
+  if (failed > 0) process.exit(1);
+});

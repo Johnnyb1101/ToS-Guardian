@@ -54,6 +54,31 @@ function registrableDomain(host) {
   return lastTwo;
 }
 
+// Coordinate concurrent calls so identical in-flight work runs only once (FIXPLAN
+// #13b). Returns run(key, fn, onJoin): if a promise is already in flight for `key`,
+// returns that same promise (and calls onJoin(key) so the caller can log the join);
+// otherwise starts fn(), tracks it until it settles, then frees the slot. A null
+// key always runs independently. The settle handler only frees the slot if it's
+// still the one it started — so a later run that replaced it isn't clobbered.
+function createInFlightDeduper() {
+  const inFlight = new Map();
+  const start = (fn) => { try { return Promise.resolve(fn()); } catch (e) { return Promise.reject(e); } };
+  return function run(key, fn, onJoin) {
+    if (key == null) return start(fn);
+    const existing = inFlight.get(key);
+    if (existing) {
+      if (onJoin) onJoin(key);
+      return existing;
+    }
+    const promise = start(fn);
+    inFlight.set(key, promise);
+    promise.finally(() => {
+      if (inFlight.get(key) === promise) inFlight.delete(key);
+    });
+    return promise;
+  };
+}
+
 function isLikelyResourcePageUrl(url) {
   return /(?:^|[\/_-])(makingcents|blog|article|faq|tips|guide|learn|how-to|security-tips)(?:[\/_-]|$)/i.test(url || "");
 }

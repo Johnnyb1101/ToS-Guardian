@@ -593,11 +593,27 @@ function stripHtml(html) {
     .trim();
 }
 
+// Concurrent relays for the same registrable domain share one run (FIXPLAN #13b).
+// A navigating sign-up fires BOTH the orphaned original relay (e.g. on /invest)
+// and the destination re-show relay (on signup.…) at once; without this they each
+// fetch + analyze + escalate the same site in parallel — double cost, and two
+// nondeterministic fetches that can disagree on the content fingerprint (one
+// combines a supplemental notice, the other doesn't) → a needless re-analysis.
+// The second caller joins the first's in-flight promise and renders its result.
+// Also makes the 5a "Try again" button and any #5 re-show join rather than spawn.
+const dedupeRelay = createInFlightDeduper(); // shares one run across concurrent relays per registrable domain
+
 browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "analyzeTos") {
     const pageUrl = request.pageUrl || sender.tab?.url || "";
+    let domainKey = null;
+    try { domainKey = registrableDomain(new URL(pageUrl).hostname); } catch (e) {}
 
-    runOrchestrator(pageUrl, request.text || "", request.pageHtml || "")
+    dedupeRelay(
+      domainKey,
+      () => runOrchestrator(pageUrl, request.text || "", request.pageHtml || ""),
+      (key) => console.log(`[Orchestrator] Joining in-flight relay for ${key} (deduped)`)
+    )
       .then(result => sendResponse(result))
       .catch(err => {
         console.error("[Orchestrator] Unhandled error:", err);
