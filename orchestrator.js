@@ -150,6 +150,24 @@ const displayOptOutLinks = [
 
   console.log(`[Orchestrator] Evaluator — Label: ${evaluation.label}, Score: ${evaluation.score}`);
 
+  // --- STEP 5b: THIN-SOURCE HONESTY GATE (FIXPLAN #7) ---
+  // If the SOURCE we analyzed isn't a credible legal document (e.g. the real policy was
+  // a scanned PDF that 400'd and we fell back to a thin nav shell), the analysis can't be
+  // trusted no matter how confident the summary reads. Cap it to Failed with an honest
+  // warning and DON'T escalate — a stronger model can't fix bad source text.
+  if (result && evaluation.label !== 'Failed' && textToAnalyze && !looksLikeLegalDocument(textToAnalyze)) {
+    console.log("[Orchestrator] Source is not a credible legal document — capping confidence (thin/unreadable source, no escalation)");
+    evaluation = validateEvaluation({
+      score: Math.min(evaluation.score, 50),
+      label: 'Failed',
+      warning: '⚠️ The full policy could not be read — the page may be a scanned PDF or an unrendered document. This summary is likely incomplete; open the document yourself before agreeing.',
+      passed: false,
+      escalate: false,
+      contradictions: Array.isArray(evaluation.contradictions) ? evaluation.contradictions : [],
+      criticVerdict: evaluation.criticVerdict || criticVerdict || null
+    });
+  }
+
   // --- ESCALATION (ESCALATION-002, ESCALATION-003, ESCALATION-006) ---
   let escalatedAccepted = false;
   if (evaluation.escalate) {

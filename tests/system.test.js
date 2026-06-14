@@ -412,6 +412,25 @@ ${strongSummary('clean source')}`
     mustTrue('runOrchestrator', 'rejects worse Opus result', true, got.summary.includes('Haiku kept'));
   });
 
+  // FIXPLAN #7 — when the fetched SOURCE isn't a credible legal document (a scanned PDF
+  // fell back to a nav shell), cap the verdict to Failed with an honest warning and do
+  // NOT escalate, no matter how confident the summary reads. (USAA thin-source case.)
+  await runTest(async () => {
+    spies.fetcherAgent.impl = async () => ({
+      text: 'Welcome back. Please sign in to continue. Email address. Password.', // nav shell, not a legal doc
+      sourceUrl: 'https://example.com/privacy',
+      privacyUrl: 'https://example.com/privacy',
+      privacyHtml: '',
+      documentLinks: []
+    });
+    spies.readFromSupabase.impl = async () => null;
+    spies.analyzeWithModel.impl = async () => ({ summary: adequateSummary('confident on thin source') });
+    const got = await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
+    mustTrue('runOrchestrator', 'thin source capped to Failed confidence', true, got.summary.includes('Analysis confidence: Failed'));
+    mustEqual('runOrchestrator', 'thin source does NOT escalate', 0, spies.analyzeWithModel.calls.filter(args => args[2] === true).length);
+    mustEqual('saveAnalysis', 'thin-source Failed result is not cached', 0, spies.saveAnalysis.calls.length);
+  });
+
   // FIXPLAN #2b — escalation is a QUALITY GATE: when the escalated model is more
   // skeptical about CORE grounding (lower score, but it flags core privacy sections
   // unsupported the first pass passed), adopt its conservative verdict instead of
