@@ -921,6 +921,19 @@ Not covered in this document.`;
     sellPos < deletePos);
 }
 
+// FIXPLAN #8 — static-asset URLs must never be fetched as legal-doc candidates
+// (Acorns oak subdomain linked a .js bundle as "terms"); PDFs are NOT excluded.
+{
+  const a = utils.isAssetUrl;
+  mustTrue('isAssetUrl', 'JS bundle excluded', true, a('https://oak.acorns.com/assets/terms-and-conditions-drawer-B-w_x2-X.js'));
+  mustTrue('isAssetUrl', 'JS with query string excluded', true, a('https://x.com/app.js?v=2'));
+  mustTrue('isAssetUrl', 'CSS excluded', true, a('https://x.com/styles/main.css'));
+  mustTrue('isAssetUrl', 'image excluded', true, a('https://x.com/logo.png'));
+  mustFalse('isAssetUrl', 'PDF NOT excluded (proxy extracts it)', false, a('https://x.com/legal/privacy.pdf'));
+  mustFalse('isAssetUrl', 'normal privacy URL not excluded', false, a('https://x.com/legal/privacy'));
+  mustFalse('isAssetUrl', 'privacy path with .html-free segment not excluded', false, a('https://x.com/privacy-policy'));
+}
+
 function printTable() {
   const headers = ['status', 'function', 'case name', 'expected', 'got'];
   const data = rows.map(r => [r.status, r.fn, r.name, r.expected, r.got]);

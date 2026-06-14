@@ -435,6 +435,10 @@ async function fetchSingleCandidate(url) {
 async function tryFetchCandidates(candidates, kind = null, enrich = true) {
   // Central URL validation gate (SECURITY-020)
   const validCandidates = candidates.filter(url => {
+    if (isAssetUrl(url)) {
+      console.warn(`[Fetcher] Skipping static-asset URL (never a legal doc): ${url}`);
+      return false;
+    }
     if (validateDocumentUrl(url)) return true;
     console.warn(`[Fetcher] URL blocked by validation gate: ${url}`);
     return false;

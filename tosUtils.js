@@ -58,6 +58,18 @@ function isLikelyResourcePageUrl(url) {
   return /(?:^|[\/_-])(makingcents|blog|article|faq|tips|guide|learn|how-to|security-tips)(?:[\/_-]|$)/i.test(url || "");
 }
 
+// True for static-asset URLs that can never be a legal document — compiled JS/CSS
+// bundles, source maps, images, fonts, data files. A JS bundle is sometimes linked as
+// a "terms" drawer (Acorns oak.acorns.com: terms-and-conditions-drawer-*.js) and must
+// never be fetched as a candidate. NOTE: .pdf is deliberately NOT excluded — the proxy
+// extracts PDF text. (FIXPLAN #8)
+function isAssetUrl(url) {
+  if (!url) return false;
+  let path = String(url);
+  try { path = new URL(url, "https://x.invalid").pathname; } catch (e) { path = String(url).split(/[?#]/)[0]; }
+  return /\.(js|mjs|cjs|css|map|json|png|jpe?g|gif|svg|webp|avif|ico|woff2?|ttf|eot|otf|mp4|webm|zip)$/i.test(path);
+}
+
 // Heuristic: does fetched text look like an actual legal/privacy document rather
 // than navigation chrome or an unrendered SPA shell? The fetcher uses this to keep
 // waiting for / preferring real policy content over a page skeleton. Pairs with
