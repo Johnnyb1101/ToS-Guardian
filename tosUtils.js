@@ -401,8 +401,10 @@ function formatSummary(raw, optOutLinks = []) {
       ${validLinks.map(url => `<a class="tg-optout-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a>`).join("")}
     </div>` : "";
 
-  // The five detailed sections build into `details` (collapsed by default).
-  let details = "";
+  // The detailed sections are collected as {title, html} then rendered in a FIXED
+  // canonical order (knownHeaders) regardless of the order the analyzer emitted them,
+  // so WHAT THEY COLLECT always leads. (FIXPLAN #9 — Coinbase rendered it last.)
+  const sectionCards = [];
   let currentTitle = "";
   let currentBody  = [];
   let renderedSections = 0;
@@ -462,11 +464,14 @@ function formatSummary(raw, optOutLinks = []) {
         }
       }
 
-      details += `
+      sectionCards.push({
+        title: currentTitle,
+        html: `
         <div class="tg-category">
           <span class="tg-category-title">${escapeHtml(currentTitle)}</span>
           <div class="tg-category-body">${bodyHtml}</div>
-        </div>`;
+        </div>`
+      });
       renderedSections++;
 
       currentBody = [];
@@ -500,6 +505,18 @@ function formatSummary(raw, optOutLinks = []) {
     else if (cleanLine && cleanLine !== '---') { currentBody.push(cleanLine); }
   }
   flush();
+
+  // Render sections in canonical knownHeaders order (stable sort keeps any unknown
+  // section in its original spot, after the known ones). (FIXPLAN #9)
+  const sectionOrder = (title) => {
+    const i = knownHeaders.indexOf(title);
+    return i === -1 ? knownHeaders.length : i;
+  };
+  const details = sectionCards
+    .slice()
+    .sort((a, b) => sectionOrder(a.title) - sectionOrder(b.title))
+    .map(card => card.html)
+    .join("");
 
   // No recognized sections (e.g. a configuration/error/timeout message). This must
   // stay VISIBLE, not be tucked behind the collapse toggle.

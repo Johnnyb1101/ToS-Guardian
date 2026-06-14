@@ -903,6 +903,24 @@ Not covered in this document.`;
   mustEqual('registrableDomain', 'case-insensitive + trailing dot', 'paypal.com', rd('WWW.PayPal.com.'));
 }
 
+// FIXPLAN #9 — sections render in canonical order even when the analyzer emits them
+// out of order (Coinbase put WHAT THEY COLLECT last). WHAT THEY COLLECT must lead.
+{
+  const outOfOrder = [
+    '🔴 DATA SELLING & SHARING', 'They share with advertisers.',
+    '🟢 DATA DELETION RIGHTS', 'You can request deletion.',
+    '📥 WHAT THEY COLLECT', 'They collect your email and device info.'
+  ].join('\n');
+  const html = utils.formatSummary(outOfOrder, []);
+  const collectPos = html.indexOf('WHAT THEY COLLECT');
+  const sellPos = html.indexOf('DATA SELLING');
+  const deletePos = html.indexOf('DATA DELETION');
+  mustTrue('formatSummary', 'WHAT THEY COLLECT renders first despite being emitted last', true,
+    collectPos !== -1 && collectPos < sellPos && collectPos < deletePos);
+  mustTrue('formatSummary', 'sections follow canonical order (selling before deletion)', true,
+    sellPos < deletePos);
+}
+
 function printTable() {
   const headers = ['status', 'function', 'case name', 'expected', 'got'];
   const data = rows.map(r => [r.status, r.fn, r.name, r.expected, r.got]);
