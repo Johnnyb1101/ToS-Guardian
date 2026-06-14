@@ -32,7 +32,10 @@ async function writeToSupabase(domain, summary, aiProvider, optOutLinks = [], pr
       })
     });
     if (response.status === 403) {
-      console.warn('[Supabase] Write blocked by security scan for', domain);
+      // Surface the proxy's specific reason + category so a write block is
+      // self-diagnosing in the console (no need to re-derive the text). (#12)
+      const info = await response.json().catch(() => ({}));
+      console.warn(`[Supabase] Write blocked by security scan for ${domain} — [${info.category || 'unknown'}] ${info.reason || ''}`.trim());
       return;
     }
     if (response.status === 429) {
