@@ -269,6 +269,8 @@ function showGuardianOverlay(event, sourceButton = null) {
       #tg-proceed:hover { background:#1414cc; }
       #tg-leave { flex:1 1 0; min-width:0; height:40px; padding:0 10px; background:#9ca3af; color:#fff; border:none; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; }
       #tg-leave:hover { background:#6b7280; }
+      .tg-retry-btn { display:block; margin:14px 20px 4px; height:38px; padding:0 16px; background:#1a1aff; color:#fff; border:none; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; font-family:Arial,Helvetica,sans-serif; }
+      .tg-retry-btn:hover { background:#1414cc; }
     </style>
 
     <div id="tg-card">
@@ -326,38 +328,91 @@ function showGuardianOverlay(event, sourceButton = null) {
     overlay.remove();
   });
 
+  // Page text is captured once (the overlay lives in a closed shadow DOM, so it
+  // doesn't leak into document.body.innerText) and reused if the user retries.
   const fullText = document.body.innerText;
-  let analysisResponded = false;
-  const analysisTimer = setTimeout(() => {
-    if (analysisResponded) return;
-    const summaryEl = overlayRoot.getElementById("tg-summary");
-    if (summaryEl) {
-      summaryEl.innerHTML = formatSummary(
-        "TOS Guardian is still analyzing this agreement. Some sites take longer because legal pages and opt-out links have to be fetched and checked.",
-        []
-      );
-    }
-  }, 45000);
 
-  browser.runtime.sendMessage(
-    {
-      action: "analyzeTos",
-      text: fullText,
-      pageUrl: window.location.href,
-      pageHtml: document.documentElement.innerHTML
-    },
-    (result) => {
+  // Relay lifecycle (FIXPLAN #5a): a relay that never responds — a sleeping MV3
+  // service worker, a dropped message, or a candidate fetch that hangs — used to
+  // leave the overlay stuck on "still analyzing" forever (the old 45s timer only
+  // re-worded the message, it never resolved). Now there are two timers: a SOFT
+  // notice at 45s ("still working, some sites take longer") and a HARD deadline at
+  // 90s that resolves the overlay to an honest "couldn't finish" state with a
+  // Try-again button, so the user is never stranded.
+  const SOFT_NOTICE_MS = 45000;
+  const HARD_DEADLINE_MS = 90000;
+
+  let analysisResponded = false;
+  let softNoticeTimer = null;
+  let hardDeadlineTimer = null;
+
+  const clearAnalysisTimers = () => {
+    if (softNoticeTimer) clearTimeout(softNoticeTimer);
+    if (hardDeadlineTimer) clearTimeout(hardDeadlineTimer);
+    softNoticeTimer = null;
+    hardDeadlineTimer = null;
+  };
+
+  // Resolve the overlay into an honest error state with a retry affordance.
+  const showAnalysisError = (message) => {
+    analysisResponded = true;
+    clearAnalysisTimers();
+    const summaryEl = overlayRoot.getElementById("tg-summary");
+    if (!summaryEl) return;
+    summaryEl.innerHTML = formatSummary(message, []);
+    const retryBtn = document.createElement("button");
+    retryBtn.className = "tg-retry-btn";
+    retryBtn.textContent = "Try again";
+    retryBtn.addEventListener("click", () => requestAnalysis());
+    summaryEl.appendChild(retryBtn);
+    // Reveal the footer so "Go Back Safely" is always available on failure.
+    revealActions();
+  };
+
+  function requestAnalysis() {
+    analysisResponded = false;
+    clearAnalysisTimers();
+    const loadingEl = overlayRoot.getElementById("tg-summary");
+    if (loadingEl) {
+      loadingEl.innerHTML =
+        '<div id="tg-summary-loading"><div id="tg-spinner"></div>Analyzing this agreement - reading the fine print...</div>';
+    }
+
+    softNoticeTimer = setTimeout(() => {
       if (analysisResponded) return;
-      analysisResponded = true;
-      clearTimeout(analysisTimer);
       const summaryEl = overlayRoot.getElementById("tg-summary");
       if (summaryEl) {
+        summaryEl.innerHTML = formatSummary(
+          "TOS Guardian is still analyzing this agreement. Some sites take longer because legal pages and opt-out links have to be fetched and checked.",
+          []
+        );
+      }
+    }, SOFT_NOTICE_MS);
+
+    hardDeadlineTimer = setTimeout(() => {
+      if (analysisResponded) return;
+      showAnalysisError(
+        "TOS Guardian couldn't finish analyzing this agreement in time. This sometimes happens when the background service worker goes to sleep or a legal page is slow to load. Try again, or go back and read the terms yourself before agreeing."
+      );
+    }, HARD_DEADLINE_MS);
+
+    browser.runtime.sendMessage(
+      {
+        action: "analyzeTos",
+        text: fullText,
+        pageUrl: window.location.href,
+        pageHtml: document.documentElement.innerHTML
+      },
+      (result) => {
+        if (analysisResponded) return;
+        analysisResponded = true;
+        clearAnalysisTimers();
+        const summaryEl = overlayRoot.getElementById("tg-summary");
+        if (!summaryEl) return;
         if (browser.runtime.lastError) {
-          summaryEl.innerHTML = formatSummary(
-            "TOS Guardian could not reach the background service worker. Reload the extension and try again.",
-            []
+          showAnalysisError(
+            "TOS Guardian could not reach the background service worker. Reload the extension and try again."
           );
-          revealActions();
           return;
         }
         summaryEl.innerHTML = formatSummary(
@@ -376,8 +431,10 @@ function showGuardianOverlay(event, sourceButton = null) {
         });
         revealActions();
       }
-    }
-  );
+    );
+  }
+
+  requestAnalysis();
 }
 
 // --- EVENT DELEGATION ---
