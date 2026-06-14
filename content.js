@@ -489,6 +489,22 @@ function clearPendingOverlay() {
 function maybeShowPendingOverlay() {
   if (acknowledgedDomains.has(currentDomainKey())) return;
   if (document.getElementById("tos-guardian-overlay")) return;
+  // Only re-show in a tab the user is actually looking at. The document fetcher
+  // loads legal docs in HIDDEN background tabs (background.js tabs.create
+  // active:false); content.js runs in those too, and because the pending marker
+  // is keyed by REGISTRABLE domain (#1) a hidden tab on www.acorns.com matches a
+  // marker set on signup.acorns.com → it would spawn a PHANTOM second relay from
+  // inside the fetcher's own throwaway tab (observed on Acorns + Navy Federal).
+  // A hidden fetch tab is never visible, so gate on visibility; a legitimately
+  // background-opened destination tab re-shows once the user focuses it. (FIXPLAN #5/#13)
+  if (document.visibilityState !== "visible") {
+    document.addEventListener("visibilitychange", function onVis() {
+      if (document.visibilityState !== "visible") return;
+      document.removeEventListener("visibilitychange", onVis);
+      maybeShowPendingOverlay();
+    });
+    return;
+  }
   browser.storage.local.get("tosPendingOverlay", (data) => {
     const pending = data && data.tosPendingOverlay;
     if (!pending || pending.domain !== currentDomainKey()) return;
