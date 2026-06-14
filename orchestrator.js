@@ -136,7 +136,7 @@ const displayOptOutLinks = [
   if (result) {
     criticVerdict = await runCritic(result.summary, enrichedText);
     if (criticVerdict) {
-      console.log(`[Orchestrator] Critic verdict received — flags: ${criticVerdict.flags?.length || 0}`);
+      console.log(`[Orchestrator] Critic verdict received — concern-flags: ${criticVerdict.flags?.length || 0}`);
     } else {
       console.log(`[Orchestrator] Critic skipped or failed — continuing without`);
     }

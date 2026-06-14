@@ -162,13 +162,19 @@ ${trimmedSource}`;
     if (!Array.isArray(verdict.flags)) {
       verdict.flags = [];
     }
+    // `flags` = genuine concern explanations (unsupported/vague findings, invalid
+    // verdicts). `adjustments` = informational notes for deterministic grounding
+    // flips (unsupported→grounded) — these are NOT concerns and were inflating the
+    // logged flags count (e.g. all-grounded but "flags: 4"). (FIXPLAN #11)
+    verdict.adjustments = [];
 
     applyDeterministicGrounding(verdict, analysisSummary, sourceText);
 
     const unsupported = fields.filter(f => verdict[f] === 'unsupported').length;
     const vague = fields.filter(f => verdict[f] === 'vague').length;
 
-    console.log(`[Critic] Verdicts — unsupported: ${unsupported}, vague: ${vague}, flags: ${verdict.flags.length}`);
+    const adj = verdict.adjustments.length ? `, grounding-adjustments: ${verdict.adjustments.length}` : '';
+    console.log(`[Critic] Verdicts — unsupported: ${unsupported}, vague: ${vague}, concern-flags: ${verdict.flags.length}${adj}`);
     for (const field of fields) {
       console.log(`[Critic]   ${field}: ${verdict[field]}`);
     }
@@ -198,24 +204,28 @@ function applyDeterministicGrounding(verdict, analysisSummary, sourceText) {
   const analysis = String(analysisSummary || '').toLowerCase();
   const source = String(sourceText || '').toLowerCase();
 
+  // Grounding flips are informational adjustments, not concerns — keep them out of
+  // `flags` so the logged concern count matches the per-section verdicts. (FIXPLAN #11)
+  if (!Array.isArray(verdict.adjustments)) verdict.adjustments = [];
+
   if (verdict.dataSelling === 'unsupported' && hasFinancialSharingGrounding(analysis, source)) {
     verdict.dataSelling = 'grounded';
-    verdict.flags.push('dataSelling: deterministic grounding matched financial privacy notice categories');
+    verdict.adjustments.push('dataSelling: deterministic grounding matched financial privacy notice categories');
   }
 
   if (verdict.optOutRights === 'unsupported' && hasFinancialOptOutGrounding(analysis, source)) {
     verdict.optOutRights = 'grounded';
-    verdict.flags.push('optOutRights: deterministic grounding matched financial privacy notice limit/opt-out categories');
+    verdict.adjustments.push('optOutRights: deterministic grounding matched financial privacy notice limit/opt-out categories');
   }
 
   if (verdict.howToOptOut === 'unsupported' && hasFinancialHowToGrounding(analysis, source)) {
     verdict.howToOptOut = 'grounded';
-    verdict.flags.push('howToOptOut: deterministic grounding matched financial privacy notice contact instructions');
+    verdict.adjustments.push('howToOptOut: deterministic grounding matched financial privacy notice contact instructions');
   }
 
   if (verdict.dataDeletion === 'unsupported' && hasDeletionGrounding(analysis, source)) {
     verdict.dataDeletion = 'grounded';
-    verdict.flags.push('dataDeletion: deterministic grounding matched manage/delete data instructions');
+    verdict.adjustments.push('dataDeletion: deterministic grounding matched manage/delete data instructions');
   }
 }
 
