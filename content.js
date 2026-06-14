@@ -10,15 +10,29 @@ const isFrame = window.top !== window;
 // total wait. The final outcome (response, error-or-null) is handed to `callback`.
 function sendMessageWithRetry(message, callback, { attempts = 3, delay = 350 } = {}) {
   const attempt = (remaining) => {
-    browser.runtime.sendMessage(message, (response) => {
-      const err = browser.runtime.lastError || null;
-      if (err && remaining > 1) {
-        console.warn(`[TOS Guardian] Message "${message.action}" dropped (${err.message}); waking service worker and retrying (${remaining - 1} left)`);
-        setTimeout(() => attempt(remaining - 1), delay);
-        return;
-      }
-      callback(response, err);
-    });
+    // The extension context can be gone — the extension was reloaded/updated while
+    // this content script kept running, or a hidden fetch tab is being torn down.
+    // Then sendMessage throws "Extension context invalidated" SYNCHRONOUSLY (no
+    // runtime.lastError fires), and retrying can't recover it. Detect it up front
+    // and via try/catch, and bail quietly with an error instead of throwing.
+    if (!browser.runtime?.id) {
+      callback(undefined, new Error("Extension context invalidated"));
+      return;
+    }
+    try {
+      browser.runtime.sendMessage(message, (response) => {
+        const err = browser.runtime.lastError || null;
+        if (err && remaining > 1) {
+          console.warn(`[TOS Guardian] Message "${message.action}" dropped (${err.message}); waking service worker and retrying (${remaining - 1} left)`);
+          setTimeout(() => attempt(remaining - 1), delay);
+          return;
+        }
+        callback(response, err);
+      });
+    } catch (e) {
+      // Invalidated context (or similar). Not retryable — surface as an error.
+      callback(undefined, e);
+    }
   };
   attempt(attempts);
 }
@@ -505,19 +519,22 @@ function maybeShowPendingOverlay() {
     });
     return;
   }
-  browser.storage.local.get("tosPendingOverlay", (data) => {
-    const pending = data && data.tosPendingOverlay;
-    if (!pending || pending.domain !== currentDomainKey()) return;
-    if (Date.now() - pending.ts > PENDING_OVERLAY_TTL_MS) { clearPendingOverlay(); return; }
-    if (acknowledgedDomains.has(currentDomainKey())) { clearPendingOverlay(); return; }
-    if (document.getElementById("tos-guardian-overlay")) return;
-    console.log("[TOS Guardian] Re-showing analysis on the destination page after navigation");
-    interceptActive = true;
-    setTimeout(() => { interceptActive = false; }, 5000);
-    const synthetic = { preventDefault() {}, stopImmediatePropagation() {}, stopPropagation() {}, target: document.body, currentTarget: document.body };
-    showGuardianOverlay(synthetic, null);
-    clearPendingOverlay();
-  });
+  try {
+    browser.storage.local.get("tosPendingOverlay", (data) => {
+      if (browser.runtime.lastError) return; // context gone — nothing to re-show
+      const pending = data && data.tosPendingOverlay;
+      if (!pending || pending.domain !== currentDomainKey()) return;
+      if (Date.now() - pending.ts > PENDING_OVERLAY_TTL_MS) { clearPendingOverlay(); return; }
+      if (acknowledgedDomains.has(currentDomainKey())) { clearPendingOverlay(); return; }
+      if (document.getElementById("tos-guardian-overlay")) return;
+      console.log("[TOS Guardian] Re-showing analysis on the destination page after navigation");
+      interceptActive = true;
+      setTimeout(() => { interceptActive = false; }, 5000);
+      const synthetic = { preventDefault() {}, stopImmediatePropagation() {}, stopPropagation() {}, target: document.body, currentTarget: document.body };
+      showGuardianOverlay(synthetic, null);
+      clearPendingOverlay();
+    });
+  } catch (e) {}
 }
 
 document.addEventListener("click", (event) => {
