@@ -91,6 +91,31 @@ function check(name, page, button, expected) {
   rows.push({ status: got === expected ? 'PASS' : 'FAIL', name, expected, got });
 }
 
+// Build a fake focused field for the Enter-key path. `ancestors` is nearest-first
+// (drives hasAuthProximity, same shape as btn()).
+function field({ type = 'text', autocomplete = '', name = '', ancestors = [] } = {}) {
+  let parent = null;
+  for (let i = ancestors.length - 1; i >= 0; i--) {
+    const child = parent;
+    parent = { innerText: ancestors[i].innerText || '', parentElement: child };
+  }
+  return {
+    type,
+    getAttribute: (n) => (n === 'type' ? type : n === 'autocomplete' ? autocomplete : n === 'name' ? name : null),
+    parentElement: parent
+  };
+}
+
+function checkEnter(name, page, fld, expected) {
+  let got;
+  try {
+    got = makeCtx(page).shouldFireOnEnterField(fld);
+  } catch (e) {
+    got = `THREW: ${e.message}`;
+  }
+  rows.push({ status: got === expected ? 'PASS' : 'FAIL', name, expected, got });
+}
+
 // --- Should fire ---------------------------------------------------------
 check('explicit "I Agree" fires on label alone', {}, btn({ text: 'I Agree' }), true);
 check('"Agree & Join" (LinkedIn) fires', {}, btn({ text: 'Agree & Join' }), true);
@@ -132,6 +157,28 @@ check('Google SERP: "Log in to your PayPal account" snippet → no fire',
 check('search results never fire even with an auth form present',
   { host: 'www.bing.com', path: '/search', search: '?q=login', password: true },
   btn({ text: 'Sign in' }), false);
+
+// --- Enter-key trigger (formless logins) ---------------------------------
+// Password field is unambiguous auth → fires on any page.
+checkEnter('Enter on password field fires (any page)', {}, field({ type: 'password' }), true);
+checkEnter('Enter on password field fires on a generic subdomain path', { path: '/account' },
+  field({ type: 'password' }), true);
+// Email/username field fires only in a real auth context.
+checkEnter('Enter on email field on /register fires', { path: '/register' }, field({ type: 'email' }), true);
+checkEnter('Enter on autocomplete=username field on /login fires', { path: '/login' },
+  field({ autocomplete: 'username' }), true);
+checkEnter('Enter on email field in an auth modal fires via proximity', { path: '/', bodyText: 'welcome' },
+  field({ type: 'email', ancestors: [{ innerText: 'Log in or sign up' }] }), true);
+checkEnter('Enter on email field with page agreement context fires', { path: '/', bodyText: 'by signing up you agree to our terms of service' },
+  field({ type: 'email' }), true);
+// Must NOT fire: bare email field with no auth context (newsletter/search/contact).
+checkEnter('Enter on email field on a newsletter page does not fire', { path: '/', bodyText: 'subscribe to our newsletter for updates' },
+  field({ type: 'email' }), false);
+checkEnter('Enter in a plain text/search field does not fire', { path: '/', bodyText: 'search the site' },
+  field({ type: 'text', name: 'q' }), false);
+// SERP guard applies to the Enter path too.
+checkEnter('Enter on a search-results page never fires', { host: 'www.google.com', path: '/search', search: '?q=paypal' },
+  field({ type: 'password' }), false);
 
 // --- Report --------------------------------------------------------------
 const widths = {

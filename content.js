@@ -206,6 +206,42 @@ function isAgreeButton(el) {
   return pageHasAgreementContext();
 }
 
+// --- ENTER-KEY TRIGGER for formless logins ---
+// Native <form> Enter-to-submit is caught by the submit listener; but React/JS
+// logins built from <div>s + a <button onClick> dispatch NO submit event, so
+// pressing Enter there would bypass us. shouldFireOnEnterField classifies the
+// FOCUSED field the same tiered way isAgreeButton classifies a clicked button:
+//  - a password field is unambiguous auth → fire on any page
+//  - an email/username field fires ONLY in a real auth context (auth URL, auth
+//    text nearby, or page-wide agreement context) — so it never fires on a
+//    newsletter box, search field, profile edit, or contact form on an ordinary
+//    page, where email inputs are common.
+// (The email branch fires earliest — first step — and also covers passwordless /
+// magic-link flows; the password branch is the catch-all on generic URLs.)
+function isPasswordField(el) {
+  if (!el) return false;
+  const type = (el.type || el.getAttribute?.("type") || "").toLowerCase();
+  return type === "password";
+}
+function isEmailOrUsernameField(el) {
+  if (!el) return false;
+  const type = (el.type || el.getAttribute?.("type") || "").toLowerCase();
+  if (type === "email") return true;
+  const autocomplete = (el.getAttribute?.("autocomplete") || el.autocomplete || "").toLowerCase();
+  if (autocomplete === "username" || autocomplete === "email") return true;
+  const name = (el.getAttribute?.("name") || el.name || "").toLowerCase();
+  return /email|user/.test(name);
+}
+function shouldFireOnEnterField(el) {
+  if (!el) return false;
+  if (pageIsSearchResults()) return false;
+  if (isPasswordField(el)) return true;
+  if (isEmailOrUsernameField(el)) {
+    return pageUrlLooksLikeAuth() || hasAuthProximity(el) || pageHasAgreementContext();
+  }
+  return false;
+}
+
 // Walk up from a clicked element to find the nearest hooked agree button.
 // Uses composedPath when available to cross shadow DOM boundaries.
 function findHookedAncestor(el, composedPath = null) {
@@ -351,6 +387,15 @@ function showGuardianOverlay(event, sourceButton = null) {
       if (clickedButton instanceof HTMLFormElement) {
         if (typeof clickedButton.requestSubmit === "function") clickedButton.requestSubmit();
         else clickedButton.submit();
+        return;
+      }
+      // Enter-key trigger on a formless field: the domain is acknowledged now, so a
+      // re-dispatched Enter passes through our keydown listener to the site's own
+      // handler. (A plain .click() on an input would do nothing useful.)
+      if (clickedButton.tagName === "INPUT" || clickedButton.tagName === "TEXTAREA") {
+        clickedButton.dispatchEvent(new KeyboardEvent("keydown", {
+          key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true
+        }));
         return;
       }
       if (typeof clickedButton.click === "function") clickedButton.click();
@@ -614,6 +659,33 @@ document.addEventListener("submit", (event) => {
   setTimeout(() => { interceptActive = false; }, 5000);
   markPendingOverlay(); // FIXPLAN #5 — survive a navigating submit
   showGuardianOverlay(syntheticEvent, agreeBtn || form);
+}, true);
+
+// Enter key on a FORMLESS login field (React/JS logins with no real <form>, where
+// no submit event ever fires). Native-form fields are skipped — the submit listener
+// above owns those (it runs on the native submit event even when the site's JS
+// later cancels it). Only the genuinely formless case needs this path.
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
+  if (event.altKey || event.ctrlKey || event.metaKey) return;
+  if (acknowledgedDomains.has(currentDomainKey())) return;
+  if (interceptActive) return;
+
+  const field = event.target;
+  if (!field || field.form) return;             // native form → submit listener handles it
+  if (!shouldFireOnEnterField(field)) return;
+
+  // No <form> means Enter has no default submit to cancel — stop propagation so the
+  // site's own keydown handler can't log the user in before they see the overlay.
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  event.stopPropagation();
+  interceptActive = true;
+  setTimeout(() => { interceptActive = false; }, 5000);
+
+  console.log('[TOS Guardian] Intercepted Enter on auth field:', field.tagName);
+  markPendingOverlay(); // FIXPLAN #5 — survive a navigating submit
+  showGuardianOverlay(event, field);
 }, true);
 
 // --- BUTTON MARKING ---
