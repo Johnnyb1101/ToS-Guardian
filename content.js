@@ -2,6 +2,27 @@ const hookedButtons = new WeakSet();
 const browser = globalThis.browser || chrome;
 const isFrame = window.top !== window;
 
+// MV3 service-worker resilience (FIXPLAN #5b): a sleeping or mid-shutdown SW can
+// drop the first message after idle, which surfaces as runtime.lastError ("Could
+// not establish connection / receiving end does not exist"). Re-sending wakes it.
+// We retry ONLY on a delivery error — never on a slow-but-delivered response — so
+// an in-flight analysis is never duplicated; the caller's own deadline bounds the
+// total wait. The final outcome (response, error-or-null) is handed to `callback`.
+function sendMessageWithRetry(message, callback, { attempts = 3, delay = 350 } = {}) {
+  const attempt = (remaining) => {
+    browser.runtime.sendMessage(message, (response) => {
+      const err = browser.runtime.lastError || null;
+      if (err && remaining > 1) {
+        console.warn(`[TOS Guardian] Message "${message.action}" dropped (${err.message}); waking service worker and retrying (${remaining - 1} left)`);
+        setTimeout(() => attempt(remaining - 1), delay);
+        return;
+      }
+      callback(response, err);
+    });
+  };
+  attempt(attempts);
+}
+
 function hasProximityConsent(el) {
   const consentPhrases = [
     "by clicking", "by continuing", "by signing up",
@@ -310,7 +331,7 @@ function showGuardianOverlay(event, sourceButton = null) {
     acknowledgedDomains.add(currentDomainKey());
     clearPendingOverlay();
     overlay.remove();
-    browser.runtime.sendMessage({ action: "acknowledge", domain: currentDomainKey() });
+    sendMessageWithRetry({ action: "acknowledge", domain: currentDomainKey() }, () => {});
     setTimeout(() => {
       if (!clickedButton || !clickedButton.isConnected) return;
       if (clickedButton instanceof HTMLFormElement) {
@@ -396,20 +417,22 @@ function showGuardianOverlay(event, sourceButton = null) {
       );
     }, HARD_DEADLINE_MS);
 
-    browser.runtime.sendMessage(
+    // attempts:2 — retry only the cold-start drop (the orchestrator never ran), not
+    // a slow-but-running analysis; the 90s hard deadline bounds total time.
+    sendMessageWithRetry(
       {
         action: "analyzeTos",
         text: fullText,
         pageUrl: window.location.href,
         pageHtml: document.documentElement.innerHTML
       },
-      (result) => {
+      (result, err) => {
         if (analysisResponded) return;
         analysisResponded = true;
         clearAnalysisTimers();
         const summaryEl = overlayRoot.getElementById("tg-summary");
         if (!summaryEl) return;
-        if (browser.runtime.lastError) {
+        if (err) {
           showAnalysisError(
             "TOS Guardian could not reach the background service worker. Reload the extension and try again."
           );
@@ -430,7 +453,8 @@ function showGuardianOverlay(event, sourceButton = null) {
           });
         });
         revealActions();
-      }
+      },
+      { attempts: 2 }
     );
   }
 
@@ -512,15 +536,15 @@ document.addEventListener("click", (event) => {
     }
   }, 8000);
 
-  browser.runtime.sendMessage(
+  sendMessageWithRetry(
     { action: "checkCache", domain },
-    (response) => {
+    (response, err) => {
       if (responded) return;
       responded = true;
       clearTimeout(fallbackTimer);
 
-      if (browser.runtime.lastError) {
-        console.warn('[TOS Guardian] Message channel error:', browser.runtime.lastError.message);
+      if (err) {
+        console.warn('[TOS Guardian] Message channel error:', err.message);
         showGuardianOverlay(event, hookedEl);
         return;
       }
@@ -592,13 +616,13 @@ function initTosGuardian() {
     }
   }, 2000);
 
-  browser.runtime.sendMessage({ action: "checkCache", domain }, (response) => {
+  sendMessageWithRetry({ action: "checkCache", domain }, (response, err) => {
     if (initResponded) return;
     initResponded = true;
     clearTimeout(initFallback);
 
-    if (browser.runtime.lastError) {
-      console.warn('[TOS Guardian] Init: message channel error:', browser.runtime.lastError.message);
+    if (err) {
+      console.warn('[TOS Guardian] Init: message channel error:', err.message);
     } else {
       if (response && response.knownSite) domainIsKnown = true;
       if (response && response.acknowledged) acknowledgedDomains.add(domain);

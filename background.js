@@ -632,9 +632,13 @@ if (request.action === "acknowledge") {
       ack[domain] = Date.now();
       browser.storage.local.set({ tosAcknowledged: ack }, () => {
         console.log(`[Memory] Acknowledged for ${domain}`);
+        // Respond so the content script's wake-and-retry wrapper sees a delivered
+        // message (a dropped ack on a sleeping SW would otherwise let the overlay
+        // re-fire on later same-domain navigation). (FIXPLAN #5b)
+        sendResponse({ ok: true });
       });
     });
-    return false;
+    return true;
   }
 });
 
