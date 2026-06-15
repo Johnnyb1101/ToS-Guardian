@@ -438,82 +438,76 @@ function formatSummary(raw, optOutLinks = []) {
       ${validLinks.map(url => `<a class="tg-optout-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a>`).join("")}
     </div>` : "";
 
-  // The detailed sections are collected as {title, html} then rendered in a FIXED
-  // canonical order (knownHeaders) regardless of the order the analyzer emitted them,
-  // so WHAT THEY COLLECT always leads. (FIXPLAN #9 — Coinbase rendered it last.)
-  const sectionCards = [];
+  // The detailed sections are collected as {title, bodyLines} then rendered in a
+  // FIXED canonical order (knownHeaders) regardless of the order the analyzer emitted
+  // them, so WHAT THEY COLLECT always leads. (FIXPLAN #9 — Coinbase rendered it last.)
+  const collected = [];
   let currentTitle = "";
   let currentBody  = [];
-  let renderedSections = 0;
 
   const flush = () => {
-    if (currentTitle) {
-      const bodyLines = currentBody
-        .map(l => {
-          let cleaned = l
-            .replace(/^•\s*/, "")
-            // Strip a leading markdown bullet marker ("- " / "* ") the analyzer emits.
-            // Requires trailing whitespace so it never eats the "**" of a bold lead.
-            .replace(/^[-*]\s+/, "")
-            .replace(/\|[-\s|]+\|/g, '')
-            .replace(/^\|\s*/g, '')
-            .replace(/\s*\|$/g, '')
-            .replace(/\s*\|\s*/g, ' — ')
-            .trim();
-          // Escape HTML entities BEFORE converting markdown bold (SECURITY-021)
-          cleaned = escapeHtml(cleaned);
-          // Now safe to convert **bold** to <strong> since content is escaped
-          cleaned = cleaned.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-          return cleaned;
-        })
-        .filter(l => l !== "" && l !== "---" && l !== "—"
-          && !l.match(/^It.s your right to/i)
-          && !l.match(/^[-\s|]+$/));
+    if (!currentTitle) return;
+    const bodyLines = currentBody
+      .map(l => {
+        let cleaned = l
+          .replace(/^•\s*/, "")
+          // Strip a leading markdown bullet marker ("- " / "* ") the analyzer emits.
+          // Requires trailing whitespace so it never eats the "**" of a bold lead.
+          .replace(/^[-*]\s+/, "")
+          .replace(/\|[-\s|]+\|/g, '')
+          .replace(/^\|\s*/g, '')
+          .replace(/\s*\|$/g, '')
+          .replace(/\s*\|\s*/g, ' — ')
+          .trim();
+        // Escape HTML entities BEFORE converting markdown bold (SECURITY-021)
+        cleaned = escapeHtml(cleaned);
+        // Now safe to convert **bold** to <strong> since content is escaped
+        cleaned = cleaned.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+        return cleaned;
+      })
+      .filter(l => l !== "" && l !== "---" && l !== "—"
+        && !l.match(/^It.s your right to/i)
+        // Drop lines that are only punctuation / bullet / table chrome — e.g. a stray
+        // "." the analyzer sometimes emits as a section body. (Empty-card fix)
+        && !/^[.\-—•*\s|]+$/.test(l));
 
-      // Auto-Renewal & Billing is HIDDEN when it carries no actual charge concern —
-      // on privacy-heavy sites it's almost always "No automatic charges mentioned" /
-      // "Not covered", which is dead weight. It still renders when there IS a charge
-      // to warn about (subscription/streaming signups). Other "Not covered" sections
-      // are deliberately kept — an absent deletion/opt-out right is itself meaningful.
-      if (currentTitle === '🟡 AUTO-RENEWAL & BILLING') {
-        const plain = currentBody.join(' ').toLowerCase();
-        const noConcern = bodyLines.length === 0 ||
-          /\b(no automatic charges|not covered|not mentioned|not applicable|none mentioned|no auto[- ]?renew|does not (auto[- ]?renew|charge))\b/.test(plain);
-        if (noConcern) {
-          currentBody = [];
-          currentTitle = "";
-          return;
-        }
+    // Auto-Renewal & Billing is HIDDEN when it carries no actual charge concern —
+    // on privacy-heavy sites it's almost always "No automatic charges mentioned" /
+    // "Not covered", which is dead weight. It still renders when there IS a charge
+    // to warn about (subscription/streaming signups). Other "Not covered" sections
+    // are deliberately kept — an absent deletion/opt-out right is itself meaningful.
+    if (currentTitle === '🟡 AUTO-RENEWAL & BILLING') {
+      const plain = currentBody.join(' ').toLowerCase();
+      const noConcern = bodyLines.length === 0 ||
+        /\b(no automatic charges|not covered|not mentioned|not applicable|none mentioned|no auto[- ]?renew|does not (auto[- ]?renew|charge))\b/.test(plain);
+      if (noConcern) {
+        currentBody = [];
+        currentTitle = "";
+        return;
       }
+    }
 
-      // Show only the first (most important) bullet by default; the rest live
-      // in a per-section "Show more" panel. (Per-section progressive disclosure.)
-      let bodyHtml = "";
-      if (bodyLines.length > 0) {
-        const [mainLine, ...restLines] = bodyLines;
-        bodyHtml += `<p style="margin:0 0 6px 0;">${mainLine}</p>`;
-        if (restLines.length > 0) {
-          const panelId = `tg-more-${renderedSections}`;
-          bodyHtml += `<div class="tg-more" id="${panelId}">` +
-            restLines.map(l => `<p style="margin:0 0 6px 0;">${l}</p>`).join("") +
-            `</div>`;
-          bodyHtml += `<button class="tg-more-toggle" type="button" data-target="${panelId}">Show more ▾</button>`;
-        }
-      }
-
-      sectionCards.push({
-        title: currentTitle,
-        html: `
-        <div class="tg-category">
-          <span class="tg-category-title">${escapeHtml(currentTitle)}</span>
-          <div class="tg-category-body">${bodyHtml}</div>
-        </div>`
-      });
-      renderedSections++;
-
+    // A header the analyzer emitted with no real body (after the punctuation/junk
+    // filter above) is not a section — skip it so it can't render as an empty card
+    // or a hollow duplicate of the real one. (Empty/duplicate OPT-OUT RIGHTS fix)
+    if (bodyLines.length === 0) {
       currentBody = [];
       currentTitle = "";
+      return;
     }
+
+    // De-dupe by canonical title: if the analyzer emitted the same section twice
+    // (e.g. an empty OPT-OUT RIGHTS then the real one), merge the bullets into the
+    // existing card instead of rendering two cards with the same heading.
+    const existing = collected.find(c => c.title === currentTitle);
+    if (existing) {
+      existing.bodyLines.push(...bodyLines);
+    } else {
+      collected.push({ title: currentTitle, bodyLines });
+    }
+
+    currentBody = [];
+    currentTitle = "";
   };
 
   const knownHeaders = [
@@ -549,11 +543,29 @@ function formatSummary(raw, optOutLinks = []) {
     const i = knownHeaders.indexOf(title);
     return i === -1 ? knownHeaders.length : i;
   };
-  const details = sectionCards
-    .slice()
-    .sort((a, b) => sectionOrder(a.title) - sectionOrder(b.title))
-    .map(card => card.html)
+  collected.sort((a, b) => sectionOrder(a.title) - sectionOrder(b.title));
+
+  // Show only the first (most important) bullet by default; the rest live in a
+  // per-section "Show more" panel. (Per-section progressive disclosure.)
+  const details = collected
+    .map((sec, idx) => {
+      const [mainLine, ...restLines] = sec.bodyLines;
+      let bodyHtml = `<p style="margin:0 0 6px 0;">${mainLine}</p>`;
+      if (restLines.length > 0) {
+        const panelId = `tg-more-${idx}`;
+        bodyHtml += `<div class="tg-more" id="${panelId}">` +
+          restLines.map(l => `<p style="margin:0 0 6px 0;">${l}</p>`).join("") +
+          `</div>`;
+        bodyHtml += `<button class="tg-more-toggle" type="button" data-target="${panelId}">Show more ▾</button>`;
+      }
+      return `
+        <div class="tg-category">
+          <span class="tg-category-title">${escapeHtml(sec.title)}</span>
+          <div class="tg-category-body">${bodyHtml}</div>
+        </div>`;
+    })
     .join("");
+  const renderedSections = collected.length;
 
   // No recognized sections (e.g. a configuration/error/timeout message). This must
   // stay VISIBLE, not be tucked behind the collapse toggle.

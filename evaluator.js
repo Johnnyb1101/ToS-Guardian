@@ -213,6 +213,23 @@ function coreCriticConcernCount(criticVerdict) {
   ).length;
 }
 
+// How many CORE sections the critic could ground in the source. ≥2 grounded means
+// the document genuinely WAS retrieved and was substantially readable, so a stray
+// "X is not in the fetched text" note from the analyzer is a per-section gap, not a
+// whole-document failure. (Partial-fetch honesty — NFCU thin-fetch vs full-fetch.)
+function coreCriticGroundedCount(criticVerdict) {
+  if (!criticVerdict) return 0;
+  return CORE_CRITIC_FIELDS.filter(f => criticVerdict[f] === 'grounded').length;
+}
+
+// A GENUINE retrieval failure = the analyzer reports the document wasn't retrieved
+// AND the critic could not ground ≥2 core sections (nav shell / placeholder / empty
+// page). When ≥2 core sections ARE grounded it's a PARTIAL read, not a failed fetch,
+// and must never be shown as "we couldn't read this document".
+function isGenuineRetrievalFailure(analysisText, criticVerdict = null) {
+  return mentionsRetrievalFailure(analysisText) && coreCriticGroundedCount(criticVerdict) < 2;
+}
+
 function evaluateAnalysis(analysisText, criticVerdict = null) {
   if (!analysisText || typeof analysisText !== 'string') {
     return {
@@ -316,9 +333,18 @@ function evaluateAnalysis(analysisText, criticVerdict = null) {
   // large enough to force Failed even from an otherwise-perfect-looking score, so
   // navigation-chrome results can never be presented as Strong.
   const retrievalFailure = mentionsRetrievalFailure(analysisText);
-  if (retrievalFailure) {
+  const genuineRetrievalFailure = retrievalFailure && coreCriticGroundedCount(criticVerdict) < 2;
+  if (genuineRetrievalFailure) {
+    // Whole-document failure (nav shell / placeholder, nothing grounded) — force
+    // Failed so navigation chrome can never be presented as Strong.
     score -= 70;
     issues.push('analysis reports the document was not retrieved');
+  } else if (retrievalFailure) {
+    // Partial read: the doc loaded and ≥2 core sections grounded, but the analyzer
+    // honestly flagged a missing sub-section. Dock for the gap without nuking it to a
+    // false "couldn't read this document". (Partial-fetch honesty)
+    score -= 25;
+    issues.push('some sections were missing from the fetched document');
   }
 
   score = Math.max(0, Math.min(100, score));
@@ -331,8 +357,10 @@ function evaluateAnalysis(analysisText, criticVerdict = null) {
   else                  label = 'Failed';
 
   let warning = null;
-  if (retrievalFailure) {
+  if (genuineRetrievalFailure) {
     warning = '⚠️ The legal document could not be retrieved — the page returned navigation or placeholder content instead of the policy text. This summary is not reliable; open the document directly before agreeing.';
+  } else if (retrievalFailure) {
+    warning = '⚠️ Some sections were missing from the fetched document, so parts of this summary could not be verified. Open the document to confirm those details before agreeing.';
   } else if (label === 'Failed') {
     warning = '⚠️ Analysis quality could not be verified. Some claims may be unsupported or incomplete, so review the source documents before relying on this summary.';
   } else if (label === 'Adequate') {

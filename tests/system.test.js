@@ -516,7 +516,25 @@ ${strongSummary('clean source')}`
     const got = await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
     mustTrue('runOrchestrator', 'forces Unknown risk when confidence is Failed', true, got.summary.includes('tg-risk-unknown'));
     mustFalse('runOrchestrator', 'discards attacker Low risk on failed read', false, got.summary.includes('tg-risk-low'));
-    mustTrue('runOrchestrator', 'shows read-it-yourself bottom line', true, got.summary.includes('Open it yourself before agreeing'));
+    // Failed for QUALITY (the doc was read, but the analysis couldn't be verified) →
+    // honest "review it yourself", NOT the false "we couldn't read this document".
+    mustTrue('runOrchestrator', 'shows verify-it-yourself bottom line on quality Failed', true,
+      got.summary.includes('Review the document yourself before agreeing'));
+  });
+
+  // Genuine retrieval failure (summary says the doc wasn't retrieved AND no core
+  // section grounded) keeps the stronger "couldn't read it — open it yourself" line.
+  await runTest(async () => {
+    spies.analyzeWithModel.impl = async () => ({
+      summary: '🧭 BOTTOM LINE\nUnclear.\n🧭 RISK LEVEL\nLow\n🔴 DATA SELLING & SHARING\nThe fetched text does not contain the policy — only navigation links.'
+    });
+    spies.runCritic.impl = async () => null;
+    context.evaluateAnalysis = () => ({ score: 0, label: 'Failed', warning: 'bad', passed: false, escalate: false, contradictions: [] });
+    const got = await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
+    mustTrue('runOrchestrator', 'genuine retrieval failure shows open-it-yourself bottom line', true,
+      got.summary.includes('Open it yourself before agreeing'));
+    mustTrue('runOrchestrator', 'genuine retrieval failure forces Unknown risk', true,
+      got.summary.includes('tg-risk-unknown'));
   });
 
   mustFalse('isRelevantPrivacyActionUrl', 'blocks font resources', false,

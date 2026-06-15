@@ -573,6 +573,55 @@ The page mentions correcting or updating info, but no deletion steps are include
     got.issues.includes('analysis reports the document was not retrieved'));
 }
 
+// Partial-fetch honesty (NFCU thin-vs-full swing): when the analyzer honestly notes
+// a missing sub-section ("the fetched text does not contain …") BUT the critic
+// grounded ≥2 core sections, the document WAS read — it's a partial gap, not a
+// whole-document failure. It must NOT be force-Failed as "document was not retrieved".
+{
+  const partial = fullAnalysis('\n- Note: the fetched text does not contain the specific deletion steps.');
+  const groundedCritic = {
+    dataCollection: 'grounded', dataSelling: 'grounded', optOutRights: 'grounded',
+    howToOptOut: 'grounded', autoRenewal: 'skipped', dataDeletion: 'vague'
+  };
+  const got = evaluator.evaluateAnalysis(partial, groundedCritic);
+  mustFalse('evaluateAnalysis', 'partial read not flagged as document-not-retrieved', false,
+    got.issues.includes('analysis reports the document was not retrieved'));
+  mustTrue('evaluateAnalysis', 'partial read flags a missing-section gap instead', true,
+    got.issues.includes('some sections were missing from the fetched document'));
+  mustTrue('evaluateAnalysis', 'partial read warning is the missing-section one', true,
+    (got.warning || '').includes('Some sections were missing'));
+}
+
+// Same retrieval phrase but <2 grounded core sections IS a genuine failure → still
+// forced Failed with the "document was not retrieved" issue (protects the empty-page
+// false-Strong case the −70 net was built for).
+{
+  const text = fullAnalysis('\n- Note: the fetched text does not contain the actual policy.');
+  const weakCritic = {
+    dataCollection: 'grounded', dataSelling: 'unsupported', optOutRights: 'unsupported',
+    howToOptOut: 'unsupported', autoRenewal: 'skipped', dataDeletion: 'unsupported'
+  };
+  const got = evaluator.evaluateAnalysis(text, weakCritic);
+  mustTrue('evaluateAnalysis', 'retrieval phrase with <2 grounded core still flagged not retrieved', true,
+    got.issues.includes('analysis reports the document was not retrieved'));
+  mustEqual('evaluateAnalysis', 'genuine retrieval failure scores Failed', 'Failed', got.label);
+}
+
+// Helper units backing the partial/genuine split.
+{
+  const c = { dataCollection: 'grounded', dataSelling: 'grounded', optOutRights: 'unsupported', howToOptOut: 'vague', dataDeletion: 'skipped' };
+  mustEqual('coreCriticGroundedCount', 'counts grounded core fields', 2, evaluator.coreCriticGroundedCount(c));
+  mustEqual('coreCriticGroundedCount', 'null verdict counts zero', 0, evaluator.coreCriticGroundedCount(null));
+
+  const phrase = '🔴 DATA SELLING & SHARING\nThe fetched text does not contain the sharing details.';
+  mustTrue('isGenuineRetrievalFailure', 'phrase + no critic is genuine', true,
+    evaluator.isGenuineRetrievalFailure(phrase, null));
+  mustFalse('isGenuineRetrievalFailure', 'phrase + 2 grounded core is not genuine', false,
+    evaluator.isGenuineRetrievalFailure(phrase, { dataCollection: 'grounded', optOutRights: 'grounded' }));
+  mustFalse('isGenuineRetrievalFailure', 'no retrieval phrase is never genuine', false,
+    evaluator.isGenuineRetrievalFailure('🔴 OPT-OUT RIGHTS\nYou can opt out of ads.', null));
+}
+
 // The "Not specified:" colon form must register as an unavailable section.
 {
   mustTrue('isSectionUnavailable', 'colon form counts as unavailable', true,
@@ -794,6 +843,39 @@ Not covered in this document.`;
   const deletionEmpty = '🔴 OPT-OUT RIGHTS\nYou can opt out of ads.\n\n🟢 DATA DELETION RIGHTS\nNot covered in this document.';
   mustTrue('formatSummary', 'keeps not-covered deletion section visible', true,
     utils.formatSummary(deletionEmpty, []).includes('DATA DELETION'));
+}
+
+// Empty / duplicate section cards (#2): the analyzer sometimes emits a section header
+// twice — first with a stray "." body, then the real one (NFCU live overlay showed
+// two OPT-OUT RIGHTS, the first just "."). Render ONE card, not an empty duplicate.
+{
+  const dup = '🔴 OPT-OUT RIGHTS\n.\n\n🔴 OPT-OUT RIGHTS\n- **Targeted ads**: opt out via settings.\n- Delete your data on request.';
+  const html = utils.formatSummary(dup, []);
+  mustEqual('formatSummary', 'duplicate OPT-OUT RIGHTS renders one card', 1,
+    (html.match(/🔴 OPT-OUT RIGHTS/g) || []).length);
+  mustTrue('formatSummary', 'the real opt-out content survives de-dupe', true,
+    html.includes('Targeted ads'));
+}
+
+// A section whose only body is punctuation/junk must not render an empty card.
+{
+  const junk = '🔴 OPT-OUT RIGHTS\n.\n\n🟢 DATA DELETION RIGHTS\nYou can request deletion by calling support.';
+  const html = utils.formatSummary(junk, []);
+  mustFalse('formatSummary', 'junk-only OPT-OUT RIGHTS card is dropped', false,
+    html.includes('OPT-OUT RIGHTS'));
+  mustTrue('formatSummary', 'real DATA DELETION section still renders', true,
+    html.includes('DATA DELETION RIGHTS'));
+}
+
+// Two NON-empty sections with the same canonical title merge into one card (exercises
+// the de-dupe merge path, not just the empty-drop).
+{
+  const twoFull = '🔴 OPT-OUT RIGHTS\n- **First**: opt out of ads.\n\n🔴 OPT-OUT RIGHTS\n- **Second**: limit data use.';
+  const html = utils.formatSummary(twoFull, []);
+  mustEqual('formatSummary', 'two non-empty same-title sections merge to one card', 1,
+    (html.match(/🔴 OPT-OUT RIGHTS/g) || []).length);
+  mustTrue('formatSummary', 'merged card keeps both points', true,
+    html.includes('First') && html.includes('Second'));
 }
 
 // normalizeAnalysisHeaders also fixes the "DATA SHARING & SHARING" model typo.

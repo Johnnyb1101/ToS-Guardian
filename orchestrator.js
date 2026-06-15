@@ -249,9 +249,15 @@ const displayOptOutLinks = [
     // reliably read the document, never show a reassuring risk — say so. A
     // poisoned document therefore can't force a green verdict. (extends SECURITY-022)
     let trustedRisk, trustedBottomLine;
-    if (evaluation.label === 'Failed' || mentionsRetrievalFailure(result.summary)) {
+    if (isGenuineRetrievalFailure(result.summary, criticVerdict)) {
+      // We genuinely couldn't read the document (nav shell / placeholder) — say so.
       trustedRisk = 'Unknown';
       trustedBottomLine = "We couldn't reliably read this document. Open it yourself before agreeing.";
+    } else if (evaluation.label === 'Failed') {
+      // We read it, but the analysis couldn't be verified as reliable. Don't show a
+      // reassuring risk — but don't falsely claim we couldn't read it either.
+      trustedRisk = 'Unknown';
+      trustedBottomLine = "We couldn't fully verify this analysis. Review the document yourself before agreeing.";
     } else {
       trustedRisk = RISK_LEVELS.includes(headline.risk) ? headline.risk : 'Unknown';
       trustedBottomLine = headline.bottomLine;
