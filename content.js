@@ -317,6 +317,10 @@ function showGuardianOverlay(event, sourceButton = null) {
       .tg-optout-title { font-size:11px; font-weight:600; color:#1a7a3c; margin-bottom:6px; }
       .tg-optout-link { display:block; font-size:11px; color:#1a1aff; text-decoration:none; word-break:break-all; margin-bottom:3px; }
       .tg-optout-link:hover { text-decoration:underline; }
+      .tg-unreadable-docs { margin:10px 20px; padding:10px 12px; background:#fff8ee; border:1px solid #f5dfa0; border-radius:8px; }
+      .tg-unreadable-title { font-size:11px; font-weight:600; color:#7a5000; margin-bottom:6px; line-height:1.4; }
+      .tg-unreadable-link { display:block; font-size:11px; color:#1a1aff; text-decoration:none; word-break:break-all; margin-bottom:3px; }
+      .tg-unreadable-link:hover { text-decoration:underline; }
       .tg-eval-warning { margin:8px 20px 0; padding:8px 12px; background:#fff8ee; border:1px solid #f5dfa0; border-radius:8px; color:#7a5000; font-size:12px; line-height:1.5; }
       .tg-eval-badge { margin:8px 20px 4px; padding:4px 10px; border-radius:20px; font-size:11px; font-weight:500; display:inline-block; }
       .tg-eval-strong   { background:#f0fff4; color:#1a7a3c; border:1px solid #b2dfc0; }
@@ -499,7 +503,8 @@ function showGuardianOverlay(event, sourceButton = null) {
         }
         summaryEl.innerHTML = formatSummary(
           result?.summary || "Could not analyze this page.",
-          result?.optOutLinks || []
+          result?.optOutLinks || [],
+          result?.unreadableDocs || []
         );
         // Wire each section's "Show more" expander (per-section progressive
         // disclosure): only the main point shows until the reader expands a section.

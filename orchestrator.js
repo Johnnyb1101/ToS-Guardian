@@ -110,6 +110,12 @@ const displayOptOutLinks = [
   )
 ].filter(url => validateLinkFollowerUrl(url) && isRelevantPrivacyActionUrl(url));
 
+// Documents the fetcher couldn't read because they were scanned/image-based PDFs.
+// Surfaced honestly in the overlay so the user knows an important doc was skipped.
+const unreadableDocs = [
+  ...new Set((fetched?.unreadablePdfUrls || []).map(upgradeInsecureUrl))
+].filter(url => validateLinkFollowerUrl(url));
+
   // --- STEP 4: ANALYZER AGENT ---
   let result = null;
   result = await runWithRetry(() => analyzeWithModel(enrichedText, source), "[Analyzer]");
@@ -318,7 +324,7 @@ const displayOptOutLinks = [
     warning: evaluation.warning, issues: evaluation.issues || [],
     optOutLinks: displayOptOutLinks, cached: false
   });
-  return { ...result, optOutLinks: displayOptOutLinks };
+  return { ...result, optOutLinks: displayOptOutLinks, unreadableDocs };
 }
 
 function isConfigurationMessage(summary) {

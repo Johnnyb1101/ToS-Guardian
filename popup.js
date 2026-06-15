@@ -16,7 +16,8 @@ function renderSummary(result) {
   if (summary) {
     summary.innerHTML = formatSummary(
       result?.summary || "Could not analyze this page.",
-      result?.optOutLinks || []
+      result?.optOutLinks || [],
+      result?.unreadableDocs || []
     );
   }
 }

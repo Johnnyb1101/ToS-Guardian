@@ -878,6 +878,23 @@ Not covered in this document.`;
     html.includes('First') && html.includes('Second'));
 }
 
+// Honesty signal (Option A): scanned/unreadable PDFs surface as a "couldn't read…"
+// block linking the doc, instead of being silently dropped.
+{
+  const html = utils.formatSummary('🔴 OPT-OUT RIGHTS\nYou can opt out.', [], ['https://example.com/terms.pdf']);
+  mustTrue('formatSummary', 'renders unreadable-docs block', true, html.includes('tg-unreadable-docs'));
+  mustTrue('formatSummary', 'unreadable block links the doc', true, html.includes('https://example.com/terms.pdf'));
+}
+{
+  const html = utils.formatSummary('🔴 OPT-OUT RIGHTS\nYou can opt out.', [], []);
+  mustFalse('formatSummary', 'no unreadable block when none', false, html.includes('tg-unreadable-docs'));
+}
+{
+  // Non-https / javascript: URLs are dropped — only safe https docs render.
+  const html = utils.formatSummary('🔴 OPT-OUT RIGHTS\nYou can opt out.', [], ['http://insecure.example/doc.pdf', 'javascript:alert(1)']);
+  mustFalse('formatSummary', 'unreadable block drops non-https doc urls', false, html.includes('tg-unreadable-docs'));
+}
+
 // normalizeAnalysisHeaders also fixes the "DATA SHARING & SHARING" model typo.
 {
   mustTrue('normalizeAnalysisHeaders', 'canonicalizes "DATA SHARING & SHARING" typo', true,

@@ -102,6 +102,20 @@ async function readFromSupabase(domain, privacyText = '') {
 
 // --- FETCHER AGENT ---
 async function fetcherAgent(pageUrl, pageHtml = "", knownUrls = null) {
+  // Collect URLs of documents that turned out to be unreadable PDFs (scanned/image-
+  // based) so the orchestrator can honestly tell the user an important doc couldn't be
+  // read, instead of silently dropping it. Scoped per call (not module-global) so two
+  // concurrent different-domain relays never cross-contaminate. (Honesty signal — A)
+  const unreadablePdfUrls = [];
+  const noteUnreadablePdf = (url) => {
+    if (url && !unreadablePdfUrls.includes(url)) unreadablePdfUrls.push(url);
+  };
+  const result = await fetcherAgentInner(pageUrl, pageHtml, knownUrls, noteUnreadablePdf);
+  if (result && unreadablePdfUrls.length > 0) result.unreadablePdfUrls = unreadablePdfUrls;
+  return result;
+}
+
+async function fetcherAgentInner(pageUrl, pageHtml = "", knownUrls = null, noteUnreadablePdf = null) {
   try {
     if (!pageUrl || pageUrl.startsWith("file://")) {
       console.log("[Fetcher] Local file, using page text");
@@ -117,12 +131,12 @@ async function fetcherAgent(pageUrl, pageHtml = "", knownUrls = null) {
       // (which overlaps the explicit list). Only discover (enrich:true) when no list.
       const hasKnownSupplemental = !!(knownUrls.supplemental && knownUrls.supplemental.length);
       const [tosResult, privacyResult] = await Promise.all([
-        tryFetchCandidates([knownUrls.tos], 'tos'),
-        tryFetchCandidates([knownUrls.privacy], 'privacy', !hasKnownSupplemental)
+        tryFetchCandidates([knownUrls.tos], 'tos', true, noteUnreadablePdf),
+        tryFetchCandidates([knownUrls.privacy], 'privacy', !hasKnownSupplemental, noteUnreadablePdf)
       ]);
       if (tosResult || privacyResult) {
         const supplementalResults = hasKnownSupplemental
-          ? (await Promise.all(knownUrls.supplemental.map(url => tryFetchCandidates([url], 'privacy', false)))).filter(Boolean)
+          ? (await Promise.all(knownUrls.supplemental.map(url => tryFetchCandidates([url], 'privacy', false, noteUnreadablePdf)))).filter(Boolean)
           : [];
         const combined = [
           tosResult ? `=== TERMS OF SERVICE ===\n${tosResult.text}` : "",
@@ -171,8 +185,8 @@ async function fetcherAgent(pageUrl, pageHtml = "", knownUrls = null) {
       console.log(`[Fetcher] Found ${tosHrefs.length} ToS links and ${privacyHrefs.length} privacy links in page HTML`);
 
       const [tosFromPage, privacyFromPage] = await Promise.all([
-        tryFetchCandidates([...new Set(tosHrefs)], 'tos'),
-        tryFetchCandidates([...new Set(privacyHrefs)], 'privacy')
+        tryFetchCandidates([...new Set(tosHrefs)], 'tos', true, noteUnreadablePdf),
+        tryFetchCandidates([...new Set(privacyHrefs)], 'privacy', true, noteUnreadablePdf)
       ]);
 
       if (tosFromPage || privacyFromPage) {
@@ -216,8 +230,8 @@ async function fetcherAgent(pageUrl, pageHtml = "", knownUrls = null) {
         console.log(`[Fetcher] Link text scan found ${tosTextHrefs.length} ToS and ${privacyTextHrefs.length} privacy links`);
 
         const [tosFromText, privacyFromText] = await Promise.all([
-          tosTextHrefs.length > 0 ? tryFetchCandidates([...new Set(tosTextHrefs)], 'tos') : null,
-          privacyTextHrefs.length > 0 ? tryFetchCandidates([...new Set(privacyTextHrefs)], 'privacy') : null
+          tosTextHrefs.length > 0 ? tryFetchCandidates([...new Set(tosTextHrefs)], 'tos', true, noteUnreadablePdf) : null,
+          privacyTextHrefs.length > 0 ? tryFetchCandidates([...new Set(privacyTextHrefs)], 'privacy', true, noteUnreadablePdf) : null
         ]);
 
         if (tosFromText || privacyFromText) {
@@ -270,8 +284,8 @@ async function fetcherAgent(pageUrl, pageHtml = "", knownUrls = null) {
             if (homeTosHrefs.length > 0 || homePrivacyHrefs.length > 0) {
               console.log(`[Fetcher] Homepage footer found ${homeTosHrefs.length} ToS and ${homePrivacyHrefs.length} privacy links`);
               const [tosFromHome, privacyFromHome] = await Promise.all([
-                homeTosHrefs.length > 0 ? tryFetchCandidates([...new Set(homeTosHrefs)], 'tos') : null,
-                homePrivacyHrefs.length > 0 ? tryFetchCandidates([...new Set(homePrivacyHrefs)], 'privacy') : null
+                homeTosHrefs.length > 0 ? tryFetchCandidates([...new Set(homeTosHrefs)], 'tos', true, noteUnreadablePdf) : null,
+                homePrivacyHrefs.length > 0 ? tryFetchCandidates([...new Set(homePrivacyHrefs)], 'privacy', true, noteUnreadablePdf) : null
               ]);
               if (tosFromHome || privacyFromHome) {
                 const combined = [
@@ -330,8 +344,8 @@ async function fetcherAgent(pageUrl, pageHtml = "", knownUrls = null) {
     ];
 
     const [tosResult, privacyResult] = await Promise.all([
-      tryFetchCandidates(tosCandidates, 'tos'),
-      tryFetchCandidates(privacyCandidates, 'privacy')
+      tryFetchCandidates(tosCandidates, 'tos', true, noteUnreadablePdf),
+      tryFetchCandidates(privacyCandidates, 'privacy', true, noteUnreadablePdf)
     ]);
 
     if (tosResult || privacyResult) {
@@ -359,7 +373,7 @@ async function fetcherAgent(pageUrl, pageHtml = "", knownUrls = null) {
   }
 }
 
-async function fetchNextJsDocument(url) {
+async function fetchNextJsDocument(url, noteUnreadablePdf = null) {
   if (!validateDocumentUrl(url)) {
     console.warn(`[Fetcher] Proxy fetch blocked by URL gate: ${url}`);
     return null;
@@ -379,6 +393,19 @@ async function fetchNextJsDocument(url) {
       return null;
     }
     if (!response.ok) {
+      // A scanned/image-based PDF returns 400 with a structured signal. Surface it so
+      // the user learns an important document couldn't be read (likely a scanned PDF),
+      // instead of it being silently dropped. (Honesty signal — Option A)
+      if (response.status === 400 && noteUnreadablePdf) {
+        try {
+          const body = await response.json();
+          if (body && (body.error === 'scanned_pdf' || body.error === 'pdf_unreadable')) {
+            console.warn(`[Fetcher] Unreadable PDF (${body.error}) for ${url}`);
+            noteUnreadablePdf(url);
+            return null;
+          }
+        } catch (e) { /* not JSON / empty body — fall through to generic handling */ }
+      }
       console.warn(`[Fetcher] Proxy returned ${response.status} for ${url}`);
       return null;
     }
@@ -421,7 +448,7 @@ async function firstSuccessful(items, worker, concurrency = 3) {
 
 // Fetch a single URL: hidden tab first (renders JS), proxy as fallback. Returns
 // { text, html, sourceUrl } or null. Does NOT follow hubs — one hop only.
-async function fetchSingleCandidate(url) {
+async function fetchSingleCandidate(url, noteUnreadablePdf = null) {
   // Hidden tab first — renders JavaScript, gets real content. Keep polling past
   // the nav shell until the text actually looks like a legal document, so SPA
   // legal pages aren't captured as navigation chrome.
@@ -430,12 +457,12 @@ async function fetchSingleCandidate(url) {
     return { text: tabResult.text, html: tabResult.html, sourceUrl: url };
   }
   // Proxy fallback — for CORS-restricted or Next.js sites
-  const nextResult = await fetchNextJsDocument(url);
+  const nextResult = await fetchNextJsDocument(url, noteUnreadablePdf);
   if (nextResult) return { text: nextResult.text, html: nextResult.html, sourceUrl: url };
   return null;
 }
 
-async function tryFetchCandidates(candidates, kind = null, enrich = true) {
+async function tryFetchCandidates(candidates, kind = null, enrich = true, noteUnreadablePdf = null) {
   // Central URL validation gate (SECURITY-020)
   const validCandidates = candidates.filter(url => {
     if (isAssetUrl(url)) {
@@ -451,7 +478,7 @@ async function tryFetchCandidates(candidates, kind = null, enrich = true) {
   // Race them with bounded concurrency so a page of dead guesses no longer
   // costs one full hidden-tab timeout each in series.
   const winner = await firstSuccessful(validCandidates, async (url) => {
-    const base = await fetchSingleCandidate(url);
+    const base = await fetchSingleCandidate(url, noteUnreadablePdf);
     if (!base) return null;
 
     // Hub-follow: bank/credit-union/insurer sites often land on a "Privacy &
@@ -462,7 +489,7 @@ async function tryFetchCandidates(candidates, kind = null, enrich = true) {
       const deeperUrl = extractDeeperLegalLink(base.html, url, kind || 'privacy');
       if (deeperUrl && validateDocumentUrl(deeperUrl)) {
         console.log(`[Fetcher] ${url} looks like a legal hub — following deeper link: ${deeperUrl}`);
-        const deep = await fetchSingleCandidate(deeperUrl);
+        const deep = await fetchSingleCandidate(deeperUrl, noteUnreadablePdf);
         if (deep && looksLikeLegalDocument(deep.text)) {
           console.log(`[Fetcher] Deeper link yielded real legal content: ${deeperUrl}`);
           return deep;
@@ -482,7 +509,7 @@ async function tryFetchCandidates(candidates, kind = null, enrich = true) {
   // fold their text into the winner for ONE unified analysis. (Privacy only; one
   // hop; capped; skips anything not readable. Zero extra fetches when none exist.)
   if (enrich && winner && kind === 'privacy' && winner.html) {
-    await enrichWithSupplementalNotices(winner);
+    await enrichWithSupplementalNotices(winner, noteUnreadablePdf);
   }
   return winner;
 }
@@ -490,7 +517,7 @@ async function tryFetchCandidates(candidates, kind = null, enrich = true) {
 // Mutates `primary` in place: appends up to 2 complementary privacy notices linked
 // from its HTML (GLBA/Consumer + state/CCPA) to primary.text, source-tagged so the
 // analyzer sees the document boundaries. Records the urls on primary.supplementalUrls.
-async function enrichWithSupplementalNotices(primary) {
+async function enrichWithSupplementalNotices(primary, noteUnreadablePdf = null) {
   const supplementalUrls = extractSupplementalPrivacyLinks(primary.html, primary.sourceUrl, {
     exclude: [primary.sourceUrl],
     limit: 3 // fetch a few; keep the first 2 that actually yield a readable notice
@@ -502,7 +529,7 @@ async function enrichWithSupplementalNotices(primary) {
   if (supplementalUrls.length === 0) return;
 
   console.log(`[Fetcher] Gathering supplemental privacy notices: ${supplementalUrls.join(', ')}`);
-  const fetched = await Promise.all(supplementalUrls.map(url => fetchSingleCandidate(url)));
+  const fetched = await Promise.all(supplementalUrls.map(url => fetchSingleCandidate(url, noteUnreadablePdf)));
 
   const kept = [];
   for (const doc of fetched) {

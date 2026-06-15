@@ -356,7 +356,7 @@ function stripInjectionWarning(text) {
     .trim();
 }
 
-function formatSummary(raw, optOutLinks = []) {
+function formatSummary(raw, optOutLinks = [], unreadableDocs = []) {
   if (!raw) return "";
 
   // Drop the cache-schema + content-fingerprint stamps (invisible markers) so
@@ -436,6 +436,17 @@ function formatSummary(raw, optOutLinks = []) {
     <div class="tg-optout-links">
       <div class="tg-optout-title">Opt-Out Links Found</div>
       ${validLinks.map(url => `<a class="tg-optout-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a>`).join("")}
+    </div>` : "";
+
+  // Documents we couldn't read (scanned/image-based PDFs) — shown honestly so the
+  // user knows an important doc was skipped and can open it directly. (Honesty signal)
+  const unreadableLinks = (unreadableDocs || [])
+    .map(url => url ? url.trim().replace(/\s+/g, '') : '')
+    .filter(url => url && url.startsWith('https://'));
+  const unreadableHtml = unreadableLinks.length > 0 ? `
+    <div class="tg-unreadable-docs">
+      <div class="tg-unreadable-title">⚠️ Couldn't read ${unreadableLinks.length === 1 ? 'this document' : 'these documents'} (likely a scanned/image PDF) — open ${unreadableLinks.length === 1 ? 'it' : 'them'} directly:</div>
+      ${unreadableLinks.map(url => `<a class="tg-unreadable-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a>`).join("")}
     </div>` : "";
 
   // The detailed sections are collected as {title, bodyLines} then rendered in a
@@ -585,7 +596,7 @@ function formatSummary(raw, optOutLinks = []) {
   // its own per-section "Show more"). ---
   // Head: injection warning, bottom line, risk, any failure warning, opt-out
   // links, any no-sections fallback message — then the section cards.
-  let html = injectionWarning + bottomLineHtml + riskHtml + evalWarning + optOutHtml + fallback + details;
+  let html = injectionWarning + bottomLineHtml + riskHtml + evalWarning + unreadableHtml + optOutHtml + fallback + details;
 
   // Confidence small print + AI disclaimer (disclaimer required per ESCALATION-005).
   html += confidenceNote;
