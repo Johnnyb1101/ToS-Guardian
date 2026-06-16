@@ -26,6 +26,10 @@ Do not invent other verdict labels. Do not use "partially_grounded", "partially 
 Respond in ONLY this JSON format, no other text:
 {"dataCollection":"verdict","dataSelling":"verdict","optOutRights":"verdict","howToOptOut":"verdict","autoRenewal":"verdict","dataDeletion":"verdict","flags":["short explanation of any unsupported or vague finding"]}`;
 
+// Returns one of: a verdict object (success); `null` when the critic was NOT run
+// (nothing to check, or no model/key configured); or `{ failed: true }` when it WAS
+// attempted but couldn't produce a verdict (no response / unparseable / error). The
+// orchestrator treats the last case as fail-safe — confidence is capped, never Strong.
 async function runCritic(analysisSummary, sourceText) {
   if (!analysisSummary || !sourceText) return null;
 
@@ -130,7 +134,7 @@ ${trimmedSource}`;
 
     if (!responseText) {
       console.warn(`[Critic] No response text (stop_reason: ${stopReason || 'unknown'})`);
-      return null;
+      return { failed: true };
     }
 
     const jsonMatch = responseText.match(/\{[\s\S]*\}/);
@@ -148,7 +152,7 @@ ${trimmedSource}`;
         `hasOpenBrace: ${hasOpenBrace} (likely ${stopReason === 'max_tokens' || stopReason === 'length' || (hasOpenBrace && !txt.includes('}')) ? 'TRUNCATED' : 'malformed/non-JSON'}). ` +
         `Response: ${JSON.stringify(snippet)}`
       );
-      return null;
+      return { failed: true };
     }
 
     const verdict = JSON.parse(jsonMatch[0]);
@@ -199,7 +203,7 @@ ${trimmedSource}`;
 
   } catch (e) {
     console.warn('[Critic] Failed — pipeline continues without critic:', e.message);
-    return null;
+    return { failed: true };
   }
 }
 

@@ -139,12 +139,20 @@ const unreadableDocs = [
 
   // --- STEP 4.5: CRITIC/JUDGE AGENT ---
   let criticVerdict = null;
+  let criticFailed = false;
   if (result) {
-    criticVerdict = await runCritic(result.summary, enrichedText);
-    if (criticVerdict) {
+    const criticResult = await runCritic(result.summary, enrichedText);
+    if (criticResult && criticResult.failed) {
+      // The critic was attempted but couldn't return a verdict — the quality gate did
+      // not actually run. Fail-safe: don't feed a sentinel to the evaluator, and cap
+      // confidence below so this can never be presented as a verified Strong.
+      criticFailed = true;
+      console.warn(`[Orchestrator] Critic could not verify the analysis — capping confidence (fail-safe)`);
+    } else if (criticResult) {
+      criticVerdict = criticResult;
       console.log(`[Orchestrator] Critic verdict received — concern-flags: ${criticVerdict.flags?.length || 0}`);
     } else {
-      console.log(`[Orchestrator] Critic skipped or failed — continuing without`);
+      console.log(`[Orchestrator] Critic not run (not configured) — continuing without`);
     }
   }
   logStage("critic");
@@ -152,7 +160,7 @@ const unreadableDocs = [
   // --- STEP 5: EVALUATOR AGENT + ESCALATION ---
   const rawEvaluation = evaluateAnalysis(result ? result.summary : null, criticVerdict);
 
-  let evaluation = validateEvaluation(rawEvaluation);
+  let evaluation = capForUnverifiedCritic(validateEvaluation(rawEvaluation), criticFailed);
 
   console.log(`[Orchestrator] Evaluator — Label: ${evaluation.label}, Score: ${evaluation.score}`);
 
@@ -203,8 +211,13 @@ const unreadableDocs = [
           escalatedResult.summary = stripInjectionWarning(normalizeAnalysisHeaders(escalatedResult.summary));
         }
         // Re-run Critic on escalated result
-        const escalatedCritic = await runCritic(escalatedResult.summary, enrichedText);
-        const escalatedEvaluation = validateEvaluation(evaluateAnalysis(escalatedResult.summary, escalatedCritic));
+        const escalatedCriticResult = await runCritic(escalatedResult.summary, enrichedText);
+        const escalatedCriticFailed = !!(escalatedCriticResult && escalatedCriticResult.failed);
+        const escalatedCritic = escalatedCriticFailed ? null : escalatedCriticResult;
+        const escalatedEvaluation = capForUnverifiedCritic(
+          validateEvaluation(evaluateAnalysis(escalatedResult.summary, escalatedCritic)),
+          escalatedCriticFailed
+        );
         console.log(`[Orchestrator] Opus score: ${escalatedEvaluation.score} | Label: ${escalatedEvaluation.label}`);
 
         // FIXPLAN #2b — escalation is a QUALITY GATE, not a score-maximizer. The
@@ -325,6 +338,25 @@ const unreadableDocs = [
     optOutLinks: displayOptOutLinks, cached: false
   });
   return { ...result, optOutLinks: displayOptOutLinks, unreadableDocs };
+}
+
+// FAIL-SAFE for an unverified analysis: when the critic was ATTEMPTED but couldn't
+// return a verdict, the quality gate didn't actually run — so the result must never
+// be presented as a verified Strong. Cap it to Adequate with an honest "couldn't
+// fully verify" note. It still passes/caches (the content may well be fine), but
+// confidence is never overstated on an unchecked analysis. Only Strong is capped;
+// Adequate/Failed already carry appropriately hedged framing.
+function capForUnverifiedCritic(evaluation, criticFailed) {
+  if (!criticFailed || !evaluation || evaluation.label !== 'Strong') return evaluation;
+  return validateEvaluation({
+    score: Math.min(evaluation.score, 90),
+    label: 'Adequate',
+    warning: '⚠️ We could not fully verify this analysis with our quality checker, so confidence is capped. Treat it as a starting point and review the source documents before relying on it.',
+    passed: true,
+    escalate: false,
+    contradictions: Array.isArray(evaluation.contradictions) ? evaluation.contradictions : [],
+    criticVerdict: null
+  });
 }
 
 function isConfigurationMessage(summary) {

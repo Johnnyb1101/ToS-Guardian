@@ -537,6 +537,37 @@ ${strongSummary('clean source')}`
       got.summary.includes('tg-risk-unknown'));
   });
 
+  // Critic fail-safe: when the critic is ATTEMPTED but can't return a verdict
+  // ({ failed: true }), the quality gate didn't run — a Strong must be capped to
+  // Adequate with an honest "couldn't fully verify" note, never minted as Strong.
+  await runTest(async () => {
+    spies.analyzeWithModel.impl = async () => ({
+      summary: '🧭 BOTTOM LINE\nLooks fine.\n🧭 RISK LEVEL\nLow\n' + strongSummary('Haiku')
+    });
+    spies.runCritic.impl = async () => ({ failed: true });
+    context.evaluateAnalysis = () => ({ score: 100, label: 'Strong', warning: null, passed: true, escalate: false, contradictions: [] });
+    const got = await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
+    mustFalse('runOrchestrator', 'unverified critic does not mint a Strong badge', false,
+      got.summary.includes('tg-eval-strong'));
+    mustTrue('runOrchestrator', 'unverified critic caps to an Adequate badge', true,
+      got.summary.includes('tg-eval-adequate'));
+    mustTrue('runOrchestrator', 'unverified critic shows the could-not-verify note', true,
+      got.summary.includes('could not fully verify'));
+  });
+
+  // A critic that was NOT run (null — not configured) does NOT cap: a clean Strong
+  // stays Strong, so the fail-safe only triggers on a genuine failure, not absence.
+  await runTest(async () => {
+    spies.analyzeWithModel.impl = async () => ({
+      summary: '🧭 BOTTOM LINE\nLooks fine.\n🧭 RISK LEVEL\nLow\n' + strongSummary('Haiku')
+    });
+    spies.runCritic.impl = async () => null;
+    context.evaluateAnalysis = () => ({ score: 100, label: 'Strong', warning: null, passed: true, escalate: false, contradictions: [] });
+    const got = await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
+    mustTrue('runOrchestrator', 'no-critic (null) keeps a clean Strong', true,
+      got.summary.includes('tg-eval-strong'));
+  });
+
   mustFalse('isRelevantPrivacyActionUrl', 'blocks font resources', false,
     context.isRelevantPrivacyActionUrl('https://cdn.example.com/font.woff2'));
   mustFalse('isRelevantPrivacyActionUrl', 'blocks workplace privacy pages', false,
