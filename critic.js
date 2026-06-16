@@ -55,6 +55,7 @@ ${trimmedSource}`;
 
   try {
     let responseText = null;
+    let stopReason = null;
 
     if (provider === 'anthropic') {
       const apiKey = settings.apiKey_anthropic || '';
@@ -78,6 +79,7 @@ ${trimmedSource}`;
 
       const data = await response.json();
       responseText = data.content?.[0]?.text;
+      stopReason = data.stop_reason; // "end_turn" | "max_tokens" | ...
     }
 
     if (provider === 'openai') {
@@ -102,6 +104,7 @@ ${trimmedSource}`;
 
       const data = await response.json();
       responseText = data.choices?.[0]?.message?.content;
+      stopReason = data.choices?.[0]?.finish_reason; // "stop" | "length" | ...
     }
 
     if (provider === 'ollama') {
@@ -122,16 +125,29 @@ ${trimmedSource}`;
 
       const data = await response.json();
       responseText = data.choices?.[0]?.message?.content;
+      stopReason = data.choices?.[0]?.finish_reason;
     }
 
     if (!responseText) {
-      console.warn('[Critic] No response text');
+      console.warn(`[Critic] No response text (stop_reason: ${stopReason || 'unknown'})`);
       return null;
     }
 
     const jsonMatch = responseText.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
-      console.warn('[Critic] Could not extract JSON from response');
+      // Diagnostic (observability only): capture WHY extraction failed so the next
+      // occurrence tells us truncation ("max_tokens"/"length" + no closing brace) vs a
+      // malformed/prose response. Snippet is head+tail, trimmed, no behavior change.
+      const txt = String(responseText);
+      const hasOpenBrace = txt.includes('{');
+      const snippet = txt.length > 280
+        ? `${txt.slice(0, 200)} … ${txt.slice(-80)}`
+        : txt;
+      console.warn(
+        `[Critic] Could not extract JSON — len: ${txt.length}, stop_reason: ${stopReason || 'unknown'}, ` +
+        `hasOpenBrace: ${hasOpenBrace} (likely ${stopReason === 'max_tokens' || stopReason === 'length' || (hasOpenBrace && !txt.includes('}')) ? 'TRUNCATED' : 'malformed/non-JSON'}). ` +
+        `Response: ${JSON.stringify(snippet)}`
+      );
       return null;
     }
 
