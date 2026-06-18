@@ -1,0 +1,21 @@
+name: CI
+
+# Run the full test suite (logic + system + discord-score repro + detection)
+# on every push and pull request. Pure visibility — no behavior change.
+# The extension has no runtime/dev dependencies, so there is nothing to install.
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run tests
+        run: npm test
