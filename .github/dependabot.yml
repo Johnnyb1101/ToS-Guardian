@@ -1,0 +1,25 @@
+# Dependabot keeps dependencies up to date by opening PRs on a schedule.
+# Each PR is tested by CI (.github/workflows/ci.yml) and, with branch
+# protection in place, cannot be merged unless the test suite passes green.
+# Dependabot only FILES PRs — a human still clicks merge (no auto-merge here).
+version: 2
+updates:
+  # npm packages. The extension currently has no runtime/dev dependencies, so
+  # this rarely fires today — kept so any future dependency is watched from day one.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # The GitHub Actions used by the CI workflow (checkout, setup-node).
+  # Catches action deprecations (e.g. the Node 20 -> 24 runner notice).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
