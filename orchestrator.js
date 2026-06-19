@@ -51,6 +51,31 @@ const source = fetched
       : fetched.sourceUrl)
   : "current page";
 console.log("[Orchestrator] Text source:", source);
+
+// SECURITY (#5 — private page text): when document discovery FAILED, `textToAnalyze`
+// is `pageText` — the whole visible page (document.body.innerText). On a logged-in
+// page that is the user's private content (dashboard, account, inbox), and analyzing
+// it would send that content to the AI provider. Never do that. Only fall back to the
+// page text when the page ITSELF is a legal document (e.g. the user clicked agree on
+// the actual Terms page). Otherwise short-circuit to an honest "couldn't read it"
+// overlay without analyzing anything.
+if (!fetched && !looksLikeLegalDocument(textToAnalyze)) {
+  console.warn("[Orchestrator] No legal document found and the page is not itself a legal document — not analyzing page text (privacy).");
+  const bottomLine = "We couldn't find this site's terms or privacy policy to analyze. Open them yourself before agreeing.";
+  const summary =
+    `<div class="tg-eval-warning">⚠️ TOS Guardian couldn't locate the legal documents for this page, so there is nothing to analyze.</div>\n` +
+    `<div class="tg-bottomline">${bottomLine}</div>\n` +
+    `<div class="tg-risk tg-risk-unknown">Unknown</div>\n` +
+    `<div class="tg-eval-badge tg-eval-failed">Analysis confidence: Failed (0/100)</div>`;
+  await writeDebugResult({
+    domain, url: pageUrl, score: 0, label: 'Failed',
+    warning: bottomLine, issues: ['no legal document found; page text not analyzed (privacy)'],
+    optOutLinks: [], cached: false
+  });
+  logStage("no-document short-circuit");
+  return { summary, optOutLinks: [] };
+}
+
 const cacheVerificationText = buildCacheVerificationText(textToAnalyze);
 
 // --- STEP 2: MEMORY AGENT ---

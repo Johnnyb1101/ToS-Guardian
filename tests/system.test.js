@@ -638,12 +638,26 @@ ${strongSummary('clean source')}`
     mustEqual('analyzeWithModel', 'analysis proceeds after retry success', 1, spies.analyzeWithModel.calls.filter(args => args[2] !== true).length);
   });
 
-  // runWithRetry should yield null after a boundary throws twice, so the orchestrator falls back to page text.
+  // runWithRetry yields null after a boundary throws twice. SECURITY #5: when the
+  // fetcher yields null AND the visible page is NOT itself a legal document, the
+  // orchestrator must NOT send the page text (possibly the user's private logged-in
+  // content) to the model — it returns an honest "couldn't find the documents" overlay.
   await runTest(async () => {
     spies.fetcherAgent.impl = async () => { throw new Error('permanent'); };
-    await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
+    const got = await context.runOrchestrator('https://example.com/signup', 'page text', '<html></html>');
     mustEqual('runWithRetry', 'throws twice then yields null', 2, spies.fetcherAgent.calls.length);
-    mustEqual('analyzeWithModel', 'analysis still runs on page text after fetch fallback', 1, spies.analyzeWithModel.calls.filter(args => args[2] !== true).length);
+    mustEqual('analyzeWithModel', 'does NOT analyze non-legal page text after fetch failure (privacy)', 0, spies.analyzeWithModel.calls.length);
+    mustTrue('runOrchestrator', 'returns honest could-not-find-documents overlay', true, got.summary.includes("couldn't find this site's terms"));
+    mustTrue('runOrchestrator', 'honest overlay shows Unknown risk', true, got.summary.includes('tg-risk-unknown'));
+  });
+
+  // SECURITY #5 (legit case): when the fetcher yields null but the visible PAGE ITSELF
+  // is a legal document (the user clicked agree on the actual Terms page), the page
+  // text IS the document to analyze, so analysis still runs.
+  await runTest(async () => {
+    spies.fetcherAgent.impl = async () => { throw new Error('permanent'); };
+    await context.runOrchestrator('https://example.com/terms', DEFAULT_FETCHED_TEXT, '<html></html>');
+    mustEqual('analyzeWithModel', 'analyzes page text when the page itself is a legal document', 1, spies.analyzeWithModel.calls.filter(args => args[2] !== true).length);
   });
 
   printTable();
