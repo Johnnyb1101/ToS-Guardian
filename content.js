@@ -337,14 +337,14 @@ function showGuardianOverlay(event, sourceButton = null) {
       .tg-more { display:none; }
       .tg-more.tg-open { display:block; }
       .tg-confidence-note { margin:10px 20px 0; font-size:11px; color:#aaa; text-align:center; }
-      #tg-card-footer { display:none; gap:10px; padding:14px 20px; border-top:1px solid #f0f0f0; align-items:center; }
+      #tg-card-footer { display:none; gap:10px; padding:14px 20px; border-top:1px solid #f0f0f0; align-items:center; flex-wrap:wrap; }
       #tg-card-footer.tg-ready { display:flex; }
       #tg-card button { appearance:none; -webkit-appearance:none; text-transform:none; letter-spacing:normal; line-height:normal; margin:0; }
       #tg-proceed { flex:1 1 0; min-width:0; height:40px; padding:0 10px; background:#1a1aff; color:#fff; border:none; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; }
       #tg-proceed:hover { background:#1414cc; }
       #tg-leave { flex:1 1 0; min-width:0; height:40px; padding:0 10px; background:#9ca3af; color:#fff; border:none; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; }
       #tg-leave:hover { background:#6b7280; }
-      .tg-retry-btn { display:block; margin:14px 20px 4px; height:38px; padding:0 16px; background:#1a1aff; color:#fff; border:none; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; font-family:Arial,Helvetica,sans-serif; }
+      .tg-retry-btn { flex:1 1 100%; height:40px; padding:0 10px; background:#1a1aff; color:#fff; border:none; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; }
       .tg-retry-btn:hover { background:#1414cc; }
     </style>
 
@@ -444,18 +444,27 @@ function showGuardianOverlay(event, sourceButton = null) {
     const summaryEl = overlayRoot.getElementById("tg-summary");
     if (!summaryEl) return;
     summaryEl.innerHTML = formatSummary(message, []);
-    const retryBtn = document.createElement("button");
-    retryBtn.className = "tg-retry-btn";
-    retryBtn.textContent = "Try again";
-    retryBtn.addEventListener("click", () => requestAnalysis());
-    summaryEl.appendChild(retryBtn);
-    // Reveal the footer so "Go Back Safely" is always available on failure.
+    // Put "Try again" in the FOOTER, not the scrollable summary — appended to the
+    // summary it floated at the bottom-left and could sit half-off the card. The
+    // footer's flex-wrap gives it the full first row above Accept / Go Back.
+    const footer = overlayRoot.getElementById("tg-card-footer");
+    if (footer && !footer.querySelector(".tg-retry-btn")) {
+      const retryBtn = document.createElement("button");
+      retryBtn.className = "tg-retry-btn";
+      retryBtn.textContent = "Try again";
+      retryBtn.addEventListener("click", () => requestAnalysis());
+      footer.insertBefore(retryBtn, footer.firstChild);
+    }
+    // Reveal the footer so "Try again" / "Go Back Safely" are available on failure.
     revealActions();
   };
 
   function requestAnalysis() {
     analysisResponded = false;
     clearAnalysisTimers();
+    // Clear a stale "Try again" from a previous failed attempt so it doesn't linger
+    // in the footer once this attempt succeeds.
+    overlayRoot.getElementById("tg-card-footer")?.querySelector(".tg-retry-btn")?.remove();
     const loadingEl = overlayRoot.getElementById("tg-summary");
     if (loadingEl) {
       loadingEl.innerHTML =
