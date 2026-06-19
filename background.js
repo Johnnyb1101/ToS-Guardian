@@ -68,10 +68,17 @@ function saveAnalysis(domain, summary, tosText, optOutLinks = [], aiProvider = '
 
 async function readFromSupabase(domain, privacyText = '') {
   try {
-    const url = privacyText
-      ? `${PROXY_URL}/read/${domain}?text=${encodeURIComponent(privacyText)}`
-      : `${PROXY_URL}/read/${domain}`;
-    const response = await fetch(url);
+    // POST the document text in the body (not a ?text= query param) so it can't be
+    // written to proxy/platform access logs or trip URL-length limits. No-text reads
+    // stay a plain GET. The proxy still accepts the legacy GET?text= form.
+    const url = `${PROXY_URL}/read/${domain}`;
+    const response = await fetch(url, privacyText
+      ? {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: privacyText })
+        }
+      : { method: 'GET' });
     if (response.status === 403) {
       console.warn('[Supabase] Read blocked by security scan for', domain);
       return null;
