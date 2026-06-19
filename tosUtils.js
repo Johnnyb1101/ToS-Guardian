@@ -54,6 +54,16 @@ function registrableDomain(host) {
   return lastTwo;
 }
 
+// Acknowledgments ("Accept Risk and Continue") expire after this window so a one-time
+// accept doesn't suppress the overlay forever — after it, the site is re-shown/re-
+// analyzed, catching policy changes the user never re-reviewed. Acks are stored with a
+// timestamp; this is the read-side TTL gate (a legacy non-numeric value reads as stale).
+const ACK_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+function isAckFresh(ackTime, now = Date.now()) {
+  return typeof ackTime === "number" && (now - ackTime) < ACK_TTL_MS;
+}
+
 // Coordinate concurrent calls so identical in-flight work runs only once (FIXPLAN
 // #13b). Returns run(key, fn, onJoin): if a promise is already in flight for `key`,
 // returns that same promise (and calls onJoin(key) so the caller can log the join);
