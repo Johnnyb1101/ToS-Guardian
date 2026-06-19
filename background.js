@@ -661,9 +661,16 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     const knownSite = !!(await lookupSite(`https://${domain}/`));
 
-    // Check acknowledgment first — if user has already seen this, don't fire
+    // Check acknowledgment first — if the user has already seen this recently, don't
+    // fire. Acks expire (isAckFresh) so an old "Accept Risk and Continue" can't suppress
+    // the overlay forever; an expired or legacy entry is purged so it stops matching.
     const ackData = await browser.storage.local.get("tosAcknowledged");
-    const acknowledged = !!(ackData.tosAcknowledged && ackData.tosAcknowledged[domain]);
+    const acks = ackData.tosAcknowledged || {};
+    const acknowledged = isAckFresh(acks[domain]);
+    if (!acknowledged && acks[domain] !== undefined) {
+      delete acks[domain];
+      browser.storage.local.set({ tosAcknowledged: acks });
+    }
 
     sendResponse({ knownSite, acknowledged });
   })();

@@ -964,6 +964,17 @@ Not covered in this document.`;
     /tg-fp/.test(utils.formatSummary('🔴 OPT-OUT RIGHTS\nYou can opt out.\n' + utils.contentFingerprintStamp(base), [])));
 }
 
+// Acknowledgment TTL: a fresh ack suppresses the overlay; an expired or legacy one does not.
+{
+  const now = 1700000000000;
+  const DAY = 24 * 60 * 60 * 1000;
+  mustTrue('isAckFresh', 'just-acknowledged is fresh', true, utils.isAckFresh(now - 1000, now));
+  mustTrue('isAckFresh', 'within window (29 days) is fresh', true, utils.isAckFresh(now - 29 * DAY, now));
+  mustFalse('isAckFresh', 'past window (31 days) is stale', false, utils.isAckFresh(now - 31 * DAY, now));
+  mustFalse('isAckFresh', 'undefined (never acknowledged) is stale', false, utils.isAckFresh(undefined, now));
+  mustFalse('isAckFresh', 'legacy boolean true is stale (forces re-ack with timestamp)', false, utils.isAckFresh(true, now));
+}
+
 // stripEvalChrome must remove analyzer-echoed verdict markup while preserving body text.
 {
   const echoed = 'Body text\n<div class="tg-eval-badge tg-eval-strong">Analysis confidence: Strong (100/100)</div>\nMore body';
