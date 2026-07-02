@@ -703,16 +703,39 @@ document.addEventListener("keydown", (event) => {
 }, true);
 
 // --- BUTTON MARKING ---
-// attachToButtons only marks elements with data-tg-hooked — no per-element listeners.
+// Marking (data-tg-hooked) is a FAST-PATH HINT only — the click handler always
+// falls back to live classification (findAgreeControl over the composedPath),
+// so a button the scanner missed still gets intercepted on click. That's what
+// makes scoped scanning safe: a missed mark costs a few ms at click time, never
+// a missed interception. No per-element listeners are ever attached.
+
+function markIfAgreeButton(el) {
+  if (!el || el.dataset?.tgHooked === "true") return;
+  if (isAgreeButton(el)) {
+    el.dataset.tgHooked = "true";
+    console.log('[TOS Guardian] Marked button:', el.innerText?.trim().substring(0, 30));
+  }
+}
+
+// Scan ONE subtree (the element itself, its button-like descendants, and any
+// shadow roots inside it). Scoped scans keep mutation handling proportional to
+// what actually changed instead of re-walking the whole page (perf: FIXPLAN
+// audit #4 — full-document rescans on every mutation made heavy SPAs sluggish).
+function scanSubtree(root) {
+  if (!root || root.isConnected === false) return; // removed again before the debounce fired
+  if (typeof root.matches === "function" && root.matches("button, a, [role='button']")) {
+    markIfAgreeButton(root);
+  }
+  if (typeof root.querySelectorAll === "function") {
+    root.querySelectorAll("button, a, [role='button']").forEach(markIfAgreeButton);
+    hookShadowButtons(root);
+  }
+}
+
+// Full-page scan — used at init and as the fallback when a mutation burst is so
+// large that per-subtree scanning would just be a slower full scan.
 function attachToButtons() {
-  document.querySelectorAll("button, a, [role='button']").forEach(el => {
-    if (el.dataset?.tgHooked === "true") return;
-    if (isAgreeButton(el)) {
-      el.dataset.tgHooked = "true";
-      console.log('[TOS Guardian] Marked button:', el.innerText?.trim().substring(0, 30));
-    }
-  });
-  hookShadowButtons(document.body);
+  scanSubtree(document.body);
 }
 
 function attachToForms() {
@@ -754,11 +777,41 @@ function initTosGuardian() {
     setTimeout(() => { attachToButtons(); }, 4000);
   });
 
+  // Scoped mutation handling: instead of rescanning the whole document on any
+  // change, accumulate the nodes that actually changed across the debounce
+  // window and scan only those subtrees. Two escape hatches keep it bounded:
+  //  - a burst larger than MUTATION_BURST_LIMIT roots falls back to ONE full
+  //    scan (at that size most of the page changed anyway, and the containment
+  //    filter below would cost more than it saves);
+  //  - a root nested inside another pending root is skipped (its parent's scan
+  //    already covers it), so React re-renders don't trigger duplicate walks.
+  const MUTATION_BURST_LIMIT = 50;
   let debounceTimer = null;
-  const observer = new MutationObserver(() => {
+  const pendingScanRoots = new Set();
+  const observer = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      if (m.type === "childList") {
+        for (const n of m.addedNodes) {
+          if (n.nodeType === 1) pendingScanRoots.add(n); // element nodes only
+        }
+      } else if (m.type === "attributes" && m.target && m.target.nodeType === 1) {
+        pendingScanRoots.add(m.target);
+      }
+    }
+    if (pendingScanRoots.size === 0) return; // e.g. only text/removal mutations
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
-      attachToButtons();
+      const roots = [...pendingScanRoots];
+      pendingScanRoots.clear();
+      if (roots.length > MUTATION_BURST_LIMIT) {
+        attachToButtons();
+        return;
+      }
+      for (const root of roots) {
+        const covered = roots.some(other =>
+          other !== root && typeof other.contains === "function" && other.contains(root));
+        if (!covered) scanSubtree(root);
+      }
     }, 300);
   });
   observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'class'] });
