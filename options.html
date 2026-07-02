@@ -140,14 +140,11 @@
       <option value="ollama">Ollama (Local)</option>
     </select>
 
-    <div id="anthropicField">
-      <label for="anthropicKey">Anthropic API Key</label>
-      <input type="password" id="anthropicKey" placeholder="sk-ant-..." />
-    </div>
-
-    <div id="openaiField" style="display:none;">
-      <label for="openaiKey">OpenAI API Key</label>
-      <input type="password" id="openaiKey" placeholder="sk-..." />
+    <div id="cloudField">
+      <p class="ollama-note" style="margin-top:0;">
+        No API key needed here. Keys for Anthropic/OpenAI are stored on the
+        TOS Guardian analysis server, never in your browser.
+      </p>
     </div>
 
     <div id="ollamaField">

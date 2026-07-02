@@ -33,11 +33,10 @@ Respond in ONLY this JSON format, no other text:
 async function runCritic(analysisSummary, sourceText) {
   if (!analysisSummary || !sourceText) return null;
 
+  // Provider preference + local-Ollama URL only — API keys live on the proxy
+  // (audit refactor #5); the /analyze relay attaches them server-side.
   const settings = await new Promise(resolve => {
-    browser.storage.local.get(
-      ['selectedProvider', 'apiKey_anthropic', 'apiKey_openai', 'ollamaBaseUrl'],
-      resolve
-    );
+    browser.storage.local.get(['selectedProvider', 'ollamaBaseUrl'], resolve);
   });
 
   const provider = settings.selectedProvider || 'anthropic';
@@ -61,54 +60,36 @@ ${trimmedSource}`;
     let responseText = null;
     let stopReason = null;
 
-    if (provider === 'anthropic') {
-      const apiKey = settings.apiKey_anthropic || '';
-      if (!apiKey) return null;
-
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+    if (provider === 'anthropic' || provider === 'openai') {
+      // Relay through the proxy — no API key in the browser (audit refactor #5).
+      // NOT escalated: the critic always runs on the provider's default (cheap)
+      // model, which the proxy's llmRelay.js model map keeps in sync with
+      // CRITIC_MODELS above.
+      const response = await proxyFetch(`${PROXY_URL}/analyze`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true"
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model,
-          max_tokens: CRITIC_MAX_TOKENS,
+          provider,
           system: CRITIC_SYSTEM,
-          messages: [{ role: "user", content: userMessage }]
+          user: userMessage,
+          maxTokens: CRITIC_MAX_TOKENS
         })
       });
 
-      const data = await response.json();
-      responseText = data.content?.[0]?.text;
-      stopReason = data.stop_reason; // "end_turn" | "max_tokens" | ...
-    }
+      if (response.status === 503) {
+        // No key configured on the server — same semantics as the old "no key
+        // in storage" path: the critic was NOT run (null), not a failed run.
+        console.log('[Critic] Provider key not configured on proxy — skipping critic');
+        return null;
+      }
 
-    if (provider === 'openai') {
-      const apiKey = settings.apiKey_openai || '';
-      if (!apiKey) return null;
-
-      const response = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-          model,
-          max_tokens: CRITIC_MAX_TOKENS,
-          messages: [
-            { role: "system", content: CRITIC_SYSTEM },
-            { role: "user", content: userMessage }
-          ]
-        })
-      });
-
-      const data = await response.json();
-      responseText = data.choices?.[0]?.message?.content;
-      stopReason = data.choices?.[0]?.finish_reason; // "stop" | "length" | ...
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        console.warn(`[Critic] Relay error (${response.status}): ${data.reason || data.error || 'unknown'}`);
+        return { failed: true };
+      }
+      responseText = data.text;
+      stopReason = data.stopReason; // "end_turn" | "max_tokens" | "stop" | "length" | ...
     }
 
     if (provider === 'ollama') {

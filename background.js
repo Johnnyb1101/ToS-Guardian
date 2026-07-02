@@ -35,6 +35,12 @@ function proxyFetch(url, options = {}) {
   });
 }
 
+// One-time migration (audit refactor #5): API keys used to be stored in
+// chrome.storage.local and sent straight from the browser. They now live ONLY
+// in the proxy's Railway environment, so purge any leftover keys from the
+// browser profile — nothing in the extension reads them anymore.
+browser.storage.local.remove(['apiKey_anthropic', 'apiKey_openai']);
+
 // Write an analysis result to Supabase community cache
 async function writeToSupabase(domain, summary, aiProvider, optOutLinks = [], privacyText = '') {
   try {
@@ -721,33 +727,18 @@ if (request.action === "acknowledge") {
 });
 
 async function analyzeWithModel(text, source = "this page", escalate = false) {
-  // Read provider and API key from storage (SETTINGS-001, SETTINGS-002, SETTINGS-003)
+  // Provider preference + local-Ollama URL only. API keys are deliberately NOT
+  // read here anymore — they live in the proxy's Railway environment, and the
+  // /analyze relay attaches them server-side. The model map (default vs
+  // escalated) is also server-side policy now (proxy llmRelay.js), so this
+  // client only communicates INTENT (the escalate flag). (Audit refactor #5)
   const settings = await new Promise((resolve) => {
-    browser.storage.local.get(
-      ['selectedProvider', 'apiKey_anthropic', 'apiKey_openai', 'ollamaBaseUrl'],
-      resolve
-    );
+    browser.storage.local.get(['selectedProvider', 'ollamaBaseUrl'], resolve);
   });
 
   const provider = settings.selectedProvider || 'anthropic';
 
-  // Escalation model map per ESCALATION-006
-  // Anthropic: Haiku → Opus | OpenAI: GPT-4o-mini → GPT-4o | Ollama: disabled
-  const escalationModels = {
-    anthropic: 'claude-opus-4-8',
-    openai: 'gpt-4o'
-  };
-
-  const defaultModels = {
-    anthropic: 'claude-sonnet-4-6',
-    openai: 'gpt-4o-mini'
-  };
-
-  const model = escalate && escalationModels[provider]
-    ? escalationModels[provider]
-    : (defaultModels[provider] || null);
-
-  console.log(`[Analyzer] Using provider: ${provider} | Model: ${model}${escalate ? ' (escalated)' : ''}`);
+  console.log(`[Analyzer] Using provider: ${provider}${escalate ? ' (escalated)' : ''}${provider === 'ollama' ? '' : ' — model chosen by proxy'}`);
 
   // Split documents and allocate space — Privacy Policy gets priority
   const totalBudget = 80000;
@@ -820,63 +811,38 @@ When you encounter content formatted as a table, treat each row as a separate it
 DOCUMENT TEXT:
 ${trimmedText}`;
 
-  if (provider === 'anthropic') {
-    const apiKey = settings.apiKey_anthropic || '';
-    if (!apiKey) return { summary: "⚠️ No Anthropic API key set. Open TOS Guardian settings to add your key." };
-
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+  // Cloud providers go through the proxy relay: the proxy attaches the API key
+  // (never present in the browser) and enforces the model/token policy. The
+  // error strings below are matched by the orchestrator's
+  // isConfigurationMessage — keep "No ... API key set" phrasing if edited.
+  if (provider === 'anthropic' || provider === 'openai') {
+    const providerName = provider === 'anthropic' ? 'Anthropic' : 'OpenAI';
+    const response = await proxyFetch(`${PROXY_URL}/analyze`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true"
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: model,
-        max_tokens: escalate ? 2400 : 1200,
+        provider,
         system: systemPrompt,
-        messages: [{ role: "user", content: userMessage }]
+        user: userMessage,
+        escalate,
+        maxTokens: escalate ? 2400 : 1200
       })
     });
+    const data = await response.json().catch(() => ({}));
 
-    const data = await response.json();
-    if (data.content && data.content[0]) {
-      console.log(`[Analyzer] Response length: ${data.content[0].text.length} chars, stop_reason: ${data.stop_reason}`);
-      return { summary: data.content[0].text };
-    } else {
-      console.log("[Analyzer] API error response:", JSON.stringify(data).slice(0, 500));
-      return { summary: "Error: " + (data.error?.message || "Unknown error") };
+    if (response.status === 503) {
+      return { summary: `⚠️ No ${providerName} API key set on the analysis server. Add ${provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY'} to the proxy's Railway environment.` };
     }
-  }
-
-  if (provider === 'openai') {
-    const apiKey = settings.apiKey_openai || '';
-    if (!apiKey) return { summary: "⚠️ No OpenAI API key set. Open TOS Guardian settings to add your key." };
-
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: model,
-        max_tokens: escalate ? 2400 : 1200,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userMessage }
-        ]
-      })
-    });
-
-    const data = await response.json();
-    if (data.choices && data.choices[0]) {
-      return { summary: data.choices[0].message.content };
-    } else {
-      console.log("API response:", JSON.stringify(data));
-      return { summary: "Error: " + (data.error?.message || "Unknown error") };
+    if (response.status === 429) {
+      return { summary: "Error: analysis rate limited — please try again in a minute." };
     }
+    if (!response.ok || !data.text) {
+      console.log(`[Analyzer] Relay error (${response.status}):`, JSON.stringify(data).slice(0, 500));
+      return { summary: "Error: " + (data.reason || data.error?.message || data.error || "Unknown error") };
+    }
+
+    console.log(`[Analyzer] Relay response — model: ${data.model}, length: ${data.text.length} chars, stop_reason: ${data.stopReason}`);
+    return { summary: data.text };
   }
 
   if (provider === 'ollama') {

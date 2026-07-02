@@ -7,8 +7,6 @@
   "permissions": ["activeTab", "tabs", "storage", "scripting"],
   "host_permissions": [
     "https://tos-guardian-proxy-production.up.railway.app/*",
-    "https://api.anthropic.com/*",
-    "https://api.openai.com/*",
     "http://localhost/*",
     "http://127.0.0.1/*"
   ],
