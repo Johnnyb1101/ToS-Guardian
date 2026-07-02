@@ -511,7 +511,7 @@ const uniqueLinks = allLinks;
       let fetched = await fetchWithHiddenTab(url);
       if (!fetched || !fetched.text || fetched.text.length <= 200) {
         try {
-          const r = await fetch(`${PROXY_URL}/fetch-document`, {
+          const r = await proxyFetch(`${PROXY_URL}/fetch-document`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ url })

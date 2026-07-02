@@ -17,10 +17,28 @@ importScripts("orchestrator.js");
 const browser = globalThis.browser || chrome;
 const PROXY_URL = "https://tos-guardian-proxy-production.up.railway.app";
 
+// Shared secret for the proxy (SECURITY: proxy lockdown, step 1 of the audit
+// refactor). Sent on every proxy request; the proxy rejects anything without
+// it, so random internet clients can no longer write to the community cache or
+// use /fetch-document as a free relay. Must match PROXY_SHARED_SECRET in the
+// Railway environment. NOTE: anyone who unpacks the extension can read this —
+// it stops drive-by abuse, not a targeted attacker (per-user auth comes later).
+const PROXY_KEY = "4b8b9928f66fb7bdbc9b14230b90a515d8921bf1198e281393f7496f3797c865";
+
+// All proxy calls go through here so the auth header can never be forgotten on
+// a new call site. Used by background.js, orchestrator.js and siteDatabase.js
+// (they share this service-worker scope via importScripts).
+function proxyFetch(url, options = {}) {
+  return fetch(url, {
+    ...options,
+    headers: { ...(options.headers || {}), "x-tg-proxy-key": PROXY_KEY }
+  });
+}
+
 // Write an analysis result to Supabase community cache
 async function writeToSupabase(domain, summary, aiProvider, optOutLinks = [], privacyText = '') {
   try {
-    const response = await fetch(`${PROXY_URL}/write`, {
+    const response = await proxyFetch(`${PROXY_URL}/write`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -72,7 +90,7 @@ async function readFromSupabase(domain, privacyText = '') {
     // written to proxy/platform access logs or trip URL-length limits. No-text reads
     // stay a plain GET. The proxy still accepts the legacy GET?text= form.
     const url = `${PROXY_URL}/read/${domain}`;
-    const response = await fetch(url, privacyText
+    const response = await proxyFetch(url, privacyText
       ? {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -265,7 +283,7 @@ async function fetcherAgentInner(pageUrl, pageHtml = "", knownUrls = null, noteU
     if (!pageUrl.replace(/[?#].*$/, '').replace(/\/$/, '').endsWith(domain) && validateDocumentUrl(rootUrl)) {
       console.log(`[Fetcher] Scanning homepage footer for legal links: ${rootUrl}`);
       try {
-        const homepageResponse = await fetch(`${PROXY_URL}/fetch-document`, {
+        const homepageResponse = await proxyFetch(`${PROXY_URL}/fetch-document`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ url: rootUrl })
@@ -386,7 +404,7 @@ async function fetchNextJsDocument(url, noteUnreadablePdf = null) {
     return null;
   }
   try {
-    const response = await fetch(`${PROXY_URL}/fetch-document`, {
+    const response = await proxyFetch(`${PROXY_URL}/fetch-document`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url })
