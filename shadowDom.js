@@ -3,6 +3,13 @@
 // that are invisible to standard querySelectorAll
 
 function walkShadowDOM(root, callback) {
+  // The root itself may HOST a shadow root: scoped mutation scans (content.js)
+  // pass the added/changed element, not document.body, so a custom element
+  // that just attached its shadow root would otherwise never be entered.
+  if (root.shadowRoot) {
+    walkShadowDOM(root.shadowRoot, callback);
+  }
+
   // Get all elements inside this root (normal DOM or shadow root)
   const elements = root.querySelectorAll('*');
 

@@ -1,9 +1,9 @@
 {
   "name": "tos-guardian",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "private": true,
   "scripts": {
-    "test": "node tests/logic.test.js && node tests/system.test.js && node tests/discord-score.repro.js && node tests/detection.test.js",
+    "test": "node tests/logic.test.js && node tests/system.test.js && node tests/discord-score.repro.js && node tests/detection.test.js && node tests/render-security.test.js",
     "batch": "node tools/batch-runner.js",
     "build": "node tools/package-extension.js"
   }

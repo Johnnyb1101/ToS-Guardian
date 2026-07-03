@@ -14,6 +14,26 @@ function escapeHtml(text) {
     .replace(/'/g, "&#39;");
 }
 
+// THE single gate for untrusted prose entering generated HTML (SECURITY-021).
+// Escape FIRST, then convert markdown **bold** — so the only tag this can ever
+// emit is our own <strong> wrapped around already-escaped text. Every body/
+// fallback line formatSummary renders goes through here (or plain escapeHtml
+// for fragments with no markdown). Guarded by tests/render-security.test.js.
+function renderMarkdownLine(text) {
+  return escapeHtml(text).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+}
+
+// Strict shape check for URLs rendered as <a href> (opt-out links, unreadable-
+// doc links — both can arrive from the community cache). https only, and no
+// quote/angle/space characters ANYWHERE in the URL: escapeHtml already renders
+// an embedded quote inert, but rejecting it outright means the output upholds
+// the stronger invariant the render-security test enforces — no event-handler
+// text inside any tag — without needing entity-decoding rules to prove safety.
+// No legitimate opt-out URL contains a quote, so nothing real is lost.
+function isRenderableHttpsUrl(url) {
+  return typeof url === "string" && /^https:\/\/[^\s"'<>`]+$/.test(url);
+}
+
 // --- Registrable-domain (eTLD+1) keying ---
 // Cache, acknowledgments and relays all key off the registrable domain so that
 // sibling subdomains (www.x.com / login.x.com / oak.x.com) share one cache entry
@@ -366,6 +386,15 @@ function stripInjectionWarning(text) {
     .trim();
 }
 
+// RENDERING RULE (SECURITY-021): `raw`, `optOutLinks`, and `unreadableDocs` are
+// all UNTRUSTED (AI output that may echo attacker document text; community-cache
+// entries). Every ${...} interpolated into HTML below must be one of:
+//   (a) escapeHtml(...) / renderMarkdownLine(...) output,
+//   (b) a constant or whitelist-validated token (e.g. riskClass, panelId),
+//   (c) HTML previously built under rules (a)/(b).
+// Never interpolate a raw variable. tests/render-security.test.js audits the
+// output (allowed tags only, no event handlers, https-only hrefs) — run it
+// after any change to this function.
 function formatSummary(raw, optOutLinks = [], unreadableDocs = []) {
   if (!raw) return "";
 
@@ -441,7 +470,7 @@ function formatSummary(raw, optOutLinks = [], unreadableDocs = []) {
   // Build opt-out links HTML once — shown up top (visible), since it's actionable.
   const validLinks = (optOutLinks || [])
     .map(url => url ? url.trim().replace(/\s+/g, '') : '')
-    .filter(url => url && url.startsWith('https://'));
+    .filter(isRenderableHttpsUrl);
   const optOutHtml = validLinks.length > 0 ? `
     <div class="tg-optout-links">
       <div class="tg-optout-title">Opt-Out Links Found</div>
@@ -452,7 +481,7 @@ function formatSummary(raw, optOutLinks = [], unreadableDocs = []) {
   // user knows an important doc was skipped and can open it directly. (Honesty signal)
   const unreadableLinks = (unreadableDocs || [])
     .map(url => url ? url.trim().replace(/\s+/g, '') : '')
-    .filter(url => url && url.startsWith('https://'));
+    .filter(isRenderableHttpsUrl);
   const unreadableHtml = unreadableLinks.length > 0 ? `
     <div class="tg-unreadable-docs">
       <div class="tg-unreadable-title">⚠️ Couldn't read ${unreadableLinks.length === 1 ? 'this document' : 'these documents'} (likely a scanned/image PDF) — open ${unreadableLinks.length === 1 ? 'it' : 'them'} directly:</div>
@@ -468,24 +497,21 @@ function formatSummary(raw, optOutLinks = [], unreadableDocs = []) {
 
   const flush = () => {
     if (!currentTitle) return;
+    // NOTE: bodyLines stay UNESCAPED plain text here — escaping happens at the
+    // single point where they are interpolated into HTML (renderMarkdownLine in
+    // the details render below), so text-vs-markup can never get confused by a
+    // step added between cleanup and render. (SECURITY-021 centralization)
     const bodyLines = currentBody
-      .map(l => {
-        let cleaned = l
-          .replace(/^•\s*/, "")
-          // Strip a leading markdown bullet marker ("- " / "* ") the analyzer emits.
-          // Requires trailing whitespace so it never eats the "**" of a bold lead.
-          .replace(/^[-*]\s+/, "")
-          .replace(/\|[-\s|]+\|/g, '')
-          .replace(/^\|\s*/g, '')
-          .replace(/\s*\|$/g, '')
-          .replace(/\s*\|\s*/g, ' — ')
-          .trim();
-        // Escape HTML entities BEFORE converting markdown bold (SECURITY-021)
-        cleaned = escapeHtml(cleaned);
-        // Now safe to convert **bold** to <strong> since content is escaped
-        cleaned = cleaned.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-        return cleaned;
-      })
+      .map(l => l
+        .replace(/^•\s*/, "")
+        // Strip a leading markdown bullet marker ("- " / "* ") the analyzer emits.
+        // Requires trailing whitespace so it never eats the "**" of a bold lead.
+        .replace(/^[-*]\s+/, "")
+        .replace(/\|[-\s|]+\|/g, '')
+        .replace(/^\|\s*/g, '')
+        .replace(/\s*\|$/g, '')
+        .replace(/\s*\|\s*/g, ' — ')
+        .trim())
       .filter(l => l !== "" && l !== "---" && l !== "—"
         && !l.match(/^It.s your right to/i)
         // Drop lines that are only punctuation / bullet / table chrome — e.g. a stray
@@ -571,11 +597,11 @@ function formatSummary(raw, optOutLinks = [], unreadableDocs = []) {
   const details = collected
     .map((sec, idx) => {
       const [mainLine, ...restLines] = sec.bodyLines;
-      let bodyHtml = `<p style="margin:0 0 6px 0;">${mainLine}</p>`;
+      let bodyHtml = `<p style="margin:0 0 6px 0;">${renderMarkdownLine(mainLine)}</p>`;
       if (restLines.length > 0) {
         const panelId = `tg-more-${idx}`;
         bodyHtml += `<div class="tg-more" id="${panelId}">` +
-          restLines.map(l => `<p style="margin:0 0 6px 0;">${l}</p>`).join("") +
+          restLines.map(l => `<p style="margin:0 0 6px 0;">${renderMarkdownLine(l)}</p>`).join("") +
           `</div>`;
         bodyHtml += `<button class="tg-more-toggle" type="button" data-target="${panelId}">Show more ▾</button>`;
       }

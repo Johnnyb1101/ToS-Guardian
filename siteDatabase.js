@@ -72,7 +72,7 @@ async function lookupSite(pageUrl) {
     }
 
     try {
-      const response = await fetch(`${PROXY_URL}/site/${encodeURIComponent(hostname)}`);
+      const response = await proxyFetch(`${PROXY_URL}/site/${encodeURIComponent(hostname)}`);
       if (response.status === 429) {
         console.warn(`[SiteDB] Rate limited for ${hostname}`);
         return null;
@@ -115,7 +115,7 @@ async function learnSite(pageUrl, tosUrl, privacyUrl) {
 
     if (STATIC_SITES[hostname]) return;
 
-    fetch(`${PROXY_URL}/site`, {
+    proxyFetch(`${PROXY_URL}/site`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ domain: hostname, tos_url: tosUrl, privacy_url: privacyUrl })

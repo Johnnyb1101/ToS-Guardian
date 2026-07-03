@@ -337,14 +337,14 @@ function showGuardianOverlay(event, sourceButton = null) {
       .tg-more { display:none; }
       .tg-more.tg-open { display:block; }
       .tg-confidence-note { margin:10px 20px 0; font-size:11px; color:#aaa; text-align:center; }
-      #tg-card-footer { display:none; gap:10px; padding:14px 20px; border-top:1px solid #f0f0f0; align-items:center; }
+      #tg-card-footer { display:none; gap:10px; padding:14px 20px; border-top:1px solid #f0f0f0; align-items:center; flex-wrap:wrap; }
       #tg-card-footer.tg-ready { display:flex; }
       #tg-card button { appearance:none; -webkit-appearance:none; text-transform:none; letter-spacing:normal; line-height:normal; margin:0; }
       #tg-proceed { flex:1 1 0; min-width:0; height:40px; padding:0 10px; background:#1a1aff; color:#fff; border:none; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; }
       #tg-proceed:hover { background:#1414cc; }
       #tg-leave { flex:1 1 0; min-width:0; height:40px; padding:0 10px; background:#9ca3af; color:#fff; border:none; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; }
       #tg-leave:hover { background:#6b7280; }
-      .tg-retry-btn { display:block; margin:14px 20px 4px; height:38px; padding:0 16px; background:#1a1aff; color:#fff; border:none; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; font-family:Arial,Helvetica,sans-serif; }
+      .tg-retry-btn { flex:1 1 100%; height:40px; padding:0 10px; background:#1a1aff; color:#fff; border:none; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; }
       .tg-retry-btn:hover { background:#1414cc; }
     </style>
 
@@ -444,18 +444,27 @@ function showGuardianOverlay(event, sourceButton = null) {
     const summaryEl = overlayRoot.getElementById("tg-summary");
     if (!summaryEl) return;
     summaryEl.innerHTML = formatSummary(message, []);
-    const retryBtn = document.createElement("button");
-    retryBtn.className = "tg-retry-btn";
-    retryBtn.textContent = "Try again";
-    retryBtn.addEventListener("click", () => requestAnalysis());
-    summaryEl.appendChild(retryBtn);
-    // Reveal the footer so "Go Back Safely" is always available on failure.
+    // Put "Try again" in the FOOTER, not the scrollable summary — appended to the
+    // summary it floated at the bottom-left and could sit half-off the card. The
+    // footer's flex-wrap gives it the full first row above Accept / Go Back.
+    const footer = overlayRoot.getElementById("tg-card-footer");
+    if (footer && !footer.querySelector(".tg-retry-btn")) {
+      const retryBtn = document.createElement("button");
+      retryBtn.className = "tg-retry-btn";
+      retryBtn.textContent = "Try again";
+      retryBtn.addEventListener("click", () => requestAnalysis());
+      footer.insertBefore(retryBtn, footer.firstChild);
+    }
+    // Reveal the footer so "Try again" / "Go Back Safely" are available on failure.
     revealActions();
   };
 
   function requestAnalysis() {
     analysisResponded = false;
     clearAnalysisTimers();
+    // Clear a stale "Try again" from a previous failed attempt so it doesn't linger
+    // in the footer once this attempt succeeds.
+    overlayRoot.getElementById("tg-card-footer")?.querySelector(".tg-retry-btn")?.remove();
     const loadingEl = overlayRoot.getElementById("tg-summary");
     if (loadingEl) {
       loadingEl.innerHTML =
@@ -694,16 +703,39 @@ document.addEventListener("keydown", (event) => {
 }, true);
 
 // --- BUTTON MARKING ---
-// attachToButtons only marks elements with data-tg-hooked — no per-element listeners.
+// Marking (data-tg-hooked) is a FAST-PATH HINT only — the click handler always
+// falls back to live classification (findAgreeControl over the composedPath),
+// so a button the scanner missed still gets intercepted on click. That's what
+// makes scoped scanning safe: a missed mark costs a few ms at click time, never
+// a missed interception. No per-element listeners are ever attached.
+
+function markIfAgreeButton(el) {
+  if (!el || el.dataset?.tgHooked === "true") return;
+  if (isAgreeButton(el)) {
+    el.dataset.tgHooked = "true";
+    console.log('[TOS Guardian] Marked button:', el.innerText?.trim().substring(0, 30));
+  }
+}
+
+// Scan ONE subtree (the element itself, its button-like descendants, and any
+// shadow roots inside it). Scoped scans keep mutation handling proportional to
+// what actually changed instead of re-walking the whole page (perf: FIXPLAN
+// audit #4 — full-document rescans on every mutation made heavy SPAs sluggish).
+function scanSubtree(root) {
+  if (!root || root.isConnected === false) return; // removed again before the debounce fired
+  if (typeof root.matches === "function" && root.matches("button, a, [role='button']")) {
+    markIfAgreeButton(root);
+  }
+  if (typeof root.querySelectorAll === "function") {
+    root.querySelectorAll("button, a, [role='button']").forEach(markIfAgreeButton);
+    hookShadowButtons(root);
+  }
+}
+
+// Full-page scan — used at init and as the fallback when a mutation burst is so
+// large that per-subtree scanning would just be a slower full scan.
 function attachToButtons() {
-  document.querySelectorAll("button, a, [role='button']").forEach(el => {
-    if (el.dataset?.tgHooked === "true") return;
-    if (isAgreeButton(el)) {
-      el.dataset.tgHooked = "true";
-      console.log('[TOS Guardian] Marked button:', el.innerText?.trim().substring(0, 30));
-    }
-  });
-  hookShadowButtons(document.body);
+  scanSubtree(document.body);
 }
 
 function attachToForms() {
@@ -745,11 +777,41 @@ function initTosGuardian() {
     setTimeout(() => { attachToButtons(); }, 4000);
   });
 
+  // Scoped mutation handling: instead of rescanning the whole document on any
+  // change, accumulate the nodes that actually changed across the debounce
+  // window and scan only those subtrees. Two escape hatches keep it bounded:
+  //  - a burst larger than MUTATION_BURST_LIMIT roots falls back to ONE full
+  //    scan (at that size most of the page changed anyway, and the containment
+  //    filter below would cost more than it saves);
+  //  - a root nested inside another pending root is skipped (its parent's scan
+  //    already covers it), so React re-renders don't trigger duplicate walks.
+  const MUTATION_BURST_LIMIT = 50;
   let debounceTimer = null;
-  const observer = new MutationObserver(() => {
+  const pendingScanRoots = new Set();
+  const observer = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      if (m.type === "childList") {
+        for (const n of m.addedNodes) {
+          if (n.nodeType === 1) pendingScanRoots.add(n); // element nodes only
+        }
+      } else if (m.type === "attributes" && m.target && m.target.nodeType === 1) {
+        pendingScanRoots.add(m.target);
+      }
+    }
+    if (pendingScanRoots.size === 0) return; // e.g. only text/removal mutations
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
-      attachToButtons();
+      const roots = [...pendingScanRoots];
+      pendingScanRoots.clear();
+      if (roots.length > MUTATION_BURST_LIMIT) {
+        attachToButtons();
+        return;
+      }
+      for (const root of roots) {
+        const covered = roots.some(other =>
+          other !== root && typeof other.contains === "function" && other.contains(root));
+        if (!covered) scanSubtree(root);
+      }
     }, 300);
   });
   observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'class'] });
