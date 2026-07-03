@@ -831,6 +831,13 @@ ${trimmedText}`;
     const data = await response.json().catch(() => ({}));
 
     if (response.status === 503) {
+      // Two distinct 503s: the auth gate's fail-closed mode (PROXY_SHARED_SECRET
+      // missing — EVERY route 503s) vs. a missing provider key (only /analyze
+      // 503s). Report the right one so the fix isn't misdirected. (Found in
+      // live testing: a missing shared secret was reported as a missing API key.)
+      if (data.error === 'proxy_not_configured') {
+        return { summary: "⚠️ The analysis server is not configured: PROXY_SHARED_SECRET is missing from its Railway environment." };
+      }
       return { summary: `⚠️ No ${providerName} API key set on the analysis server. Add ${provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY'} to the proxy's Railway environment.` };
     }
     if (response.status === 429) {

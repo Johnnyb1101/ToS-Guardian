@@ -225,7 +225,7 @@ const unreadableDocs = [
     const shouldEscalate = escalationCount < CAP;
 
     if (shouldEscalate) {
-      console.log(`[Orchestrator] Escalating to Opus — Haiku score: ${evaluation.score}, count: ${escalationCount + 1}/${CAP} (resets ${new Date(stored.resetAt).toLocaleTimeString()})`);
+      console.log(`[Orchestrator] Escalating to Opus — first-pass score: ${evaluation.score}, count: ${escalationCount + 1}/${CAP} (resets ${new Date(stored.resetAt).toLocaleTimeString()})`);
       const escalatedResult = await runWithRetry(
         () => analyzeWithModel(enrichedText, source, true),
         "[Analyzer-Opus]"
@@ -280,7 +280,7 @@ const unreadableDocs = [
         // was kept.
       }
     } else {
-      console.log(`[Orchestrator] Opus cap reached (${escalationCount}/${CAP}) — using Haiku result. Resets ${new Date(stored.resetAt).toLocaleTimeString()}`);
+      console.log(`[Orchestrator] Opus cap reached (${escalationCount}/${CAP}) — using first-pass result. Resets ${new Date(stored.resetAt).toLocaleTimeString()}`);
     }
   }
 
@@ -385,7 +385,7 @@ function capForUnverifiedCritic(evaluation, criticFailed) {
 }
 
 function isConfigurationMessage(summary) {
-  return /No (Anthropic|OpenAI) API key set|Unknown provider selected/i.test(summary || "");
+  return /No (Anthropic|OpenAI) API key set|Unknown provider selected|PROXY_SHARED_SECRET is missing/i.test(summary || "");
 }
 
 function validateEvaluation(rawEvaluation) {
