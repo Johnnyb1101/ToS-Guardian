@@ -76,14 +76,14 @@ ${trimmedSource}`;
         })
       });
 
-      if (response.status === 503) {
+      const data = await response.json().catch(() => ({}));
+      if (response.status === 503 && data.error === 'provider_not_configured') {
         // No key configured on the server — same semantics as the old "no key
         // in storage" path: the critic was NOT run (null), not a failed run.
         console.log('[Critic] Provider key not configured on proxy — skipping critic');
         return null;
       }
 
-      const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         console.warn(`[Critic] Relay error (${response.status}): ${data.reason || data.error || 'unknown'}`);
         return { failed: true };
@@ -285,11 +285,11 @@ function buildCriticSourceExcerpt(sourceText) {
       otherSection.slice(0, Math.floor(CRITIC_SOURCE_BUDGET * 0.15)),
       privacySection.slice(0, Math.floor(CRITIC_SOURCE_BUDGET * 0.35)),
       supplementalText.slice(0, Math.floor(CRITIC_SOURCE_BUDGET * 0.50))
-    ].filter(Boolean).join('\n\n');
+    ].filter(Boolean).join('\n\n').slice(0, CRITIC_SOURCE_BUDGET);
   }
 
   return [
     otherSection.slice(0, Math.floor(CRITIC_SOURCE_BUDGET * 0.3)),
     privacySection.slice(0, Math.floor(CRITIC_SOURCE_BUDGET * 0.7))
-  ].filter(Boolean).join('\n\n');
+  ].filter(Boolean).join('\n\n').slice(0, CRITIC_SOURCE_BUDGET);
 }

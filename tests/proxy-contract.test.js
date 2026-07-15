@@ -164,6 +164,33 @@ const popupSender = {
   check('Critic sends no proxy credential header', !Object.keys(criticRequest.options.headers || {}).some(k => k.toLowerCase() === 'x-tg-proxy-key'));
   check('Critic response still parses', criticResult && criticResult.dataCollection === 'grounded');
 
+  const oversizedCriticSource = [
+    '=== TERMS OF SERVICE ===\n' + 't'.repeat(70000),
+    '=== PRIVACY POLICY ===\n' + 'p'.repeat(70000),
+    '=== SUPPLEMENTAL PRIVACY NOTICE: https://example.com/supplemental ===\n' + 's'.repeat(70000)
+  ].join('\n');
+  const criticExcerpt = context.buildCriticSourceExcerpt(oversizedCriticSource);
+  check('Critic excerpt never exceeds the proxy source contract', criticExcerpt.length <= 100000, criticExcerpt.length);
+  check('Critic excerpt preserves supplemental privacy material', criticExcerpt.includes('=== SUPPLEMENTAL PRIVACY NOTICE:'));
+
+  responses.push({ status: 503, body: { error: 'provider_busy', reason: 'At capacity' } });
+  const busyCritic = await context.runCritic('Structured privacy analysis.', 'Original legal source text.');
+  requests.shift();
+  check('Critic treats provider capacity as a failed verification', busyCritic?.failed === true);
+  responses.push({ status: 503, body: { error: 'provider_not_configured', reason: 'No key' } });
+  const unconfiguredCritic = await context.runCritic('Structured privacy analysis.', 'Original legal source text.');
+  requests.shift();
+  check('Critic only skips when the provider key is actually unconfigured', unconfiguredCritic === null);
+
+  responses.push({ status: 503, body: { error: 'provider_busy', reason: 'At capacity' } });
+  const busyAnalyzer = await context.analyzeWithModel('Privacy policy text.', 'https://example.com/privacy');
+  requests.shift();
+  check('Analyzer reports provider capacity without claiming the key is missing', /service busy/i.test(busyAnalyzer.summary));
+  responses.push({ status: 429, body: { error: 'daily_limit_reached', reason: 'Daily limit' } });
+  const dailyLimitedAnalyzer = await context.analyzeWithModel('Privacy policy text.', 'https://example.com/privacy');
+  requests.shift();
+  check('Analyzer distinguishes the daily safety circuit breaker', /daily analysis safety limit/i.test(dailyLimitedAnalyzer.summary));
+
   console.log('\nPrivileged background message boundary');
 
   const validAnalysis = await sendBackground({ action: 'analyzeTos', text: 'Terms text' }, contentSender);
