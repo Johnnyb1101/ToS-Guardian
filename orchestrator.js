@@ -135,6 +135,23 @@ const displayOptOutLinks = [
   )
 ].filter(url => validateLinkFollowerUrl(url) && isRelevantPrivacyActionUrl(url));
 
+const cacheSourceUrls = [...new Set([
+  pageUrl,
+  fetched?.sourceUrl,
+  fetched?.privacyUrl,
+  ...(fetched?.documentLinks || [])
+].filter(Boolean).map(upgradeInsecureUrl))].filter(url => validateDocumentUrl(url));
+
+const buildCacheContext = (providerTag) => ({
+  domain,
+  sourceUrls: cacheSourceUrls,
+  optOutLinks: displayOptOutLinks,
+  sourceFingerprint: contentFingerprint(textToAnalyze),
+  schemaVersion: CACHE_SCHEMA_VERSION,
+  aiProvider: providerTag,
+  privacyText: cacheVerificationText
+});
+
 // Documents the fetcher couldn't read because they were scanned/image-based PDFs.
 // Surfaced honestly in the overlay so the user knows an important doc was skipped.
 const unreadableDocs = [
@@ -147,6 +164,7 @@ const unreadableDocs = [
   logStage("analyzer");
 
   if (result && result.summary) {
+    result.providerAnalysis = result.providerAnalysis || result.summary;
     console.log(`[Orchestrator] Raw Analyzer output (${result.summary.length} chars):`, result.summary.slice(0, 300));
     result.summary = stripInjectionWarning(normalizeAnalysisHeaders(result.summary));
     if (isConfigurationMessage(result.summary)) {
@@ -165,8 +183,18 @@ const unreadableDocs = [
   // --- STEP 4.5: CRITIC/JUDGE AGENT ---
   let criticVerdict = null;
   let criticFailed = false;
+  let cacheWriteReceipt = null;
+  let activeCacheContext = result?.providerTag ? buildCacheContext(result.providerTag) : null;
   if (result) {
-    const criticResult = await runCritic(result.summary, enrichedText);
+    const criticResult = await runCritic(
+      result.summary,
+      result.analysisSource || enrichedText,
+      activeCacheContext ? {
+        analysisReceipt: result.analysisReceipt,
+        providerAnalysis: result.providerAnalysis,
+        cacheContext: activeCacheContext
+      } : null
+    );
     if (criticResult && criticResult.failed) {
       // The critic was attempted but couldn't return a verdict — the quality gate did
       // not actually run. Fail-safe: don't feed a sentinel to the evaluator, and cap
@@ -175,6 +203,7 @@ const unreadableDocs = [
       console.warn(`[Orchestrator] Critic could not verify the analysis — capping confidence (fail-safe)`);
     } else if (criticResult) {
       criticVerdict = criticResult;
+      cacheWriteReceipt = criticResult._writeReceipt || null;
       console.log(`[Orchestrator] Critic verdict received — concern-flags: ${criticVerdict.flags?.length || 0}`);
     } else {
       console.log(`[Orchestrator] Critic not run (not configured) — continuing without`);
@@ -233,10 +262,20 @@ const unreadableDocs = [
 
       if (escalatedResult) {
         if (escalatedResult.summary) {
+          escalatedResult.providerAnalysis = escalatedResult.providerAnalysis || escalatedResult.summary;
           escalatedResult.summary = stripInjectionWarning(normalizeAnalysisHeaders(escalatedResult.summary));
         }
         // Re-run Critic on escalated result
-        const escalatedCriticResult = await runCritic(escalatedResult.summary, enrichedText);
+        const escalatedCacheContext = escalatedResult.providerTag ? buildCacheContext(escalatedResult.providerTag) : null;
+        const escalatedCriticResult = await runCritic(
+          escalatedResult.summary,
+          escalatedResult.analysisSource || enrichedText,
+          escalatedCacheContext ? {
+            analysisReceipt: escalatedResult.analysisReceipt,
+            providerAnalysis: escalatedResult.providerAnalysis,
+            cacheContext: escalatedCacheContext
+          } : null
+        );
         const escalatedCriticFailed = !!(escalatedCriticResult && escalatedCriticResult.failed);
         const escalatedCritic = escalatedCriticFailed ? null : escalatedCriticResult;
         const escalatedEvaluation = capForUnverifiedCritic(
@@ -259,12 +298,16 @@ const unreadableDocs = [
           result = escalatedResult;
           evaluation = escalatedEvaluation;
           criticVerdict = escalatedCritic;
+          cacheWriteReceipt = escalatedCriticResult?._writeReceipt || null;
+          activeCacheContext = escalatedCacheContext;
           escalatedAccepted = true;
           console.log(`[Orchestrator] Opus result accepted — higher quality score`);
         } else if (escalatedWorseGrounding) {
           result = escalatedResult;
           evaluation = escalatedEvaluation;
           criticVerdict = escalatedCritic;
+          cacheWriteReceipt = escalatedCriticResult?._writeReceipt || null;
+          activeCacheContext = escalatedCacheContext;
           escalatedAccepted = true;
           console.log(`[Orchestrator] Opus downgraded core grounding — adopting the more conservative result`);
         } else {
@@ -287,6 +330,7 @@ const unreadableDocs = [
   if (result) {
     // The analyzer PROPOSES a one-line bottom line + risk word. Extract them
     // BEFORE stripping, then decide the trusted verdict ourselves.
+    result.summaryBeforeTrustedChrome = result.summary;
     const headline = extractAnalyzerHeadline(result.summary);
 
     // Trusted risk verdict, gated by analysis confidence: if we couldn't
@@ -347,7 +391,12 @@ const unreadableDocs = [
   // --- STEP 6: SAVE TO MEMORY ---
   if (domain && isCacheableEvaluation(evaluation)) {
     saveAnalysis(domain, result.summary, cacheVerificationText, displayOptOutLinks,
-      escalatedAccepted ? 'anthropic-escalated' : 'anthropic');
+      activeCacheContext?.aiProvider || result.providerTag || 'anthropic',
+      cacheWriteReceipt && activeCacheContext ? {
+        writeReceipt: cacheWriteReceipt,
+        analysisSummary: result.summaryBeforeTrustedChrome || result.summary,
+        cacheContext: activeCacheContext
+      } : null);
     console.log("[Orchestrator] Analysis saved to memory for:", domain);
   } else if (domain) {
     console.log("[Orchestrator] Analysis not saved — quality gate did not pass:", evaluation.label);
@@ -362,7 +411,7 @@ const unreadableDocs = [
     warning: evaluation.warning, issues: evaluation.issues || [],
     optOutLinks: displayOptOutLinks, cached: false
   });
-  return { ...result, optOutLinks: displayOptOutLinks, unreadableDocs };
+  return { summary: result.summary, optOutLinks: displayOptOutLinks, unreadableDocs };
 }
 
 // FAIL-SAFE for an unverified analysis: when the critic was ATTEMPTED but couldn't

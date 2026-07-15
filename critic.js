@@ -30,7 +30,7 @@ Respond in ONLY this JSON format, no other text:
 // (nothing to check, or no model/key configured); or `{ failed: true }` when it WAS
 // attempted but couldn't produce a verdict (no response / unparseable / error). The
 // orchestrator treats the last case as fail-safe — confidence is capped, never Strong.
-async function runCritic(analysisSummary, sourceText) {
+async function runCritic(analysisSummary, sourceText, provenance = null) {
   if (!analysisSummary || !sourceText) return null;
 
   // Provider preference + local-Ollama URL only — API keys live on the proxy
@@ -59,6 +59,7 @@ ${trimmedSource}`;
   try {
     let responseText = null;
     let stopReason = null;
+    let writeReceipt = null;
 
     if (provider === 'anthropic' || provider === 'openai') {
       // Relay through the proxy — no API key in the browser (audit refactor #5).
@@ -72,7 +73,14 @@ ${trimmedSource}`;
           operation: "critic",
           provider,
           analysisSummary,
-          sourceText: trimmedSource
+          sourceText: trimmedSource,
+          ...(provenance?.analysisReceipt && provenance?.providerAnalysis && provenance?.cacheContext
+            ? {
+                analysisReceipt: provenance.analysisReceipt,
+                providerAnalysis: provenance.providerAnalysis,
+                cacheContext: provenance.cacheContext
+              }
+            : {})
         })
       });
 
@@ -90,6 +98,7 @@ ${trimmedSource}`;
       }
       responseText = data.text;
       stopReason = data.stopReason; // "end_turn" | "max_tokens" | "stop" | "length" | ...
+      writeReceipt = data.writeReceipt || null;
     }
 
     if (provider === 'ollama') {
@@ -170,6 +179,7 @@ ${trimmedSource}`;
     verdict.adjustments = [];
 
     applyDeterministicGrounding(verdict, analysisSummary, sourceText);
+    verdict._writeReceipt = writeReceipt;
 
     const unsupported = fields.filter(f => verdict[f] === 'unsupported').length;
     const vague = fields.filter(f => verdict[f] === 'vague').length;
