@@ -8,6 +8,8 @@ let failed = 0;
 let storageData = { selectedProvider: 'anthropic' };
 const requests = [];
 const responses = [];
+let backgroundListener;
+let activeTab = { id: 7, url: 'https://login.chase.com/signin' };
 
 function check(name, condition, detail = '') {
   if (condition) {
@@ -58,8 +60,17 @@ const context = {
   },
   browser: {
     storage: { local: storage },
-    tabs: {},
-    runtime: { onMessage: { addListener() {} }, lastError: null }
+    tabs: {
+      query(_query, callback) {
+        callback(activeTab ? [activeTab] : []);
+      }
+    },
+    runtime: {
+      id: 'extension-test-id',
+      getURL(pathname) { return `chrome-extension://extension-test-id/${pathname}`; },
+      onMessage: { addListener(listener) { backgroundListener = listener; } },
+      lastError: null
+    }
   }
 };
 
@@ -67,6 +78,35 @@ vm.createContext(context);
 for (const file of ['vendor/tldts-7.4.8.umd.min.js', 'tosUtils.js', 'critic.js', 'background.js']) {
   vm.runInContext(fs.readFileSync(path.join(repoRoot, file), 'utf8'), context, { filename: file });
 }
+
+const backgroundTextLimit = vm.runInContext('MAX_BACKGROUND_TEXT_CHARS', context);
+const backgroundHtmlLimit = vm.runInContext('MAX_BACKGROUND_HTML_CHARS', context);
+
+const orchestratorCalls = [];
+const lookupCalls = [];
+context.runOrchestrator = async (...args) => {
+  orchestratorCalls.push(args);
+  return { summary: 'trusted analysis' };
+};
+context.lookupSite = async (url) => {
+  lookupCalls.push(url);
+  return null;
+};
+
+function sendBackground(request, sender) {
+  return new Promise(resolve => backgroundListener(request, sender, resolve));
+}
+
+const contentSender = {
+  id: 'extension-test-id',
+  tab: { id: 7, url: 'https://login.chase.com/signin' },
+  url: 'https://login.chase.com/signin',
+  frameId: 0
+};
+const popupSender = {
+  id: 'extension-test-id',
+  url: 'chrome-extension://extension-test-id/popup.html'
+};
 
 (async () => {
   console.log('Keyless constrained proxy contract');
@@ -123,6 +163,78 @@ for (const file of ['vendor/tldts-7.4.8.umd.min.js', 'tosUtils.js', 'critic.js',
   check('Critic does not send a model or token limit', !Object.prototype.hasOwnProperty.call(criticBody, 'model') && !Object.prototype.hasOwnProperty.call(criticBody, 'maxTokens'));
   check('Critic sends no proxy credential header', !Object.keys(criticRequest.options.headers || {}).some(k => k.toLowerCase() === 'x-tg-proxy-key'));
   check('Critic response still parses', criticResult && criticResult.dataCollection === 'grounded');
+
+  console.log('\nPrivileged background message boundary');
+
+  const validAnalysis = await sendBackground({ action: 'analyzeTos', text: 'Terms text' }, contentSender);
+  check('Content analysis succeeds without a caller-supplied page URL', validAnalysis.summary === 'trusted analysis');
+  check('Content analysis uses sender.tab.url', orchestratorCalls[0]?.[0] === contentSender.tab.url, orchestratorCalls[0]?.[0]);
+
+  const analysisCount = orchestratorCalls.length;
+  const mismatchedUrl = await sendBackground(
+    { action: 'analyzeTos', text: 'Terms text', pageUrl: 'https://attacker.example/terms' },
+    contentSender
+  );
+  check('Mismatched content pageUrl is rejected', mismatchedUrl.error === 'invalid_message');
+  check('Rejected pageUrl never reaches the orchestrator', orchestratorCalls.length === analysisCount);
+
+  const oversizeText = await sendBackground(
+    { action: 'analyzeTos', text: 'x'.repeat(backgroundTextLimit + 1) },
+    contentSender
+  );
+  check('Oversized analysis text is rejected', oversizeText.error === 'invalid_message');
+  const oversizeHtml = await sendBackground(
+    { action: 'analyzeTos', text: 'Terms', pageHtml: 'x'.repeat(backgroundHtmlLimit + 1) },
+    contentSender
+  );
+  check('Oversized page HTML is rejected', oversizeHtml.error === 'invalid_message');
+  check('Oversized page URLs are rejected',
+    (await sendBackground({ action: 'analyzeTos', text: 'Terms', pageUrl: `https://example.com/${'x'.repeat(9000)}` }, contentSender)).error === 'invalid_message');
+  check('Non-string analysis text is rejected',
+    (await sendBackground({ action: 'analyzeTos', text: { forged: true } }, contentSender)).error === 'invalid_message');
+  check('Unsupported analysis fields are rejected',
+    (await sendBackground({ action: 'analyzeTos', text: 'Terms', model: 'attacker-model' }, contentSender)).error === 'invalid_message');
+
+  const lookupsBeforeForgery = lookupCalls.length;
+  const forgedCache = await sendBackground({ action: 'checkCache', domain: 'attacker.com' }, contentSender);
+  check('Forged cache domain is rejected', forgedCache.error === 'invalid_message');
+  check('Forged cache domain triggers no lookup', lookupCalls.length === lookupsBeforeForgery);
+  check('Oversized cache domains are rejected',
+    (await sendBackground({ action: 'checkCache', domain: 'x'.repeat(254) }, contentSender)).error === 'invalid_message');
+
+  const cacheResult = await sendBackground({ action: 'checkCache' }, contentSender);
+  check('Cache lookup derives the registrable sender domain', lookupCalls.at(-1) === 'https://chase.com/', lookupCalls.at(-1));
+  check('Cache response returns the trusted domain', cacheResult.domain === 'chase.com');
+
+  delete storageData.tosAcknowledged;
+  const forgedAck = await sendBackground({ action: 'acknowledge', domain: 'attacker.com' }, contentSender);
+  check('Forged acknowledgment domain is rejected', forgedAck.error === 'invalid_message' && forgedAck.ok === false);
+  check('Rejected acknowledgment is not stored', storageData.tosAcknowledged === undefined);
+
+  const validAck = await sendBackground({ action: 'acknowledge' }, contentSender);
+  check('Acknowledgment derives the sender domain', validAck.ok === true && validAck.domain === 'chase.com');
+  check('Trusted acknowledgment is stored under the sender domain', Number.isFinite(storageData.tosAcknowledged?.['chase.com']));
+
+  activeTab = { id: 8, url: 'https://accounts.example.org/legal' };
+  const popupAnalysis = await sendBackground(
+    { action: 'analyzeTos', text: 'Popup terms', pageUrl: activeTab.url },
+    popupSender
+  );
+  check('Popup analysis succeeds for the currently active tab', popupAnalysis.summary === 'trusted analysis');
+  check('Popup analysis is rebound to the active tab URL', orchestratorCalls.at(-1)?.[0] === activeTab.url, orchestratorCalls.at(-1)?.[0]);
+  check('Popup cannot analyze a different selected URL',
+    (await sendBackground({ action: 'analyzeTos', text: 'Popup terms', pageUrl: 'https://other.example/' }, popupSender)).error === 'invalid_message');
+  check('Non-popup extension pages cannot invoke analysis',
+    (await sendBackground(
+      { action: 'analyzeTos', text: 'Options terms', pageUrl: activeTab.url },
+      { id: 'extension-test-id', url: 'chrome-extension://extension-test-id/options.html' }
+    )).error === 'invalid_message');
+  check('A different extension ID is rejected',
+    (await sendBackground({ action: 'checkCache' }, { ...contentSender, id: 'other-extension' })).error === 'invalid_message');
+  check('Unknown actions are rejected',
+    (await sendBackground({ action: 'deleteEverything' }, contentSender)).error === 'unknown_action');
+  check('Malformed messages are rejected',
+    (await sendBackground(null, contentSender)).error === 'invalid_message');
 
   const backgroundSource = fs.readFileSync(path.join(repoRoot, 'background.js'), 'utf8');
   check('Extension source contains no PROXY_KEY declaration', !/\bPROXY_KEY\b/.test(backgroundSource));
