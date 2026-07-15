@@ -236,6 +236,15 @@ const popupSender = {
   check('Malformed messages are rejected',
     (await sendBackground(null, contentSender)).error === 'invalid_message');
 
+  console.log('\nExtension permission contract');
+  const manifest = JSON.parse(fs.readFileSync(path.join(repoRoot, 'manifest.json'), 'utf8'));
+  check('Manifest does not request the unused scripting permission', !manifest.permissions.includes('scripting'));
+  check('Manifest does not request redundant activeTab permission', !manifest.permissions.includes('activeTab'));
+  check('Manifest retains tabs for tab URL verification and hidden document tabs', manifest.permissions.includes('tabs'));
+  check('Manifest retains storage for settings, cache, and acknowledgment state', manifest.permissions.includes('storage'));
+  check('Embedded agreement-frame detection remains enabled',
+    manifest.content_scripts?.[0]?.all_frames === true && manifest.content_scripts?.[0]?.match_about_blank === true);
+
   const backgroundSource = fs.readFileSync(path.join(repoRoot, 'background.js'), 'utf8');
   check('Extension source contains no PROXY_KEY declaration', !/\bPROXY_KEY\b/.test(backgroundSource));
   check('Extension source contains no proxy-key header', !/x-tg-proxy-key/i.test(backgroundSource));

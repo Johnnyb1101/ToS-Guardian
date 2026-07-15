@@ -4,7 +4,7 @@
   "options_page": "options.html",
   "version": "1.4.0",
   "description": "Intercepts agree buttons and analyzes Terms of Service and Privacy Policies with AI — so you know what you're agreeing to before you agree.",
-  "permissions": ["activeTab", "tabs", "storage", "scripting"],
+  "permissions": ["tabs", "storage"],
   "host_permissions": [
     "https://tos-guardian-proxy-production.up.railway.app/*",
     "http://localhost/*",
