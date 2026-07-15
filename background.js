@@ -974,11 +974,16 @@ ${trimmedText}`;
     });
     const data = await response.json().catch(() => ({}));
 
-    if (response.status === 503) {
+    if (response.status === 503 && data.error === 'provider_not_configured') {
       return { summary: `⚠️ No ${providerName} API key set on the analysis server. Add ${provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY'} to the proxy's Railway environment.` };
     }
+    if (response.status === 503 && data.error === 'provider_busy') {
+      return { summary: "Error: analysis service busy — please try again shortly." };
+    }
     if (response.status === 429) {
-      return { summary: "Error: analysis rate limited — please try again in a minute." };
+      return { summary: data.error === 'daily_limit_reached'
+        ? "Error: daily analysis safety limit reached — please try again tomorrow."
+        : "Error: analysis rate limited — please try again in a minute." };
     }
     if (!response.ok || !data.text) {
       console.log(`[Analyzer] Relay error (${response.status}):`, JSON.stringify(data).slice(0, 500));
