@@ -56,6 +56,7 @@ async function lookupSite(pageUrl) {
     // learned ToS+privacy URLs, so the fetcher gets the REAL docs instead of the auth
     // subdomain's empty SPA shells (which otherwise defeat the cache). (FIXPLAN #1b)
     const hostname = registrableDomain(new URL(pageUrl).hostname);
+    if (!hostname) return null;
 
     if (STATIC_SITES[hostname]) {
       console.log(`[SiteDB] ✅ Static match: ${hostname}`);
@@ -112,6 +113,7 @@ async function learnSite(pageUrl, tosUrl, privacyUrl) {
   try {
     // Store under the registrable domain so every subdomain shares one entry. (FIXPLAN #1b)
     const hostname = registrableDomain(new URL(pageUrl).hostname);
+    if (!hostname) return;
 
     if (STATIC_SITES[hostname]) return;
 

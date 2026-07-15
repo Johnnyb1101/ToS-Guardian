@@ -28,6 +28,8 @@ const RUNTIME_FILES = [
   "evaluator.js",
   "critic.js",
   "siteDatabase.js",
+  "vendor/tldts-7.4.8.umd.min.js",
+  "vendor/tldts.LICENSE",
   "tosUtils.js",
   // content scripts
   "shadowDom.js",
@@ -52,11 +54,13 @@ function build() {
   const missing = [];
   for (const name of RUNTIME_FILES) {
     const src = path.join(ROOT, name);
+    const dest = path.join(DIST, name);
     if (!fs.existsSync(src)) {
       missing.push(name);
       continue;
     }
-    fs.copyFileSync(src, path.join(DIST, name));
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(src, dest);
   }
 
   if (missing.length > 0) {

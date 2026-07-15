@@ -9,6 +9,7 @@
  * TOS Guardian — Background Service Worker
  */
 
+importScripts("vendor/tldts-7.4.8.umd.min.js");
 importScripts("evaluator.js");
 importScripts("critic.js");
 importScripts("siteDatabase.js");
@@ -672,7 +673,7 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === "checkCache") {
-  const domain = request.domain;
+  const domain = validateDomainKey(request.domain);
 
   (async () => {
     if (!domain) {
@@ -700,7 +701,11 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
 }
 
 if (request.action === "acknowledge") {
-    const domain = request.domain;
+    const domain = validateDomainKey(request.domain);
+    if (!domain) {
+      sendResponse({ ok: false });
+      return false;
+    }
     browser.storage.local.get("tosAcknowledged", (result) => {
       const ack = result.tosAcknowledged || {};
       ack[domain] = Date.now();

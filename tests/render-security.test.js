@@ -25,6 +25,10 @@ function loadSource(file) {
     URL
   };
   vm.createContext(sandbox);
+  if (file === 'tosUtils.js') {
+    const tldtsSource = fs.readFileSync(path.join(repoRoot, 'vendor/tldts-7.4.8.umd.min.js'), 'utf8');
+    vm.runInContext(tldtsSource, sandbox, { filename: 'vendor/tldts-7.4.8.umd.min.js' });
+  }
   const source = fs.readFileSync(path.join(repoRoot, file), 'utf8');
   vm.runInContext(source, sandbox, { filename: file });
   return sandbox;

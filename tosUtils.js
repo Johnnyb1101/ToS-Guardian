@@ -37,41 +37,48 @@ function isRenderableHttpsUrl(url) {
 // --- Registrable-domain (eTLD+1) keying ---
 // Cache, acknowledgments and relays all key off the registrable domain so that
 // sibling subdomains (www.x.com / login.x.com / oak.x.com) share one cache entry
-// and don't double-fire or miss each other's analysis. This is a PRAGMATIC eTLD+1
-// derivation, not the full Public Suffix List: it handles plain TLDs plus a curated
-// set of common multi-label public suffixes (co.uk, com.au, ...). An unlisted
-// multi-label ccTLD degrades to last-two-labels (slightly too broad) — which can
-// only ever OVER-share a cache entry, and the 0.95 semantic check + content
-// fingerprint will re-analyze if the documents actually differ, so it stays safe.
-const MULTI_PART_TLDS = new Set([
-  'co.uk','org.uk','gov.uk','ac.uk','me.uk','ltd.uk','plc.uk','net.uk',
-  'com.au','net.au','org.au','edu.au','gov.au','id.au',
-  'co.nz','net.nz','org.nz','govt.nz',
-  'co.jp','or.jp','ne.jp','ac.jp','go.jp',
-  'co.kr','or.kr',
-  'co.in','net.in','org.in','gen.in','firm.in','ind.in',
-  'com.br','net.br','org.br','gov.br',
-  'com.mx','com.ar','com.sg','com.hk','com.tw','com.cn','net.cn','org.cn','gov.cn',
-  'co.za','org.za','co.il','com.tr','gov.tr',
-  'com.es','com.pl','com.ua','co.id','com.my','com.ph','com.vn'
-]);
+// and don't double-fire or miss each other's analysis. The pinned Public Suffix
+// List also isolates unrelated tenants on shared-hosting domains.
+// Private suffixes are security boundaries between unrelated hosting tenants.
+// Keep these options aligned with the proxy's pinned tldts implementation.
+const TLDTS_OPTIONS = Object.freeze({
+  allowPrivateDomains: true,
+  detectSpecialUse: true
+});
 
-function registrableDomain(host) {
-  if (!host) return host;
-  let h = String(host).trim().toLowerCase().replace(/\.+$/, '');
-  // Tolerate a full URL slipping in instead of a bare hostname.
-  if (h.includes('/') || h.includes(':')) {
-    try { h = new URL(h.includes('://') ? h : `https://${h}`).hostname.toLowerCase(); }
-    catch (e) { h = h.split(/[\/:]/)[0]; }
+function normalizeHostname(value) {
+  if (typeof value !== 'string' || value.trim().length === 0) return null;
+  const input = value.trim();
+  try {
+    const parsed = new URL(input.includes('://') ? input : `https://${input}`);
+    if (parsed.username || parsed.password) return null;
+    return parsed.hostname.toLowerCase().replace(/\.+$/, '') || null;
+  } catch (e) {
+    return null;
   }
-  if (!h) return h;
-  // Leave IP literals (incl. bracketed IPv6) untouched.
-  if (h.startsWith('[') || /^[0-9.]+$/.test(h)) return h;
-  const labels = h.split('.').filter(Boolean);
-  if (labels.length <= 2) return labels.join('.');
-  const lastTwo = labels.slice(-2).join('.');
-  if (MULTI_PART_TLDS.has(lastTwo)) return labels.slice(-3).join('.');
-  return lastTwo;
+}
+
+function registrableDomain(value) {
+  const hostname = normalizeHostname(value);
+  if (!hostname) return null;
+  if (!globalThis.tldts || typeof globalThis.tldts.parse !== 'function') {
+    throw new Error('tldts domain parser is not loaded');
+  }
+
+  const result = globalThis.tldts.parse(hostname, TLDTS_OPTIONS);
+  if (result.isIp || result.isSpecialUse || !result.domain) return null;
+  return result.domain.toLowerCase();
+}
+
+// Shared cache and acknowledgment keys must already be canonical eTLD+1 values.
+// This mirrors the proxy rule and rejects subdomains, full URLs, Unicode aliases,
+// IPs, special-use names, and bare public/private suffixes as stored keys.
+function validateDomainKey(value) {
+  if (typeof value !== 'string') return null;
+  const hostname = normalizeHostname(value);
+  const domain = registrableDomain(value);
+  if (!hostname || !domain || value.trim() !== hostname || hostname !== domain) return null;
+  return domain;
 }
 
 // Acknowledgments ("Accept Risk and Continue") expire after this window so a one-time
