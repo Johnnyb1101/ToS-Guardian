@@ -385,7 +385,7 @@ function showGuardianOverlay(event, sourceButton = null) {
     acknowledgedDomains.add(currentDomainKey());
     clearPendingOverlay();
     overlay.remove();
-    sendMessageWithRetry({ action: "acknowledge", domain: currentDomainKey() }, () => {});
+    sendMessageWithRetry({ action: "acknowledge" }, () => {});
     setTimeout(() => {
       if (!clickedButton || !clickedButton.isConnected) return;
       if (clickedButton instanceof HTMLFormElement) {
@@ -494,9 +494,8 @@ function showGuardianOverlay(event, sourceButton = null) {
     sendMessageWithRetry(
       {
         action: "analyzeTos",
-        text: fullText,
-        pageUrl: window.location.href,
-        pageHtml: document.documentElement.innerHTML
+        text: boundMessageField(fullText, MAX_BACKGROUND_TEXT_CHARS),
+        pageHtml: boundMessageField(document.documentElement.innerHTML, MAX_BACKGROUND_HTML_CHARS)
       },
       (result, err) => {
         if (analysisResponded) return;
@@ -629,7 +628,7 @@ document.addEventListener("click", (event) => {
   }, 8000);
 
   sendMessageWithRetry(
-    { action: "checkCache", domain },
+    { action: "checkCache" },
     (response, err) => {
       if (responded) return;
       responded = true;
@@ -642,7 +641,7 @@ document.addEventListener("click", (event) => {
       }
       if (response && response.acknowledged) {
         interceptActive = false;
-        acknowledgedDomains.add(domain);
+        acknowledgedDomains.add(response.domain || domain);
         return;
       }
       showGuardianOverlay(event, hookedEl);
@@ -758,7 +757,7 @@ function initTosGuardian() {
     }
   }, 2000);
 
-  sendMessageWithRetry({ action: "checkCache", domain }, (response, err) => {
+  sendMessageWithRetry({ action: "checkCache" }, (response, err) => {
     if (initResponded) return;
     initResponded = true;
     clearTimeout(initFallback);
@@ -767,7 +766,7 @@ function initTosGuardian() {
       console.warn('[TOS Guardian] Init: message channel error:', err.message);
     } else {
       if (response && response.knownSite) domainIsKnown = true;
-      if (response && response.acknowledged) acknowledgedDomains.add(domain);
+      if (response && response.acknowledged) acknowledgedDomains.add(response.domain || domain);
     }
     attachToButtons();
     // If an agree-click on this registrable domain got cut off by navigation, re-show
@@ -822,6 +821,9 @@ else { document.addEventListener('DOMContentLoaded', initTosGuardian); }
 
 browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "getText") {
-    sendResponse({ text: document.body.innerText, html: document.documentElement.innerHTML });
+    sendResponse({
+      text: boundMessageField(document.body.innerText, MAX_BACKGROUND_TEXT_CHARS),
+      html: boundMessageField(document.documentElement.innerHTML, MAX_BACKGROUND_HTML_CHARS)
+    });
   }
 });

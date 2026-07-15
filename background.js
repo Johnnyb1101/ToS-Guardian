@@ -642,6 +642,88 @@ function stripHtml(html) {
     .trim();
 }
 
+// --- Privileged runtime-message boundary -----------------------------------
+// Content scripts do not get to choose the page identity used by background
+// fetching, caching, or acknowledgments. Chrome supplies sender.tab.url; popup
+// requests are separately identified and rebound to the active tab here.
+function invalidMessage(reason) {
+  return {
+    error: 'invalid_message',
+    reason,
+    summary: 'TOS Guardian rejected an invalid extension request.'
+  };
+}
+
+function hasOnlyFields(request, allowed) {
+  return Object.keys(request).every((key) => allowed.has(key));
+}
+
+function pageIdentity(rawUrl) {
+  if (typeof rawUrl !== 'string' || rawUrl.length === 0 || rawUrl.length > MAX_BACKGROUND_URL_CHARS) return null;
+  try {
+    const parsed = new URL(rawUrl);
+    if (!['http:', 'https:', 'file:'].includes(parsed.protocol)) return null;
+    if (parsed.username || parsed.password) return null;
+    const url = parsed.href;
+    const domain = parsed.hostname ? registrableDomain(parsed.hostname) : null;
+    return { url, domain };
+  } catch (e) {
+    return null;
+  }
+}
+
+function popupSender(sender) {
+  if (!sender || sender.tab || typeof sender.url !== 'string') return false;
+  try {
+    return new URL(sender.url).href === new URL(browser.runtime.getURL('popup.html')).href;
+  } catch (e) {
+    return false;
+  }
+}
+
+function queryActiveTab() {
+  return new Promise((resolve) => {
+    browser.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (browser.runtime.lastError || !Array.isArray(tabs) || !tabs[0]) resolve(null);
+      else resolve(tabs[0]);
+    });
+  });
+}
+
+async function trustedMessageIdentity(request, sender, { allowPopup = false } = {}) {
+  if (!sender || sender.id !== browser.runtime.id) {
+    return { valid: false, reason: 'untrusted sender' };
+  }
+
+  let kind;
+  let identity;
+  if (sender.tab) {
+    kind = 'content';
+    identity = pageIdentity(sender.tab.url);
+  } else if (allowPopup && popupSender(sender)) {
+    kind = 'popup';
+    const activeTab = await queryActiveTab();
+    identity = pageIdentity(activeTab && activeTab.url);
+  } else {
+    return { valid: false, reason: 'sender type is not allowed for this action' };
+  }
+
+  if (!identity) return { valid: false, reason: 'sender has no trusted page URL' };
+  if (request.pageUrl !== undefined) {
+    if (typeof request.pageUrl !== 'string') {
+      return { valid: false, reason: 'pageUrl must be a string' };
+    }
+    const supplied = pageIdentity(request.pageUrl);
+    if (!supplied || supplied.url !== identity.url) {
+      return { valid: false, reason: 'pageUrl does not match the sender tab' };
+    }
+  } else if (kind === 'popup') {
+    return { valid: false, reason: 'popup request is missing its selected pageUrl' };
+  }
+
+  return { valid: true, kind, ...identity };
+}
+
 // Concurrent relays for the same registrable domain share one run (FIXPLAN #13b).
 // A navigating sign-up fires BOTH the orphaned original relay (e.g. on /invest)
 // and the destination re-show relay (on signup.…) at once; without this they each
@@ -652,74 +734,142 @@ function stripHtml(html) {
 // Also makes the 5a "Try again" button and any #5 re-show join rather than spawn.
 const dedupeRelay = createInFlightDeduper(); // shares one run across concurrent relays per registrable domain
 
-browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === "analyzeTos") {
-    const pageUrl = request.pageUrl || sender.tab?.url || "";
-    let domainKey = null;
-    try { domainKey = registrableDomain(new URL(pageUrl).hostname); } catch (e) {}
+function handleBackgroundMessage(request, sender, sendResponse) {
+  if (!request || typeof request !== 'object' || Array.isArray(request) || typeof request.action !== 'string') {
+    sendResponse(invalidMessage('message must be an object with an action'));
+    return false;
+  }
 
-    dedupeRelay(
-      domainKey,
-      () => runOrchestrator(pageUrl, request.text || "", request.pageHtml || ""),
-      (key) => console.log(`[Orchestrator] Joining in-flight relay for ${key} (deduped)`)
-    )
-      .then(result => sendResponse(result))
-      .catch(err => {
-        console.error("[Orchestrator] Unhandled error:", err);
-        sendResponse({ summary: "TOS Guardian encountered an unexpected error. Please try again." });
-      });
+  if (request.action === "analyzeTos") {
+    if (!hasOnlyFields(request, new Set(['action', 'text', 'pageHtml', 'pageUrl']))) {
+      sendResponse(invalidMessage('analyzeTos contains unsupported fields'));
+      return false;
+    }
+    if (typeof request.text !== 'string') {
+      sendResponse(invalidMessage('text must be a string'));
+      return false;
+    }
+    if (request.text.length > MAX_BACKGROUND_TEXT_CHARS) {
+      sendResponse(invalidMessage('text exceeds the message size limit'));
+      return false;
+    }
+    if (request.pageHtml !== undefined && typeof request.pageHtml !== 'string') {
+      sendResponse(invalidMessage('pageHtml must be a string'));
+      return false;
+    }
+    if ((request.pageHtml || '').length > MAX_BACKGROUND_HTML_CHARS) {
+      sendResponse(invalidMessage('pageHtml exceeds the message size limit'));
+      return false;
+    }
+
+    (async () => {
+      const identity = await trustedMessageIdentity(request, sender, { allowPopup: true });
+      if (!identity.valid) {
+        sendResponse(invalidMessage(identity.reason));
+        return;
+      }
+      if (identity.kind === 'popup' && request.pageHtml !== undefined) {
+        sendResponse(invalidMessage('popup requests cannot supply pageHtml'));
+        return;
+      }
+      const result = await dedupeRelay(
+        identity.domain,
+        () => runOrchestrator(identity.url, request.text, request.pageHtml || ''),
+        (key) => console.log(`[Orchestrator] Joining in-flight relay for ${key} (deduped)`)
+      );
+      sendResponse(result);
+    })().catch(err => {
+      console.error("[Orchestrator] Unhandled error:", err);
+      sendResponse({ summary: "TOS Guardian encountered an unexpected error. Please try again." });
+    });
 
     return true;
   }
 
   if (request.action === "checkCache") {
-  const domain = validateDomainKey(request.domain);
-
-  (async () => {
-    if (!domain) {
-      sendResponse({ knownSite: false, acknowledged: false });
-      return;
-    }
-
-    const knownSite = !!(await lookupSite(`https://${domain}/`));
-
-    // Check acknowledgment first — if the user has already seen this recently, don't
-    // fire. Acks expire (isAckFresh) so an old "Accept Risk and Continue" can't suppress
-    // the overlay forever; an expired or legacy entry is purged so it stops matching.
-    const ackData = await browser.storage.local.get("tosAcknowledged");
-    const acks = ackData.tosAcknowledged || {};
-    const acknowledged = isAckFresh(acks[domain]);
-    if (!acknowledged && acks[domain] !== undefined) {
-      delete acks[domain];
-      browser.storage.local.set({ tosAcknowledged: acks });
-    }
-
-    sendResponse({ knownSite, acknowledged });
-  })();
-
-  return true;
-}
-
-if (request.action === "acknowledge") {
-    const domain = validateDomainKey(request.domain);
-    if (!domain) {
-      sendResponse({ ok: false });
+    if (!hasOnlyFields(request, new Set(['action', 'domain']))) {
+      sendResponse(invalidMessage('checkCache contains unsupported fields'));
       return false;
     }
-    browser.storage.local.get("tosAcknowledged", (result) => {
+
+    (async () => {
+      const identity = await trustedMessageIdentity(request, sender);
+      if (!identity.valid) {
+        sendResponse({ ...invalidMessage(identity.reason), knownSite: false, acknowledged: false });
+        return;
+      }
+      const domain = validateDomainKey(identity.domain);
+      if (request.domain !== undefined &&
+          (typeof request.domain !== 'string' || request.domain.length > MAX_BACKGROUND_DOMAIN_CHARS ||
+           validateDomainKey(request.domain) !== domain)) {
+        sendResponse({ ...invalidMessage('domain does not match the sender tab'), knownSite: false, acknowledged: false });
+        return;
+      }
+      if (!domain) {
+        sendResponse({ knownSite: false, acknowledged: false });
+        return;
+      }
+
+      const knownSite = !!(await lookupSite(`https://${domain}/`));
+
+      // Check acknowledgment first — if the user has already seen this recently, don't
+      // fire. Acks expire (isAckFresh) so an old "Accept Risk and Continue" can't suppress
+      // the overlay forever; an expired or legacy entry is purged so it stops matching.
+      const ackData = await browser.storage.local.get("tosAcknowledged");
+      const acks = ackData.tosAcknowledged || {};
+      const acknowledged = isAckFresh(acks[domain]);
+      if (!acknowledged && acks[domain] !== undefined) {
+        delete acks[domain];
+        browser.storage.local.set({ tosAcknowledged: acks });
+      }
+
+      sendResponse({ knownSite, acknowledged, domain });
+    })().catch(err => {
+      console.error('[Memory] Cache check failed:', err);
+      sendResponse({ knownSite: false, acknowledged: false });
+    });
+
+    return true;
+  }
+
+  if (request.action === "acknowledge") {
+    if (!hasOnlyFields(request, new Set(['action', 'domain']))) {
+      sendResponse({ ...invalidMessage('acknowledge contains unsupported fields'), ok: false });
+      return false;
+    }
+
+    (async () => {
+      const identity = await trustedMessageIdentity(request, sender);
+      if (!identity.valid) {
+        sendResponse({ ...invalidMessage(identity.reason), ok: false });
+        return;
+      }
+      const domain = validateDomainKey(identity.domain);
+      if (!domain || (request.domain !== undefined &&
+          (typeof request.domain !== 'string' || request.domain.length > MAX_BACKGROUND_DOMAIN_CHARS ||
+           validateDomainKey(request.domain) !== domain))) {
+        sendResponse({ ...invalidMessage('domain does not match the sender tab'), ok: false });
+        return;
+      }
+
+      const result = await browser.storage.local.get("tosAcknowledged");
       const ack = result.tosAcknowledged || {};
       ack[domain] = Date.now();
-      browser.storage.local.set({ tosAcknowledged: ack }, () => {
-        console.log(`[Memory] Acknowledged for ${domain}`);
-        // Respond so the content script's wake-and-retry wrapper sees a delivered
-        // message (a dropped ack on a sleeping SW would otherwise let the overlay
-        // re-fire on later same-domain navigation). (FIXPLAN #5b)
-        sendResponse({ ok: true });
-      });
+      await browser.storage.local.set({ tosAcknowledged: ack });
+      console.log(`[Memory] Acknowledged for ${domain}`);
+      sendResponse({ ok: true, domain });
+    })().catch(err => {
+      console.error('[Memory] Acknowledge failed:', err);
+      sendResponse({ ok: false });
     });
     return true;
   }
-});
+
+  sendResponse({ error: 'unknown_action', reason: 'Unsupported background action' });
+  return false;
+}
+
+browser.runtime.onMessage.addListener(handleBackgroundMessage);
 
 async function analyzeWithModel(text, source = "this page", escalate = false) {
   // Provider preference + local-Ollama URL only. API keys are deliberately NOT

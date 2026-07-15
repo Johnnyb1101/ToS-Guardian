@@ -1032,6 +1032,13 @@ Not covered in this document.`;
   mustEqual('validateDomainKey', 'full URL key rejected', null, utils.validateDomainKey('https://chase.com/legal'));
   mustEqual('validateDomainKey', 'Unicode key rejected in favor of punycode', null, utils.validateDomainKey('食狮.com.cn'));
   mustEqual('validateDomainKey', 'punycode key accepted', 'xn--85x722f.com.cn', utils.validateDomainKey('xn--85x722f.com.cn'));
+
+  const bounded = utils.boundMessageField('BEGIN-' + 'x'.repeat(100) + '-END', 80);
+  mustEqual('boundMessageField', 'output respects the character cap', 80, bounded.length);
+  mustTrue('boundMessageField', 'truncation preserves the beginning', true, bounded.startsWith('BEGIN-'));
+  mustTrue('boundMessageField', 'truncation preserves the ending', true, bounded.endsWith('-END'));
+  mustEqual('boundMessageField', 'short values remain unchanged', 'short text', utils.boundMessageField('short text', 40));
+  mustEqual('boundMessageField', 'non-string values are rejected', '', utils.boundMessageField({ text: 'nope' }, 40));
 }
 
 // FIXPLAN #9 — sections render in canonical order even when the analyzer emits them

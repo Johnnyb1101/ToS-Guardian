@@ -34,6 +34,26 @@ function isRenderableHttpsUrl(url) {
   return typeof url === "string" && /^https:\/\/[^\s"'<>`]+$/.test(url);
 }
 
+// Runtime message bounds. Keep page payloads comfortably below browser message
+// limits and prevent an extension context from forcing the service worker to
+// retain arbitrarily large strings. Preserve both ends because legal links are
+// commonly in a page footer.
+const MAX_BACKGROUND_TEXT_CHARS = 500000;
+const MAX_BACKGROUND_HTML_CHARS = 2000000;
+const MAX_BACKGROUND_URL_CHARS = 8192;
+const MAX_BACKGROUND_DOMAIN_CHARS = 253;
+
+function boundMessageField(value, maxChars) {
+  if (typeof value !== 'string') return '';
+  if (!Number.isInteger(maxChars) || maxChars <= 0) return '';
+  if (value.length <= maxChars) return value;
+  const marker = '\n...[TOS Guardian truncated this page for safe messaging]...\n';
+  if (marker.length >= maxChars) return value.slice(0, maxChars);
+  const remaining = maxChars - marker.length;
+  const startLength = Math.ceil(remaining / 2);
+  return value.slice(0, startLength) + marker + value.slice(-(remaining - startLength));
+}
+
 // --- Registrable-domain (eTLD+1) keying ---
 // Cache, acknowledgments and relays all key off the registrable domain so that
 // sibling subdomains (www.x.com / login.x.com / oak.x.com) share one cache entry
