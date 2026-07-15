@@ -64,7 +64,7 @@ const context = {
 };
 
 vm.createContext(context);
-for (const file of ['tosUtils.js', 'critic.js', 'background.js']) {
+for (const file of ['vendor/tldts-7.4.8.umd.min.js', 'tosUtils.js', 'critic.js', 'background.js']) {
   vm.runInContext(fs.readFileSync(path.join(repoRoot, file), 'utf8'), context, { filename: file });
 }
 

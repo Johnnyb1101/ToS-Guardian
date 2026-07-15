@@ -53,7 +53,7 @@ function makeCtx(page = {}) {
     browser
   };
   vm.createContext(ctx);
-  for (const f of ['tosUtils.js', 'shadowDom.js', 'content.js']) {
+  for (const f of ['vendor/tldts-7.4.8.umd.min.js', 'tosUtils.js', 'shadowDom.js', 'content.js']) {
     vm.runInContext(fs.readFileSync(path.join(root, f), 'utf8'), ctx, { filename: f });
   }
   return ctx;

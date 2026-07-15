@@ -14,6 +14,10 @@ function loadSource(file) {
     URL
   };
   vm.createContext(sandbox);
+  if (file === 'tosUtils.js') {
+    const tldtsSource = fs.readFileSync(path.join(repoRoot, 'vendor/tldts-7.4.8.umd.min.js'), 'utf8');
+    vm.runInContext(tldtsSource, sandbox, { filename: 'vendor/tldts-7.4.8.umd.min.js' });
+  }
   const source = fs.readFileSync(path.join(repoRoot, file), 'utf8');
   vm.runInContext(source, sandbox, { filename: file });
   return sandbox;
@@ -1009,8 +1013,25 @@ Not covered in this document.`;
   mustEqual('registrableDomain', 'multi-label public suffix kept (co.uk)', 'tesco.co.uk', rd('www.tesco.co.uk'));
   mustEqual('registrableDomain', 'multi-label public suffix kept (com.au)', 'anz.com.au', rd('secure.anz.com.au'));
   mustEqual('registrableDomain', 'accepts a full URL', 'capitalone.com', rd('https://www.capitalone.com/digital/terms/'));
-  mustEqual('registrableDomain', 'IPv4 literal left untouched', '127.0.0.1', rd('127.0.0.1'));
+  mustEqual('registrableDomain', 'private suffix keeps GitHub Pages tenant', 'victim.github.io', rd('victim.github.io'));
+  mustEqual('registrableDomain', 'private suffix keeps Cloudflare Pages tenant', 'app.pages.dev', rd('app.pages.dev'));
+  mustEqual('registrableDomain', 'private suffix keeps Blogspot tenant', 'writer.blogspot.com', rd('writer.blogspot.com'));
+  mustEqual('registrableDomain', 'different GitHub Pages tenants stay isolated', false, rd('victim.github.io') === rd('attacker.github.io'));
+  mustEqual('registrableDomain', 'different Cloudflare Pages tenants stay isolated', false, rd('victim.pages.dev') === rd('attacker.pages.dev'));
+  mustEqual('registrableDomain', 'bare private suffix rejected', null, rd('github.io'));
+  mustEqual('registrableDomain', 'bare ICANN suffix rejected', null, rd('co.uk'));
+  mustEqual('registrableDomain', 'IPv4 literal rejected', null, rd('127.0.0.1'));
+  mustEqual('registrableDomain', 'localhost rejected', null, rd('localhost'));
+  mustEqual('registrableDomain', 'IDN normalized to punycode', 'xn--85x722f.com.cn', rd('食狮.com.cn'));
+  mustEqual('registrableDomain', 'URL credentials rejected', null, rd('https://user:pass@chase.com/legal'));
   mustEqual('registrableDomain', 'case-insensitive + trailing dot', 'paypal.com', rd('WWW.PayPal.com.'));
+  mustEqual('validateDomainKey', 'canonical key accepted', 'chase.com', utils.validateDomainKey('chase.com'));
+  mustEqual('validateDomainKey', 'private-tenant key accepted', 'victim.github.io', utils.validateDomainKey('victim.github.io'));
+  mustEqual('validateDomainKey', 'subdomain key rejected', null, utils.validateDomainKey('www.chase.com'));
+  mustEqual('validateDomainKey', 'bare suffix key rejected', null, utils.validateDomainKey('github.io'));
+  mustEqual('validateDomainKey', 'full URL key rejected', null, utils.validateDomainKey('https://chase.com/legal'));
+  mustEqual('validateDomainKey', 'Unicode key rejected in favor of punycode', null, utils.validateDomainKey('食狮.com.cn'));
+  mustEqual('validateDomainKey', 'punycode key accepted', 'xn--85x722f.com.cn', utils.validateDomainKey('xn--85x722f.com.cn'));
 }
 
 // FIXPLAN #9 — sections render in canonical order even when the analyzer emits them
