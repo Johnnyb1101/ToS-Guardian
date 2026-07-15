@@ -142,14 +142,18 @@ const cacheSourceUrls = [...new Set([
   ...(fetched?.documentLinks || [])
 ].filter(Boolean).map(upgradeInsecureUrl))].filter(url => validateDocumentUrl(url));
 
-const buildCacheContext = (providerTag) => ({
+const buildCacheContext = (providerTag, analysisSource) => ({
   domain,
   sourceUrls: cacheSourceUrls,
   optOutLinks: displayOptOutLinks,
   sourceFingerprint: contentFingerprint(textToAnalyze),
   schemaVersion: CACHE_SCHEMA_VERSION,
   aiProvider: providerTag,
-  privacyText: cacheVerificationText
+  // Derive semantic verification text from the exact bounded source signed by
+  // the Analyzer receipt. Building it from the larger pre-budget document can
+  // cross a section boundary that the Analyzer reassembles, making a legitimate
+  // excerpt fail the proxy's source-membership check.
+  privacyText: buildCacheVerificationText(analysisSource)
 });
 
 // Documents the fetcher couldn't read because they were scanned/image-based PDFs.
@@ -184,7 +188,9 @@ const unreadableDocs = [
   let criticVerdict = null;
   let criticFailed = false;
   let cacheWriteReceipt = null;
-  let activeCacheContext = result?.providerTag ? buildCacheContext(result.providerTag) : null;
+  let activeCacheContext = result?.providerTag
+    ? buildCacheContext(result.providerTag, result.analysisSource || enrichedText)
+    : null;
   if (result) {
     const criticResult = await runCritic(
       result.summary,
@@ -266,7 +272,9 @@ const unreadableDocs = [
           escalatedResult.summary = stripInjectionWarning(normalizeAnalysisHeaders(escalatedResult.summary));
         }
         // Re-run Critic on escalated result
-        const escalatedCacheContext = escalatedResult.providerTag ? buildCacheContext(escalatedResult.providerTag) : null;
+        const escalatedCacheContext = escalatedResult.providerTag
+          ? buildCacheContext(escalatedResult.providerTag, escalatedResult.analysisSource || enrichedText)
+          : null;
         const escalatedCriticResult = await runCritic(
           escalatedResult.summary,
           escalatedResult.analysisSource || enrichedText,
@@ -390,7 +398,7 @@ const unreadableDocs = [
 
   // --- STEP 6: SAVE TO MEMORY ---
   if (domain && isCacheableEvaluation(evaluation)) {
-    saveAnalysis(domain, result.summary, cacheVerificationText, displayOptOutLinks,
+    saveAnalysis(domain, result.summary, activeCacheContext?.privacyText || cacheVerificationText, displayOptOutLinks,
       activeCacheContext?.aiProvider || result.providerTag || 'anthropic',
       cacheWriteReceipt && activeCacheContext ? {
         writeReceipt: cacheWriteReceipt,
