@@ -485,8 +485,12 @@ ${strongSummary('clean source')}`
     const writeProvenance = spies.saveAnalysis.calls[0][5];
     mustTrue('runCritic', 'receives the proxy Analyzer receipt and raw output', true,
       criticProvenance.analysisReceipt === 'analysis-token' && criticProvenance.providerAnalysis === raw);
+    mustTrue('runCritic', 'binds semantic verification text to the exact Analyzer source', true,
+      criticProvenance.cacheContext.privacyText === 'verified analyzer source');
     mustTrue('saveAnalysis', 'receives signed write provenance', true,
       writeProvenance.writeReceipt === 'write-token' && writeProvenance.cacheContext.domain === 'chase.com');
+    mustEqual('saveAnalysis', 'writes the receipt-bound semantic verification text',
+      'verified analyzer source', spies.saveAnalysis.calls[0][2]);
   });
 
   // Adequate results should also save because they are acceptable with a warning.
