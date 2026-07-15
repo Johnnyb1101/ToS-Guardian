@@ -180,6 +180,18 @@ checkEnter('Enter in a plain text/search field does not fire', { path: '/', body
 checkEnter('Enter on a search-results page never fires', { host: 'www.google.com', path: '/search', search: '?q=paypal' },
   field({ type: 'password' }), false);
 
+// A full fetch + Analyzer + Critic + escalation can legitimately exceed 90s.
+// Keep the visible relay deadline and cross-navigation pending marker aligned.
+const contentSource = fs.readFileSync(path.join(root, 'content.js'), 'utf8');
+const hardDeadline = /const HARD_DEADLINE_MS = (\d+);/.exec(contentSource)?.[1];
+const pendingTtl = /const PENDING_OVERLAY_TTL_MS = (\d+);/.exec(contentSource)?.[1];
+rows.push({
+  status: hardDeadline === '120000' && pendingTtl === hardDeadline ? 'PASS' : 'FAIL',
+  name: 'analysis deadline and pending-overlay TTL stay aligned at 120 seconds',
+  expected: '120000',
+  got: `${hardDeadline || 'missing'}/${pendingTtl || 'missing'}`
+});
+
 // --- Report --------------------------------------------------------------
 const widths = {
   status: 6,

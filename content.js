@@ -421,10 +421,10 @@ function showGuardianOverlay(event, sourceButton = null) {
   // leave the overlay stuck on "still analyzing" forever (the old 45s timer only
   // re-worded the message, it never resolved). Now there are two timers: a SOFT
   // notice at 45s ("still working, some sites take longer") and a HARD deadline at
-  // 90s that resolves the overlay to an honest "couldn't finish" state with a
+  // 120s that resolves the overlay to an honest "couldn't finish" state with a
   // Try-again button, so the user is never stranded.
   const SOFT_NOTICE_MS = 45000;
-  const HARD_DEADLINE_MS = 90000;
+  const HARD_DEADLINE_MS = 120000;
 
   let analysisResponded = false;
   let softNoticeTimer = null;
@@ -490,7 +490,7 @@ function showGuardianOverlay(event, sourceButton = null) {
     }, HARD_DEADLINE_MS);
 
     // attempts:2 — retry only the cold-start drop (the orchestrator never ran), not
-    // a slow-but-running analysis; the 90s hard deadline bounds total time.
+    // a slow-but-running analysis; the 120s hard deadline bounds total time.
     sendMessageWithRetry(
       {
         action: "analyzeTos",
@@ -551,7 +551,7 @@ function currentDomainKey() { return registrableDomain(window.location.hostname)
 // short-lived marker on intercept; the destination page (same registrable domain)
 // re-shows the overlay on load so the user still sees the analysis. Cleared on
 // proceed/leave so it doesn't re-fire on later same-domain navigation.
-const PENDING_OVERLAY_TTL_MS = 90000;
+const PENDING_OVERLAY_TTL_MS = 120000;
 function markPendingOverlay() {
   try { browser.storage.local.set({ tosPendingOverlay: { domain: currentDomainKey(), ts: Date.now() } }); } catch (e) {}
 }
