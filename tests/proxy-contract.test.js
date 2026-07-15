@@ -111,7 +111,7 @@ const popupSender = {
 (async () => {
   console.log('Keyless constrained proxy contract');
 
-  responses.push({ status: 200, body: { text: 'Analyzer output', model: 'server-model', stopReason: 'end_turn' } });
+  responses.push({ status: 200, body: { text: 'Analyzer output', model: 'server-model', stopReason: 'end_turn', analysisReceipt: 'analysis-token' } });
   const analyzerResult = await context.analyzeWithModel(
     '=== PRIVACY POLICY ===\nThis policy collects an email address.',
     'https://example.com/privacy',
@@ -130,6 +130,8 @@ const popupSender = {
   check('Analyzer does not send a token limit', !Object.prototype.hasOwnProperty.call(analyzerBody, 'maxTokens'));
   check('Analyzer sends no proxy credential header', !Object.keys(analyzerRequest.options.headers || {}).some(k => k.toLowerCase() === 'x-tg-proxy-key'));
   check('Analyzer response still reaches the caller', analyzerResult.summary === 'Analyzer output');
+  check('Analyzer preserves the proxy analysis receipt', analyzerResult.analysisReceipt === 'analysis-token');
+  check('Analyzer preserves the exact source sent to the proxy', /collects an email/.test(analyzerResult.analysisSource));
 
   responses.push({
     status: 200,
@@ -144,7 +146,8 @@ const popupSender = {
         flags: []
       }),
       model: 'server-model',
-      stopReason: 'end_turn'
+      stopReason: 'end_turn',
+      writeReceipt: 'write-token'
     }
   });
   const criticResult = await context.runCritic(
@@ -163,6 +166,30 @@ const popupSender = {
   check('Critic does not send a model or token limit', !Object.prototype.hasOwnProperty.call(criticBody, 'model') && !Object.prototype.hasOwnProperty.call(criticBody, 'maxTokens'));
   check('Critic sends no proxy credential header', !Object.keys(criticRequest.options.headers || {}).some(k => k.toLowerCase() === 'x-tg-proxy-key'));
   check('Critic response still parses', criticResult && criticResult.dataCollection === 'grounded');
+  check('Critic preserves the proxy write receipt', criticResult?._writeReceipt === 'write-token');
+
+  responses.push({
+    status: 200,
+    body: {
+      text: JSON.stringify({
+        dataCollection: 'grounded', dataSelling: 'grounded', optOutRights: 'grounded',
+        howToOptOut: 'grounded', autoRenewal: 'skipped', dataDeletion: 'grounded', flags: []
+      }),
+      model: 'server-model', stopReason: 'end_turn', writeReceipt: 'bound-write-token'
+    }
+  });
+  const cacheContext = {
+    domain: 'acorns.com', sourceUrls: ['https://acorns.com/privacy'], optOutLinks: [],
+    sourceFingerprint: 'a1b2c3d4', schemaVersion: 2, aiProvider: 'anthropic', privacyText: 'privacy text'
+  };
+  await context.runCritic('Canonical analysis.', 'Exact analyzer source.', {
+    analysisReceipt: 'analysis-token', providerAnalysis: 'Provider analysis.', cacheContext
+  });
+  const provenanceCriticRequest = requests.shift();
+  const provenanceCriticBody = JSON.parse(provenanceCriticRequest.options.body);
+  check('Critic forwards the Analyzer receipt for proxy verification', provenanceCriticBody.analysisReceipt === 'analysis-token');
+  check('Critic forwards the exact provider output for proxy verification', provenanceCriticBody.providerAnalysis === 'Provider analysis.');
+  check('Critic binds the cache context into write authorization', provenanceCriticBody.cacheContext.domain === 'acorns.com');
 
   const oversizedCriticSource = [
     '=== TERMS OF SERVICE ===\n' + 't'.repeat(70000),
@@ -190,6 +217,22 @@ const popupSender = {
   const dailyLimitedAnalyzer = await context.analyzeWithModel('Privacy policy text.', 'https://example.com/privacy');
   requests.shift();
   check('Analyzer distinguishes the daily safety circuit breaker', /daily analysis safety limit/i.test(dailyLimitedAnalyzer.summary));
+
+  const writesBeforeSkip = requests.length;
+  await context.writeToSupabase('acorns.com', 'Summary', 'anthropic', [], 'privacy text');
+  check('Shared write is skipped without proxy provenance', requests.length === writesBeforeSkip);
+  responses.push({ status: 200, body: { success: true } });
+  await context.writeToSupabase('acorns.com', 'Final summary', 'anthropic', [], 'privacy text', {
+    writeReceipt: 'write-token',
+    analysisSummary: 'Canonical analysis.',
+    cacheContext
+  });
+  const cacheWriteRequest = requests.shift();
+  const cacheWriteBody = JSON.parse(cacheWriteRequest.options.body);
+  check('Shared write carries its signed write receipt', cacheWriteBody.write_receipt === 'write-token');
+  check('Shared write carries the receipt-bound analysis summary', cacheWriteBody.analysis_summary === 'Canonical analysis.');
+  check('Shared write carries receipt-bound source metadata',
+    cacheWriteBody.source_fingerprint === 'a1b2c3d4' && cacheWriteBody.schema_version === 2);
 
   console.log('\nPrivileged background message boundary');
 

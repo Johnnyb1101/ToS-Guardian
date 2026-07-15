@@ -33,7 +33,11 @@ function proxyFetch(url, options = {}) {
 browser.storage.local.remove(['apiKey_anthropic', 'apiKey_openai']);
 
 // Write an analysis result to Supabase community cache
-async function writeToSupabase(domain, summary, aiProvider, optOutLinks = [], privacyText = '') {
+async function writeToSupabase(domain, summary, aiProvider, optOutLinks = [], privacyText = '', provenance = null) {
+  if (!provenance?.writeReceipt || !provenance?.analysisSummary || !provenance?.cacheContext) {
+    console.log('[Supabase] Shared-cache write skipped — no verified proxy provenance for', domain);
+    return;
+  }
   try {
     const response = await proxyFetch(`${PROXY_URL}/write`, {
       method: 'POST',
@@ -43,7 +47,12 @@ async function writeToSupabase(domain, summary, aiProvider, optOutLinks = [], pr
         analysis_result: summary,
         ai_provider: aiProvider,
         opt_out_links: optOutLinks,
-        privacy_text: privacyText
+        privacy_text: privacyText,
+        analysis_summary: provenance.analysisSummary,
+        write_receipt: provenance.writeReceipt,
+        source_urls: provenance.cacheContext.sourceUrls,
+        source_fingerprint: provenance.cacheContext.sourceFingerprint,
+        schema_version: provenance.cacheContext.schemaVersion
       })
     });
     if (response.status === 403) {
@@ -72,13 +81,13 @@ async function writeToSupabase(domain, summary, aiProvider, optOutLinks = [], pr
 }
 
 // Save an analysis result for a domain
-function saveAnalysis(domain, summary, tosText, optOutLinks = [], aiProvider = 'anthropic') {
+function saveAnalysis(domain, summary, tosText, optOutLinks = [], aiProvider = 'anthropic', provenance = null) {
   browser.storage.local.get("tosAcknowledged", (result) => {
     const ack = result.tosAcknowledged || {};
     delete ack[domain];
     browser.storage.local.set({ tosAcknowledged: ack });
   });
-  writeToSupabase(domain, summary, aiProvider, optOutLinks, tosText);
+  writeToSupabase(domain, summary, aiProvider, optOutLinks, tosText, provenance);
 }
 
 async function readFromSupabase(domain, privacyText = '') {
@@ -991,7 +1000,13 @@ ${trimmedText}`;
     }
 
     console.log(`[Analyzer] Relay response — model: ${data.model}, length: ${data.text.length} chars, stop_reason: ${data.stopReason}`);
-    return { summary: data.text };
+    return {
+      summary: data.text,
+      providerAnalysis: data.text,
+      analysisSource: trimmedText,
+      analysisReceipt: data.analysisReceipt || null,
+      providerTag: `${provider}${escalate ? '-escalated' : ''}`
+    };
   }
 
   if (provider === 'ollama') {

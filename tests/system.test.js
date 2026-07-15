@@ -464,6 +464,31 @@ ${strongSummary('clean source')}`
     mustEqual('saveAnalysis', 'called for Strong result', 1, spies.saveAnalysis.calls.length);
   });
 
+  // Shared-cache writes carry the signed Analyzer→Critic provenance chain and
+  // exact context that the proxy will verify before accepting /write.
+  await runTest(async () => {
+    const raw = 'ðŸ§­ BOTTOM LINE\nThey share financial data with affiliates.\nðŸ§­ RISK LEVEL\nHigh\n' + strongSummary('Provenance');
+    spies.analyzeWithModel.impl = async () => ({
+      summary: raw,
+      providerAnalysis: raw,
+      analysisSource: 'verified analyzer source',
+      analysisReceipt: 'analysis-token',
+      providerTag: 'anthropic'
+    });
+    spies.runCritic.impl = async () => ({
+      dataCollection: 'grounded', dataSelling: 'grounded', optOutRights: 'grounded',
+      howToOptOut: 'grounded', autoRenewal: 'skipped', dataDeletion: 'grounded',
+      flags: [], _writeReceipt: 'write-token'
+    });
+    await context.runOrchestrator('https://chase.com/signup', 'page text', '<html></html>');
+    const criticProvenance = spies.runCritic.calls[0][2];
+    const writeProvenance = spies.saveAnalysis.calls[0][5];
+    mustTrue('runCritic', 'receives the proxy Analyzer receipt and raw output', true,
+      criticProvenance.analysisReceipt === 'analysis-token' && criticProvenance.providerAnalysis === raw);
+    mustTrue('saveAnalysis', 'receives signed write provenance', true,
+      writeProvenance.writeReceipt === 'write-token' && writeProvenance.cacheContext.domain === 'chase.com');
+  });
+
   // Adequate results should also save because they are acceptable with a warning.
   await runTest(async () => {
     spies.analyzeWithModel.impl = async () => ({ summary: adequateSummary('Adequate') });
