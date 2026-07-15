@@ -34,7 +34,7 @@ async function runCritic(analysisSummary, sourceText) {
   if (!analysisSummary || !sourceText) return null;
 
   // Provider preference + local-Ollama URL only — API keys live on the proxy
-  // (audit refactor #5); the /analyze relay attaches them server-side.
+  // (audit refactor #5); the /v2/analyze relay attaches them server-side.
   const settings = await new Promise(resolve => {
     browser.storage.local.get(['selectedProvider', 'ollamaBaseUrl'], resolve);
   });
@@ -65,14 +65,14 @@ ${trimmedSource}`;
       // NOT escalated: the critic always runs on the provider's default (cheap)
       // model, which the proxy's llmRelay.js model map keeps in sync with
       // CRITIC_MODELS above.
-      const response = await proxyFetch(`${PROXY_URL}/analyze`, {
+      const response = await proxyFetch(`${PROXY_URL}/v2/analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          operation: "critic",
           provider,
-          system: CRITIC_SYSTEM,
-          user: userMessage,
-          maxTokens: CRITIC_MAX_TOKENS
+          analysisSummary,
+          sourceText: trimmedSource
         })
       });
 

@@ -385,7 +385,7 @@ function capForUnverifiedCritic(evaluation, criticFailed) {
 }
 
 function isConfigurationMessage(summary) {
-  return /No (Anthropic|OpenAI) API key set|Unknown provider selected|PROXY_SHARED_SECRET is missing/i.test(summary || "");
+  return /No (Anthropic|OpenAI) API key set|Unknown provider selected/i.test(summary || "");
 }
 
 function validateEvaluation(rawEvaluation) {

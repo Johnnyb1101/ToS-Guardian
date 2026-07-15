@@ -17,22 +17,12 @@ importScripts("orchestrator.js");
 const browser = globalThis.browser || chrome;
 const PROXY_URL = "https://tos-guardian-proxy-production.up.railway.app";
 
-// Shared secret for the proxy (SECURITY: proxy lockdown, step 1 of the audit
-// refactor). Sent on every proxy request; the proxy rejects anything without
-// it, so random internet clients can no longer write to the community cache or
-// use /fetch-document as a free relay. Must match PROXY_SHARED_SECRET in the
-// Railway environment. NOTE: anyone who unpacks the extension can read this —
-// it stops drive-by abuse, not a targeted attacker (per-user auth comes later).
-const PROXY_KEY = "4b8b9928f66fb7bdbc9b14230b90a515d8921bf1198e281393f7496f3797c865";
-
-// All proxy calls go through here so the auth header can never be forgotten on
-// a new call site. Used by background.js, orchestrator.js and siteDatabase.js
-// (they share this service-worker scope via importScripts).
+// All proxy calls share this wrapper. The public proxy now authorizes narrow,
+// rate-limited operations by route and payload contract; no reusable credential
+// is shipped in the extension. Used by background.js, orchestrator.js and
+// siteDatabase.js (they share this service-worker scope via importScripts).
 function proxyFetch(url, options = {}) {
-  return fetch(url, {
-    ...options,
-    headers: { ...(options.headers || {}), "x-tg-proxy-key": PROXY_KEY }
-  });
+  return fetch(url, options);
 }
 
 // One-time migration (audit refactor #5): API keys used to be stored in
@@ -729,7 +719,7 @@ if (request.action === "acknowledge") {
 async function analyzeWithModel(text, source = "this page", escalate = false) {
   // Provider preference + local-Ollama URL only. API keys are deliberately NOT
   // read here anymore — they live in the proxy's Railway environment, and the
-  // /analyze relay attaches them server-side. The model map (default vs
+  // /v2/analyze attaches them server-side. The model map (default vs
   // escalated) is also server-side policy now (proxy llmRelay.js), so this
   // client only communicates INTENT (the escalate flag). (Audit refactor #5)
   const settings = await new Promise((resolve) => {
@@ -811,33 +801,25 @@ When you encounter content formatted as a table, treat each row as a separate it
 DOCUMENT TEXT:
 ${trimmedText}`;
 
-  // Cloud providers go through the proxy relay: the proxy attaches the API key
-  // (never present in the browser) and enforces the model/token policy. The
-  // error strings below are matched by the orchestrator's
+  // Cloud providers go through the constrained proxy relay: the extension sends
+  // only the operation and legal text. The proxy owns the system prompt, attaches
+  // the API key, and enforces model/token policy. The error strings below are matched by the orchestrator's
   // isConfigurationMessage — keep "No ... API key set" phrasing if edited.
   if (provider === 'anthropic' || provider === 'openai') {
     const providerName = provider === 'anthropic' ? 'Anthropic' : 'OpenAI';
-    const response = await proxyFetch(`${PROXY_URL}/analyze`, {
+    const response = await proxyFetch(`${PROXY_URL}/v2/analyze`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        operation: "analyzer",
         provider,
-        system: systemPrompt,
-        user: userMessage,
-        escalate,
-        maxTokens: escalate ? 2400 : 1200
+        documentText: trimmedText,
+        escalate
       })
     });
     const data = await response.json().catch(() => ({}));
 
     if (response.status === 503) {
-      // Two distinct 503s: the auth gate's fail-closed mode (PROXY_SHARED_SECRET
-      // missing — EVERY route 503s) vs. a missing provider key (only /analyze
-      // 503s). Report the right one so the fix isn't misdirected. (Found in
-      // live testing: a missing shared secret was reported as a missing API key.)
-      if (data.error === 'proxy_not_configured') {
-        return { summary: "⚠️ The analysis server is not configured: PROXY_SHARED_SECRET is missing from its Railway environment." };
-      }
       return { summary: `⚠️ No ${providerName} API key set on the analysis server. Add ${provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY'} to the proxy's Railway environment.` };
     }
     if (response.status === 429) {
