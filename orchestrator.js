@@ -298,8 +298,11 @@ const buildCacheContext = (providerTag, analysisSource) => ({
   // Derive semantic verification text from the exact bounded source signed by
   // the Analyzer receipt. Building it from the larger pre-budget document can
   // cross a section boundary that the Analyzer reassembles, making a legitimate
-  // excerpt fail the proxy's source-membership check.
-  privacyText: buildCacheVerificationText(analysisSource)
+  // excerpt fail the proxy's source-membership check. Slice that source as-is:
+  // it is already sanitized, and re-sanitizing could alter it (a long line cut
+  // at the cap), which also fails the membership check. (Found by the first
+  // observed live run: Capital One and Navy Federal critic chains rejected.)
+  privacyText: verificationSliceOf(analysisSource)
 });
 
 // Documents the fetcher couldn't read because they were scanned/image-based PDFs.
@@ -678,9 +681,17 @@ function isCacheableEvaluation(evaluation) {
 
 function buildCacheVerificationText(text) {
   const sanitized = sanitizeForPrompt(text || "");
-  const privacyStart = sanitized.indexOf("=== PRIVACY POLICY");
-  const verificationSource = privacyStart > -1 ? sanitized.slice(privacyStart) : sanitized;
-  return verificationSource.slice(0, 10000);
+  return verificationSliceOf(sanitized);
+}
+
+// The verification slice of an ALREADY-sanitized source: from the privacy
+// policy marker (or the start) to the same 10,000-char bound the proxy accepts.
+// Never re-sanitizes, so the result is always a substring of its input, which
+// the proxy's receipt chain requires.
+function verificationSliceOf(sanitizedText) {
+  const text = typeof sanitizedText === 'string' ? sanitizedText : '';
+  const privacyStart = text.indexOf("=== PRIVACY POLICY");
+  return (privacyStart > -1 ? text.slice(privacyStart) : text).slice(0, 10000);
 }
 
 // Retry wrapper — attempts once, retries once on failure, then returns null

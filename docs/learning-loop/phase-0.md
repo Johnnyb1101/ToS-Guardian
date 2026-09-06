@@ -139,3 +139,36 @@ defects found on the way, both fixed in the follow-up commit on `learning-loop/p
 Diagnostic recipe that found it, kept here for next time: in the extension's service worker
 console, `typeof observerSink` proves the loaded code is current, and
 `chrome.storage.local.get('tosGuardianObserver', console.log)` shows whether the flag exists.
+
+### First observed run (2026-09-06, 11 live episodes)
+
+Report saved locally as `observer/report-2026-09-06.md` (ignored by git). Headlines: overlay
+shown on 11 of 11; 8 fresh analyses at $0.95 total; 3 Strong, 3 Adequate, 2 Failed, 2
+cached; escalation attempted 3 times and adopted twice on conservative-grounding grounds.
+
+**Defect found and fixed from the record.** Capital One and Navy Federal both showed
+`critic: failed, reason: relay-error`, were capped to Adequate, and could not be cached
+(`write: skipped-no-provenance`). Cause, reproduced with a unit probe: `sanitizeForPrompt`
+was not idempotent. A line longer than its 2000-char cap was cut and could keep a trailing
+space that a second pass removed. The write receipt's verification text was built by
+sanitizing the already-sanitized analyzer source, so on dense legal text the slice was no
+longer a byte-for-byte substring of the source the proxy signed, and the proxy rejected the
+critic chain. Fix: the sanitizer trims after the cap (idempotent, pinned by three logic
+tests), and the verification text is now a plain slice of the signed source (pinned by a
+system test with a dense source). The critic failure reason now records the HTTP status and
+the proxy's error code, so the next such failure names itself.
+
+**Lesson candidates for the loop, not changed here (tier 3, need review):**
+- Harvard, 101s, no document found: the page was an SSO subdomain, candidate guessing used
+  that hostname instead of the registrable domain, and `runWithRetry` re-ran the whole
+  discovery because "no documents" is returned as null, doubling the time. Two separate
+  fixes: try registrable-domain candidates too; treat a clean "none found" as final.
+- live.com: the documents live on microsoft.com. A learned site entry cannot express that
+  (same-registrable-domain rule), and the static list only knows microsoft.com. Candidate
+  for a static entry; note the rule tension for cross-domain document hosting.
+- CNN and Fox News fetched privacy hub pages and ended Failed after conservative escalation
+  ($0.20 and $0.11). Honest, but a hub-page recognizer would save the escalation cost.
+- Trigger branches seen: proximity-consent 5, page-agreement-context 3, password-field 2,
+  form-context 1. The weakest branch fired on apus.edu and foxnews.com; worth a look.
+- The local layer held OAuth state, nonce, and code-challenge parameters in two page URLs
+  (Harvard, Microsoft). The uploadable form drops them; that is the rule working.

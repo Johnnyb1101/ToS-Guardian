@@ -494,6 +494,28 @@ ${strongSummary('clean source')}`
       'verified analyzer source', spies.saveAnalysis.calls[0][2]);
   });
 
+  // The write receipt binds a verification text that the proxy requires to be a
+  // byte-for-byte substring of the analyzer source it signed. A dense source with
+  // a line longer than the sanitizer's cap must still satisfy that.
+  await runTest(async () => {
+    let longLine = '';
+    while (longLine.length < 2600) longLine += 'affiliates share ';
+    longLine = longLine.slice(0, 1999) + ' ' + longLine.slice(2000);
+    const denseSource = context.sanitizeForPrompt('=== TERMS OF SERVICE ===\nTerms.\n\n=== PRIVACY POLICY ===\n' + longLine + '\nWe share with affiliates.');
+    const raw = '🧭 BOTTOM LINE\nThey share.\n🧭 RISK LEVEL\nHigh\n' + strongSummary('Dense');
+    spies.analyzeWithModel.impl = async () => ({
+      summary: raw, providerAnalysis: raw, analysisSource: denseSource, analysisReceipt: 'analysis-token', providerTag: 'anthropic'
+    });
+    spies.runCritic.impl = async () => ({
+      dataCollection: 'grounded', dataSelling: 'grounded', optOutRights: 'grounded',
+      howToOptOut: 'grounded', autoRenewal: 'skipped', dataDeletion: 'grounded', flags: [], _writeReceipt: 'write-token'
+    });
+    await context.runOrchestrator('https://chase.com/signup', 'page text', '<html></html>');
+    const privacyText = spies.runCritic.calls[0][2].cacheContext.privacyText;
+    mustTrue('runCritic', 'verification text is a substring of a dense analyzer source', true, denseSource.includes(privacyText));
+    mustTrue('runCritic', 'verification text starts at the privacy policy marker', true, privacyText.startsWith('=== PRIVACY POLICY'));
+  });
+
   // Adequate results should also save because they are acceptable with a warning.
   await runTest(async () => {
     spies.analyzeWithModel.impl = async () => ({ summary: adequateSummary('Adequate') });

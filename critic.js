@@ -96,7 +96,10 @@ ${trimmedSource}`;
 
       if (!response.ok) {
         console.warn(`[Critic] Relay error (${response.status}): ${data.reason || data.error || 'unknown'}`);
-        return { failed: true, _reason: 'relay-error' };
+        // The episode log keeps the HTTP status and the proxy's error code so a
+        // failed critic is diagnosable from the record, not just the console.
+        const code = typeof data.error === 'string' ? data.error.slice(0, 60) : 'unknown';
+        return { failed: true, _reason: `relay-error:${response.status}:${code}` };
       }
       responseText = data.text;
       stopReason = data.stopReason; // "end_turn" | "max_tokens" | "stop" | "length" | ...
