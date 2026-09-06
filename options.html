@@ -168,11 +168,13 @@
       Off by default. When on, each analysis sends its stage-by-stage facts (what fired,
       what was fetched, what the cache did, what the models said, what rendered) to a
       collector running on this computer only, started with <code>node tools/observer.js</code>.
-      Nothing leaves this machine. Reload open tabs after changing this.
+      Nothing leaves this machine. This setting saves as soon as you change it; reload
+      open tabs afterwards.
     </p>
 
     <label for="observerPort">Collector port</label>
     <input type="text" id="observerPort" placeholder="3123" />
+    <div class="status" id="observerStatus"></div>
   </div>
  <script src="options.js"></script>
 

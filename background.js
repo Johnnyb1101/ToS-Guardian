@@ -39,8 +39,16 @@ function observerSink(event, observer) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(event)
-    }).catch(() => {});
-  } catch (e) { /* never surface */ }
+    }).then((response) => {
+      // Diagnostics only: a rejected or unreachable collector must never affect
+      // the relay, but it should be visible in the service worker console.
+      if (!response.ok) console.warn(`[Observer] Collector at 127.0.0.1:${port} rejected a ${event.stage} event (HTTP ${response.status})`);
+    }).catch((err) => {
+      console.warn(`[Observer] Could not reach the collector at 127.0.0.1:${port} for a ${event.stage} event: ${err && err.message ? err.message : err}`);
+    });
+  } catch (e) {
+    console.warn(`[Observer] Could not start a collector request: ${e && e.message ? e.message : e}`);
+  }
 }
 
 // One-time migration (audit refactor #5): API keys used to be stored in

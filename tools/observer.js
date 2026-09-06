@@ -64,7 +64,10 @@ function send(res, status, body, type) {
     'Content-Type': type || 'application/json',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type'
+    'Access-Control-Allow-Headers': 'Content-Type',
+    // Chrome's private-network access check asks a local server to say so
+    // explicitly before it lets a request through from a non-local context.
+    'Access-Control-Allow-Private-Network': 'true'
   });
   res.end(body);
 }

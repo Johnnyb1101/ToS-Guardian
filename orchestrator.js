@@ -101,6 +101,9 @@ async function runOrchestrator(pageUrl, pageText, pageHtml, options = {}) {
   };
 
   const observer = await readObserverConfig(browser.storage.local);
+  if (observer.enabled) {
+    console.log(`[Observer] Observer mode is on — posting episode events to 127.0.0.1:${observer.port}`);
+  }
   const rec = createEpisodeRecorder({
     enabled: observer.enabled,
     episodeId: options && options.episodeId,

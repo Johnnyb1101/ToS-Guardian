@@ -122,3 +122,20 @@ Evidence:
 Not verified yet, needs the owner: a real browser click-through with the collector running
 (the observer message path is covered by tests, not by a live tab), and the first paid run
 against a dev proxy once the dev database exists.
+
+### Live verification (2026-09-06)
+
+A real browser click-through with the collector running delivered events end to end. Two
+defects found on the way, both fixed in the follow-up commit on `learning-loop/phase-0b`:
+
+- The Observer toggle sat in its own card below the provider Save button, so ticking it
+  stored nothing until Save was clicked elsewhere. The toggle now saves itself on change and
+  shows a status line naming the port it posts to.
+- The collector sink and the orchestrator were silent on failure by design, which made the
+  first run undiagnosable. The service worker console now logs when observer mode is on and
+  when the collector cannot be reached or rejects an event. The collector also answers
+  Chrome's private-network preflight header.
+
+Diagnostic recipe that found it, kept here for next time: in the extension's service worker
+console, `typeof observerSink` proves the loaded code is current, and
+`chrome.storage.local.get('tosGuardianObserver', console.log)` shows whether the flag exists.
