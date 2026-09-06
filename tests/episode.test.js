@@ -171,7 +171,7 @@ ok('forbidden key list covers the local-layer field names', Object.keys(E.LOCAL_
   ok('report shows cache outcomes', report.includes('hit 1') && report.includes('miss 1'));
   ok('report shows the critic concern by section', report.includes('optOutRights 1'));
   ok('report prices the episode from its usage', /Estimated cost: \$0\.1[0-9]{3}/.test(report));
-  ok('report flags the episode whose fetched text was not a legal document', report.includes('discord.com: fetched text is not a legal document'));
+  ok('report flags the episode whose fetched text was not a legal document', /discord\.com at \d\d:\d\d UTC: fetched text is not a legal document/.test(report));
   ok('report table has one row per episode', (report.match(/^\| (chase\.com|discord\.com) \|/gm) || []).length === 2);
   ok('attention reasons name the cap-blocked escalation only when relevant', attentionReasons(episode).length === 0);
   ok('empty report is honest', buildReport([]).includes('No episodes.'));

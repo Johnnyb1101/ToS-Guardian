@@ -181,10 +181,20 @@ function buildReport(episodes, options) {
     lines.push('');
   }
 
+  // The events file is cumulative, so a domain can appear more than once. Each
+  // flagged episode carries its time, and one that a later episode of the same
+  // domain no longer flags is marked as such, so a fixed site reads as fixed.
   const attention = list.map(e => ({ e, reasons: attentionReasons(e) })).filter(x => x.reasons.length);
+  const latestByDomain = new Map();
+  for (const e of list) if (e.domain) latestByDomain.set(e.domain, e);
   lines.push('## Needs attention');
   if (attention.length === 0) lines.push('Nothing flagged.');
-  for (const { e, reasons } of attention) lines.push(`- ${e.domain || e.episodeId}: ${reasons.join('; ')}`);
+  for (const { e, reasons } of attention) {
+    const when = e.startedAt ? ` at ${e.startedAt.slice(11, 16)} UTC` : '';
+    const latest = e.domain ? latestByDomain.get(e.domain) : null;
+    const superseded = latest && latest !== e && attentionReasons(latest).length === 0 ? ' (a later episode of this site is clean)' : '';
+    lines.push(`- ${e.domain || e.episodeId}${when}: ${reasons.join('; ')}${superseded}`);
+  }
   lines.push('');
 
   lines.push('## Episodes');
