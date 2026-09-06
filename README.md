@@ -34,24 +34,25 @@ Memory → Fetcher → Link Follower → Analyzer → Critic → Evaluator → U
 3. Enable **Developer mode** (top right toggle)
 4. Click **Load unpacked** and select the project folder
 5. Right-click the TOS Guardian icon → **Options**
-6. Enter your API key and select your AI provider
+6. Choose your AI provider
 7. Visit any site with an agree button and click it
 
-> **Note:** TOS Guardian requires your own API key to function.
-> See Supported AI Providers below for where to get one.
-> Anthropic offers free trial credits to new accounts.
+> **Note:** No API key is needed. Cloud analysis runs through the TOS Guardian
+> analysis server, which holds the provider keys and serves narrow, validated,
+> rate-limited operations. Choose Ollama to run the analysis entirely on your
+> own machine instead.
 
 ## Supported AI Providers
 
-TOS Guardian supports three AI providers. You supply your own API key.
+TOS Guardian supports three AI providers. No key is ever entered in the browser.
 
-| Provider | Model | Get a key |
+| Provider | Default model | Runs on |
 |---|---|---|
-| Anthropic (Claude) | claude-haiku-4-5 | console.anthropic.com |
-| OpenAI (GPT) | gpt-4o-mini | platform.openai.com |
-| Ollama (Local) | llama3 | ollama.com |
+| Anthropic (Claude) | claude-sonnet-4-6 | the TOS Guardian analysis server |
+| OpenAI (GPT) | gpt-4o-mini | the TOS Guardian analysis server |
+| Ollama (Local) | llama3 | your machine |
 
-The fast model above is used by default. When an analysis scores low on quality, TOS Guardian automatically escalates to the provider's stronger model (Claude Opus 4.8 / GPT-4o) and keeps whichever result is better.
+The default model above is used first. When an analysis scores low on quality, TOS Guardian automatically escalates to the provider's stronger model (Claude Opus 4.8 / GPT-4o) and keeps whichever result is better.
 
 ## Browser Support
 
@@ -63,7 +64,7 @@ The fast model above is used by default. When an analysis scores low on quality,
 
 TOS Guardian was built with security as a first-class concern. The extension:
 
-- Never stores API keys in code — keys live in `chrome.storage.local` only
+- Holds no API keys at all — provider keys live only on the analysis server, and the extension calls narrow, validated, rate-limited operations with no shared secret to extract
 - Validates every outbound document URL before hidden-tab rendering or proxy fetch — blocks non-HTTPS, private/loopback/link-local addresses (including decimal, hex, and IPv6 encodings), and internal or cloud-metadata hostnames to prevent SSRF
 - Sanitizes all fetched document text before it reaches the AI prompt, and scans for prompt-injection patterns
 - Defends against prompt injection via explicit system prompt instructions

@@ -8,9 +8,15 @@
 // as tests/system.test.js) with two substitutions forced by the environment:
 //   - fetchWithHiddenTab: no browser tabs exist in Node, so documents are
 //     fetched directly with Node's fetch (PDFs and non-HTML fall through to
-//     the Railway proxy, exactly like the extension's proxy fallback path).
-//   - chrome.storage.local: in-memory map, seeded with the API key from
-//     the ANTHROPIC_API_KEY environment variable.
+//     the proxy, exactly like the extension's proxy fallback path).
+//   - chrome.storage.local: an in-memory map.
+//
+// The pipeline is keyless: provider keys live on the proxy, which the runner
+// must be pointed at explicitly. Use a dev proxy (its own key, its own
+// database) for anything that is not a deliberate production check:
+//   node tools/batch-runner.js sites.txt --proxy http://localhost:3000
+// The proxy reports token usage and the exact model id on every analysis
+// response; cost is computed from that (tools/batch-lib.js) and never guessed.
 //
 // Verdicts are captured via the dev test recorder (tosGuardianDebug →
 // tosGuardianLastResult), so the CSV reports the same score/label/issues
@@ -20,10 +26,14 @@
 //   node tools/batch-runner.js <sites.txt | domain [domain ...]> [options]
 //
 // Options:
+//   --proxy <url>   proxy to run against (or set TOS_PROXY_URL). Required
+//                   unless --production is given.
+//   --production    run against the production proxy, spending its key
+//   --budget <usd>  stop before the next site once priced cost reaches this
 //   --escalate      allow Opus escalation (default: off; cap of 5 still applies)
-//   --cache         allow Supabase cache reads (default: off for smoke tests)
-//   --write         allow Supabase writes (analyses + learned sites). Default
-//                   off so batch runs do not mutate the production cache.
+//   --cache         allow cache reads on the target proxy (default: off)
+//   --write         allow cache and learned-site writes on the target proxy
+//                   (default: off so batch runs do not mutate a cache)
 //   --no-critic     skip the critic/judge LLM pass (cheaper, less strict)
 //   --delay <ms>    pause between sites (default 1000)
 //   --timeout <ms>  per-site timeout (default 180000)
@@ -31,13 +41,20 @@
 //   --out <file>    CSV output path (default batch-results-<timestamp>.csv)
 //   --verbose       stream pipeline console output
 //
-// Cost is estimated from API-reported usage at: Haiku 4.5 $1/$5 per MTok,
-// Opus 4.8 $5/$25 per MTok.
+// Exit codes: 0 finished, 1 usage or fatal error, 3 stopped by --budget.
 
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const { AsyncLocalStorage } = require('async_hooks');
+const {
+  PRICING_AS_OF,
+  estimateCost,
+  usageRecordFromProxyResponse,
+  resolveProxyTarget,
+  applyProxyOverride,
+  budgetExceeded
+} = require('./batch-lib');
 
 const repoRoot = path.resolve(__dirname, '..');
 
@@ -46,6 +63,9 @@ const repoRoot = path.resolve(__dirname, '..');
 // ---------------------------------------------------------------------------
 const args = process.argv.slice(2);
 const opts = {
+  proxy: null,
+  production: false,
+  budget: null,
   escalate: false,
   cache: false,
   write: false,
@@ -63,9 +83,12 @@ for (let i = 0; i < args.length; i++) {
     console.log('Usage: node tools/batch-runner.js <sites.txt | domain [domain ...]> [options]');
     console.log('');
     console.log('Options:');
-    console.log('  --cache         allow Supabase cache reads (default: off)');
+    console.log('  --proxy <url>   proxy to run against (or set TOS_PROXY_URL); required unless --production');
+    console.log('  --production    run against the production proxy, spending its key');
+    console.log('  --budget <usd>  stop before the next site once priced cost reaches this');
+    console.log('  --cache         allow cache reads (default: off)');
     console.log('  --escalate      allow Opus escalation');
-    console.log('  --write         allow Supabase and learned-site writes');
+    console.log('  --write         allow cache and learned-site writes');
     console.log('  --no-critic     skip the critic/judge pass');
     console.log('  --delay <ms>    pause between sites (default: 1000)');
     console.log('  --timeout <ms>  per-site timeout (default: 180000)');
@@ -73,7 +96,10 @@ for (let i = 0; i < args.length; i++) {
     console.log('  --out <file>    CSV output path');
     console.log('  --verbose       stream pipeline logs');
     process.exit(0);
-  } else if (a === '--escalate') opts.escalate = true;
+  } else if (a === '--proxy') opts.proxy = args[++i];
+  else if (a === '--production') opts.production = true;
+  else if (a === '--budget') opts.budget = Number(args[++i]);
+  else if (a === '--escalate') opts.escalate = true;
   else if (a === '--cache') opts.cache = true;
   else if (a === '--no-cache') opts.cache = false;
   else if (a === '--write') opts.write = true;
@@ -88,13 +114,18 @@ for (let i = 0; i < args.length; i++) {
 }
 
 if (inputs.length === 0) {
-  console.error('Usage: node tools/batch-runner.js <sites.txt | domain [domain ...]> [--cache] [--escalate] [--write] [--no-critic] [--delay ms] [--timeout ms] [--limit n] [--out file.csv] [--verbose]');
+  console.error('Usage: node tools/batch-runner.js <sites.txt | domain [domain ...]> --proxy <url> | --production [--budget usd] [--cache] [--escalate] [--write] [--no-critic] [--delay ms] [--timeout ms] [--limit n] [--out file.csv] [--verbose]');
   process.exit(1);
 }
 
-const apiKey = process.env.ANTHROPIC_API_KEY || '';
-if (!apiKey) {
-  console.error('ANTHROPIC_API_KEY environment variable is not set. The analyzer cannot run without it.');
+if (opts.budget !== null && !(Number.isFinite(opts.budget) && opts.budget > 0)) {
+  console.error('--budget must be a positive dollar amount.');
+  process.exit(1);
+}
+
+const proxyTarget = resolveProxyTarget({ proxy: opts.proxy, production: opts.production, env: process.env });
+if (proxyTarget.error) {
+  console.error(proxyTarget.error);
   process.exit(1);
 }
 
@@ -125,28 +156,15 @@ domains = [...new Set(domains)].slice(0, opts.limit);
 if (domains.length === 0) { console.error('No valid domains to run.'); process.exit(1); }
 
 // ---------------------------------------------------------------------------
-// Token usage tracking + cost
+// Token usage tracking
 // ---------------------------------------------------------------------------
-const PRICING_PER_MTOK = {
-  haiku: { input: 1.0, output: 5.0 },   // claude-haiku-4-5
-  opus: { input: 5.0, output: 25.0 }    // claude-opus-4-8
-};
-
 const runState = new AsyncLocalStorage();
-
-function estimateCost(usage) {
-  let cost = 0;
-  for (const u of usage) {
-    const tier = /opus/i.test(u.model) ? 'opus' : 'haiku';
-    cost += (u.input * PRICING_PER_MTOK[tier].input + u.output * PRICING_PER_MTOK[tier].output) / 1e6;
-  }
-  return cost;
-}
-
 const realFetch = globalThis.fetch;
+const analyzeUrl = `${proxyTarget.url}/v2/analyze`;
 
-// Wrapped fetch for the vm context: records token usage from Anthropic API
-// responses; everything else (proxy, OpenAI, Ollama) passes through.
+// Wrapped fetch for the vm context: records the model and token usage the
+// proxy reports on each analysis response; everything else (document fetches,
+// cache reads, Ollama) passes through untouched.
 async function trackedFetch(url, options) {
   const target = String(url);
   const state = runState.getStore();
@@ -154,20 +172,15 @@ async function trackedFetch(url, options) {
   if (state?.controller && !fetchOptions.signal) {
     fetchOptions.signal = state.controller.signal;
   }
-  if (!target.startsWith('https://api.anthropic.com/')) {
+  if (target !== analyzeUrl) {
     return realFetch(url, fetchOptions);
   }
   if (state) state.llmCalls++;
   const response = await realFetch(url, fetchOptions);
   const data = await response.json().catch(() => ({}));
-  if (state && data.usage) {
-    let model = '';
-    try { model = JSON.parse(fetchOptions.body).model || ''; } catch (e) { /* ignore */ }
-    state.usage.push({
-      model,
-      input: data.usage.input_tokens || 0,
-      output: data.usage.output_tokens || 0
-    });
+  if (state && response.ok) {
+    const record = usageRecordFromProxyResponse(data);
+    if (record) state.usage.push(record);
   }
   // analyzeWithModel/runCritic only use ok/status/json on this response
   return { ok: response.ok, status: response.status, json: async () => data };
@@ -216,7 +229,6 @@ async function directFetch(url, timeoutMs = 15000) {
 // ---------------------------------------------------------------------------
 let storageData = {
   selectedProvider: 'anthropic',
-  apiKey_anthropic: apiKey,
   tosGuardianDebug: true
 };
 if (!opts.escalate) {
@@ -286,7 +298,9 @@ const context = {
 vm.createContext(context);
 
 for (const file of ['vendor/tldts-7.4.8.umd.min.js', 'tosUtils.js', 'evaluator.js', 'critic.js', 'siteDatabase.js', 'orchestrator.js', 'background.js']) {
-  vm.runInContext(fs.readFileSync(path.join(repoRoot, file), 'utf8'), context, { filename: file });
+  let source = fs.readFileSync(path.join(repoRoot, file), 'utf8');
+  if (file === 'background.js') source = applyProxyOverride(source, proxyTarget.url);
+  vm.runInContext(source, context, { filename: file });
 }
 
 // --- Post-load overrides (function declarations in background.js land on the
@@ -365,6 +379,7 @@ async function runSite(domain) {
     const durationMs = Date.now() - t0;
     const verdict = state.lastResult?.domain === domain ? state.lastResult : null;
     const usage = state.usage.slice();
+    const { cost, unpriced } = estimateCost(usage);
     const row = {
       domain,
       label: verdict ? verdict.label : (error ? 'Error' : 'Unknown'),
@@ -372,9 +387,12 @@ async function runSite(domain) {
       cached: verdict ? verdict.cached : '',
       duration_ms: durationMs,
       llm_calls: state.llmCalls,
+      models: [...new Set(usage.map(u => u.model))].join(' '),
       input_tokens: usage.reduce((n, u) => n + u.input, 0),
       output_tokens: usage.reduce((n, u) => n + u.output, 0),
-      est_cost_usd: estimateCost(usage).toFixed(4),
+      cache_read_tokens: usage.reduce((n, u) => n + u.cacheRead, 0),
+      est_cost_usd: cost.toFixed(4),
+      unpriced_calls: unpriced,
       opt_out_links: verdict ? (verdict.optOutLinks || []).length : 0,
       issues: verdict ? (verdict.issues || []).join('; ') : '',
       error
@@ -388,22 +406,33 @@ async function runSite(domain) {
 }
 
 (async () => {
-  const columns = ['domain', 'label', 'score', 'cached', 'duration_ms', 'llm_calls', 'input_tokens', 'output_tokens', 'est_cost_usd', 'opt_out_links', 'issues', 'error'];
+  const columns = ['domain', 'label', 'score', 'cached', 'duration_ms', 'llm_calls', 'models', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'est_cost_usd', 'unpriced_calls', 'opt_out_links', 'issues', 'error'];
   const rows = [];
   const startedAt = new Date();
+  let totalCost = 0;
+  let budgetStopped = false;
 
   console.log(`TOS Guardian batch runner — ${domains.length} site(s)`);
-  console.log(`  cache reads: ${opts.cache ? 'on' : 'OFF'} | Supabase writes: ${opts.write ? 'ON' : 'off'} | escalation: ${opts.escalate ? 'ON' : 'off'} | critic: ${opts.critic ? 'on' : 'OFF'}`);
+  console.log(`  proxy: ${proxyTarget.url}${proxyTarget.isProduction ? '  <-- PRODUCTION: this run spends the production key and counts against its daily fuse' : ''}`);
+  console.log(`  cache reads: ${opts.cache ? 'on' : 'OFF'} | cache writes: ${opts.write ? 'ON' : 'off'} | escalation: ${opts.escalate ? 'ON' : 'off'} | critic: ${opts.critic ? 'on' : 'OFF'} | budget: ${opts.budget === null ? 'none' : `$${opts.budget.toFixed(2)}`}`);
+  console.log(`  pricing table as of ${PRICING_AS_OF} (tools/batch-lib.js); unpriced calls are reported, never guessed`);
   console.log('');
 
   for (let i = 0; i < domains.length; i++) {
+    if (budgetExceeded(totalCost, opts.budget)) {
+      budgetStopped = true;
+      console.log(`Budget of $${opts.budget.toFixed(2)} reached after ${i} site(s) ($${totalCost.toFixed(4)}); stopping before ${domains[i]}.`);
+      break;
+    }
     const domain = domains[i];
     process.stdout.write(`[${i + 1}/${domains.length}] ${domain} ... `);
     const row = await runSite(domain);
     rows.push(row);
+    totalCost += Number(row.est_cost_usd);
     const scorePart = row.score !== '' ? ` ${row.score}/100` : '';
     const cachePart = row.cached === true ? ' (cached)' : '';
-    console.log(`${row.label}${scorePart}${cachePart} — ${(row.duration_ms / 1000).toFixed(1)}s, $${row.est_cost_usd}${row.error ? ` — ${row.error}` : ''}`);
+    const unpricedPart = row.unpriced_calls ? ` (+${row.unpriced_calls} unpriced)` : '';
+    console.log(`${row.label}${scorePart}${cachePart} — ${(row.duration_ms / 1000).toFixed(1)}s, $${row.est_cost_usd}${unpricedPart}${row.error ? ` — ${row.error}` : ''}`);
     if (i < domains.length - 1 && opts.delay > 0) {
       await new Promise(r => setTimeout(r, opts.delay));
     }
@@ -421,18 +450,21 @@ async function runSite(domain) {
   const counts = {};
   for (const r of rows) counts[r.label] = (counts[r.label] || 0) + 1;
   const scored = rows.filter(r => r.score !== '');
-  const totalCost = rows.reduce((n, r) => n + Number(r.est_cost_usd), 0);
   const totalIn = rows.reduce((n, r) => n + r.input_tokens, 0);
   const totalOut = rows.reduce((n, r) => n + r.output_tokens, 0);
+  const totalCacheRead = rows.reduce((n, r) => n + r.cache_read_tokens, 0);
+  const totalUnpriced = rows.reduce((n, r) => n + r.unpriced_calls, 0);
 
   console.log('');
   console.log('Summary');
-  console.log(`  ${Object.entries(counts).map(([k, v]) => `${k}: ${v}`).join(' | ')}`);
+  console.log(`  ${Object.entries(counts).map(([k, v]) => `${k}: ${v}`).join(' | ') || 'no sites ran'}`);
   if (scored.length) {
     console.log(`  avg score (scored sites): ${(scored.reduce((n, r) => n + Number(r.score), 0) / scored.length).toFixed(1)}`);
   }
-  console.log(`  tokens: ${totalIn.toLocaleString()} in / ${totalOut.toLocaleString()} out — est. cost $${totalCost.toFixed(4)}`);
+  console.log(`  tokens: ${totalIn.toLocaleString()} in / ${totalOut.toLocaleString()} out / ${totalCacheRead.toLocaleString()} cache-read — est. cost $${totalCost.toFixed(4)}${totalUnpriced ? ` (+${totalUnpriced} unpriced call(s): add the model to tools/batch-lib.js)` : ''}`);
+  if (budgetStopped) console.log(`  stopped by --budget with ${domains.length - rows.length} site(s) not run`);
   console.log(`  report: ${outPath}`);
+  if (budgetStopped) process.exit(3);
 })().catch(err => {
   console.error(err);
   process.exit(1);
