@@ -5,4 +5,6 @@ FIXPLAN.md
 tools/*.csv
 dist/
 SECURITY_SPRINT_PLAN.md
-tests/
+
+# batch runner reports land in the working directory by default
+batch-results-*.csv
