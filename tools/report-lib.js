@@ -132,7 +132,9 @@ function buildReport(episodes, options) {
 
   lines.push('## Analysis');
   const analyses = list.map(e => stagesOf(e).analyze).filter(Boolean);
-  lines.push(`- Status: ${distribution(analyses.map(a => a.status), analyses.length)}`);
+  const cacheHits = caches.filter(c => c.read === 'hit').length;
+  lines.push(`- Fresh analyses: ${analyses.length} of ${total} episodes (${cacheHits} served from cache, ${total - analyses.length - cacheHits} ended before analysis)`);
+  lines.push(`- Status: ${analyses.length ? distribution(analyses.map(a => a.status), analyses.length) : 'no fresh analyses'}`);
   lines.push(`- Models: ${distribution(analyses.map(a => a.model || '(none)'), analyses.length)}`);
   const escalations = list.map(e => stagesOf(e).escalate).filter(Boolean);
   const attempted = escalations.filter(x => x.attempted).length;
