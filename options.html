@@ -156,6 +156,24 @@
     <button class="btn-save" id="saveBtn">Save Settings</button>
     <div class="status" id="statusMsg"></div>
   </div>
+
+  <div class="section">
+    <div class="section-title">Developer</div>
+
+    <label for="observerEnabled" style="display:flex; align-items:center; gap:10px; cursor:pointer;">
+      <input type="checkbox" id="observerEnabled" style="width:16px; height:16px; margin:0;" />
+      Observer mode
+    </label>
+    <p class="ollama-note" style="margin-top:8px;">
+      Off by default. When on, each analysis sends its stage-by-stage facts (what fired,
+      what was fetched, what the cache did, what the models said, what rendered) to a
+      collector running on this computer only, started with <code>node tools/observer.js</code>.
+      Nothing leaves this machine. Reload open tabs after changing this.
+    </p>
+
+    <label for="observerPort">Collector port</label>
+    <input type="text" id="observerPort" placeholder="3123" />
+  </div>
  <script src="options.js"></script>
 
 </body>

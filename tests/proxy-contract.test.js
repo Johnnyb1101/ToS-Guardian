@@ -75,7 +75,7 @@ const context = {
 };
 
 vm.createContext(context);
-for (const file of ['vendor/tldts-7.4.8.umd.min.js', 'tosUtils.js', 'critic.js', 'background.js']) {
+for (const file of ['vendor/tldts-7.4.8.umd.min.js', 'tosUtils.js', 'critic.js', 'episode.js', 'background.js']) {
   vm.runInContext(fs.readFileSync(path.join(repoRoot, file), 'utf8'), context, { filename: file });
 }
 
@@ -92,6 +92,8 @@ context.lookupSite = async (url) => {
   lookupCalls.push(url);
   return null;
 };
+const observerEvents = [];
+context.observerSink = (event) => { observerEvents.push(event); };
 
 function sendBackground(request, sender) {
   return new Promise(resolve => backgroundListener(request, sender, resolve));
@@ -305,6 +307,47 @@ const popupSender = {
     (await sendBackground({ action: 'deleteEverything' }, contentSender)).error === 'unknown_action');
   check('Malformed messages are rejected',
     (await sendBackground(null, contentSender)).error === 'invalid_message');
+
+  console.log('\nObserver mode message boundary (learning loop, phase 0)');
+
+  const validEpisodeId = '0123456789abcdef';
+  const withEpisode = await sendBackground({ action: 'analyzeTos', text: 'Terms text', episodeId: validEpisodeId }, contentSender);
+  check('analyzeTos accepts a well-formed episode id', withEpisode.summary === 'trusted analysis');
+  check('analyzeTos passes the episode id to the orchestrator', orchestratorCalls.at(-1)?.[3]?.episodeId === validEpisodeId, JSON.stringify(orchestratorCalls.at(-1)?.[3]));
+  check('analyzeTos rejects a malformed episode id',
+    (await sendBackground({ action: 'analyzeTos', text: 'Terms text', episodeId: 'not-hex' }, contentSender)).error === 'invalid_message');
+
+  const triggerData = { source: 'click', branch: 'password-field', controlTag: 'button', authForm: true, passwordField: true, knownDomain: false, frame: false };
+  delete storageData.tosGuardianObserver;
+  const observerOff = await sendBackground({ action: 'observerEvent', episodeId: validEpisodeId, stage: 'trigger', data: triggerData }, contentSender);
+  check('observerEvent is accepted but not recorded while observer mode is off', observerOff.ok === true && observerOff.recorded === false && observerEvents.length === 0);
+
+  storageData.tosGuardianObserver = { enabled: true, port: 3123 };
+  const observerOn = await sendBackground(
+    { action: 'observerEvent', episodeId: validEpisodeId, stage: 'trigger', data: triggerData, local: { pageUrl: 'https://login.chase.com/signin?token=abc', controlLabel: 'Sign in' } },
+    contentSender
+  );
+  check('observerEvent is recorded while observer mode is on', observerOn.ok === true && observerOn.recorded === true && observerEvents.length === 1);
+  check('recorded trigger event carries the id, stage, data, and local layer',
+    observerEvents[0]?.episodeId === validEpisodeId && observerEvents[0]?.stage === 'trigger' &&
+    observerEvents[0]?.data?.branch === 'password-field' && observerEvents[0]?.local?.controlLabel === 'Sign in');
+  check('recorded event validates against the schema', context.validateEvent(observerEvents[0]).valid);
+  check('observerEvent rejects an unknown data field',
+    (await sendBackground({ action: 'observerEvent', episodeId: validEpisodeId, stage: 'trigger', data: { ...triggerData, pageText: 'private' } }, contentSender)).error === 'invalid_message');
+  check('observerEvent rejects a stage the content script may not report',
+    (await sendBackground({ action: 'observerEvent', episodeId: validEpisodeId, stage: 'fetch', data: { path: 'known-urls' } }, contentSender)).error === 'invalid_message');
+  check('observerEvent rejects an unknown local field',
+    (await sendBackground({ action: 'observerEvent', episodeId: validEpisodeId, stage: 'render', data: { shown: true }, local: { password: 'x' } }, contentSender)).error === 'invalid_message');
+  check('observerEvent rejects an oversized local label',
+    (await sendBackground({ action: 'observerEvent', episodeId: validEpisodeId, stage: 'render', data: { shown: true }, local: { controlLabel: 'x'.repeat(3000) } }, contentSender)).error === 'invalid_message');
+  check('observerEvent rejects a malformed episode id',
+    (await sendBackground({ action: 'observerEvent', episodeId: 'nope', stage: 'trigger', data: triggerData }, contentSender)).error === 'invalid_message');
+  check('observerEvent rejects unsupported fields',
+    (await sendBackground({ action: 'observerEvent', episodeId: validEpisodeId, stage: 'trigger', data: triggerData, ip: '1.2.3.4' }, contentSender)).error === 'invalid_message');
+  check('observerEvent is refused from the popup',
+    (await sendBackground({ action: 'observerEvent', episodeId: validEpisodeId, stage: 'trigger', data: triggerData }, popupSender)).error === 'invalid_message');
+  check('rejected observer events are never recorded', observerEvents.length === 1);
+  delete storageData.tosGuardianObserver;
 
   console.log('\nExtension permission contract');
   const manifest = JSON.parse(fs.readFileSync(path.join(repoRoot, 'manifest.json'), 'utf8'));

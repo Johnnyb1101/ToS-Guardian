@@ -20,7 +20,77 @@ async function writeDebugResult(partial) {
   }
 }
 
-async function runOrchestrator(pageUrl, pageText, pageHtml) {
+// --- OBSERVER (learning loop, phase 0) ---
+// Observer mode is a developer setting (tosGuardianObserver in storage), off by
+// default. When off, the recorder below is inert: no event is created and no
+// sink is called, so the relay behaves exactly as it always has. When on, each
+// stage records the facts episode.js allows for it, and background.js posts
+// them to a collector on this machine. The recorder never throws. The setting
+// is read through episode.js so the message boundary reads it the same way.
+
+// Provider usage as episode.js expects it, or undefined when absent/malformed.
+function usageForEpisode(usage) {
+  if (!usage || typeof usage !== 'object') return undefined;
+  const out = {};
+  for (const key of ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens']) {
+    const n = Number(usage[key]);
+    out[key] = Number.isInteger(n) && n >= 0 ? n : 0;
+  }
+  return out;
+}
+
+// Classify an analyzer return for the episode log. `status` is set explicitly
+// by analyzeWithModel on its error paths; the text checks are the fallback for
+// providers that only return a summary.
+function analyzeStatusFor(result) {
+  if (!result) return 'error';
+  if (typeof result.status === 'string') return result.status;
+  if (!result.summary) return 'empty';
+  if (isConfigurationMessage(result.summary)) return 'config';
+  if (/^Error:/.test(result.summary)) return 'error';
+  return 'ok';
+}
+
+function analyzeFactsFor(result, sourceText, escalated, retried) {
+  return {
+    provider: result && ['anthropic', 'openai', 'ollama'].includes(result.provider) ? result.provider : 'unknown',
+    model: result && typeof result.model === 'string' ? result.model : '',
+    escalated,
+    inputChars: result && typeof result.analysisSource === 'string' ? result.analysisSource.length : (sourceText || '').length,
+    stopReason: result && typeof result.stopReason === 'string' ? result.stopReason : '',
+    usage: usageForEpisode(result && result.usage),
+    status: analyzeStatusFor(result),
+    receipt: !!(result && result.analysisReceipt),
+    summaryHash: result && typeof result.summary === 'string' && result.summary ? contentFingerprint(result.summary) : undefined,
+    retried
+  };
+}
+
+function criticFactsFor(criticResult) {
+  if (!criticResult) return { data: { ran: false, failed: false } };
+  if (criticResult.failed) {
+    return { data: { ran: true, failed: true, reason: typeof criticResult._reason === 'string' ? criticResult._reason : 'unknown' } };
+  }
+  const verdicts = {};
+  for (const field of ['dataCollection', 'dataSelling', 'optOutRights', 'howToOptOut', 'autoRenewal', 'dataDeletion']) {
+    if (['grounded', 'unsupported', 'vague', 'skipped'].includes(criticResult[field])) verdicts[field] = criticResult[field];
+  }
+  const flags = Array.isArray(criticResult.flags) ? criticResult.flags : [];
+  return {
+    data: {
+      ran: true, failed: false, verdicts,
+      flagCount: flags.length,
+      adjustmentCount: Array.isArray(criticResult.adjustments) ? criticResult.adjustments.length : 0,
+      receipt: !!criticResult._writeReceipt,
+      model: typeof criticResult._model === 'string' ? criticResult._model : '',
+      stopReason: typeof criticResult._stopReason === 'string' ? criticResult._stopReason : '',
+      usage: usageForEpisode(criticResult._usage)
+    },
+    local: flags.length ? { flagsText: flags.slice(0, 20).map(f => String(f).slice(0, 400)) } : undefined
+  };
+}
+
+async function runOrchestrator(pageUrl, pageText, pageHtml, options = {}) {
   console.log("[Orchestrator] Starting relay for:", pageUrl);
   const relayStartedAt = Date.now();
   let stageStartedAt = relayStartedAt;
@@ -28,6 +98,17 @@ async function runOrchestrator(pageUrl, pageText, pageHtml) {
     const now = Date.now();
     console.log(`[Timing] ${stage}: ${now - stageStartedAt}ms | total: ${now - relayStartedAt}ms`);
     stageStartedAt = now;
+  };
+
+  const observer = await readObserverConfig(browser.storage.local);
+  const rec = createEpisodeRecorder({
+    enabled: observer.enabled,
+    episodeId: options && options.episodeId,
+    sink: (event) => { if (typeof observerSink === 'function') observerSink(event, observer); },
+    onInvalid: (stage, errors) => console.warn(`[Observer] Dropped invalid ${stage} event: ${errors.join('; ')}`)
+  });
+  const finishEpisode = (label) => {
+    rec.record('end', { durationMs: Date.now() - relayStartedAt, ok: label !== 'Error' && label !== 'Configuration' });
   };
 
   // Cache key is the REGISTRABLE domain (eTLD+1), not the hostname, so sibling
@@ -40,8 +121,15 @@ const knownUrls = await lookupSite(pageUrl);
 if (knownUrls) {
   console.log("[Orchestrator] Site database hit — passing confirmed URLs to Fetcher");
 }
+rec.record('relay', {
+  domain: domain || undefined,
+  siteLookup: knownUrls ? (knownUrls.source === 'learned' ? 'learned' : 'static') : 'none',
+  deduped: false,
+  mode: options && options.mode === 'batch' ? 'batch' : 'live'
+});
 let fetched = null;
-fetched = await runWithRetry(() => fetcherAgent(pageUrl, pageHtml, knownUrls), "[Fetcher]");
+let fetchAttempts = 0;
+fetched = await runWithRetry(() => { fetchAttempts++; return fetcherAgent(pageUrl, pageHtml, knownUrls); }, "[Fetcher]");
 logStage("fetcher");
 
 const textToAnalyze = fetched ? fetched.text : pageText;
@@ -51,6 +139,31 @@ const source = fetched
       : fetched.sourceUrl)
   : "current page";
 console.log("[Orchestrator] Text source:", source);
+
+// Facts about what the fetcher produced. Document URLs only, never the page
+// the user was on: the page URL is user data and stays in the local layer.
+{
+  const legal = looksLikeLegalDocument(textToAnalyze || '');
+  const text = fetched ? (fetched.text || '') : (legal ? (pageText || '') : '');
+  const mech = fetched && fetched.mechanisms && typeof fetched.mechanisms === 'object' ? fetched.mechanisms : {};
+  const docUrls = [...new Set([fetched?.sourceUrl, fetched?.privacyUrl, ...(fetched?.documentLinks || [])]
+    .filter(Boolean).map(upgradeInsecureUrl))].filter(url => validateDocumentUrl(url)).slice(0, 20);
+  rec.record('fetch', {
+    path: fetched ? (typeof fetched.path === 'string' ? fetched.path : 'unknown') : (legal ? 'page-text' : 'none'),
+    tosFound: !!(fetched && /=== TERMS OF SERVICE ===/.test(fetched.text || '')),
+    privacyFound: !!(fetched && /=== PRIVACY POLICY ===/.test(fetched.text || '')),
+    supplementalCount: ((fetched && fetched.text) || '').split('=== SUPPLEMENTAL PRIVACY NOTICE').length - 1,
+    textChars: text.length,
+    textHash: text ? contentFingerprint(text) : undefined,
+    looksLegal: legal,
+    unreadablePdfCount: (fetched?.unreadablePdfUrls || []).length,
+    documentUrls: docUrls,
+    hiddenTabHits: Number.isInteger(mech.hiddenTab) ? mech.hiddenTab : undefined,
+    proxyHits: Number.isInteger(mech.proxy) ? mech.proxy : undefined,
+    attempts: Number.isInteger(mech.attempts) ? mech.attempts : undefined,
+    retried: fetchAttempts > 1
+  }, { pageUrl: typeof pageUrl === 'string' ? pageUrl.slice(0, 2048) : undefined });
+}
 
 // SECURITY (#5 — private page text): when document discovery FAILED, `textToAnalyze`
 // is `pageText` — the whole visible page (document.body.innerText). On a logged-in
@@ -72,6 +185,8 @@ if (!fetched && !looksLikeLegalDocument(textToAnalyze)) {
     warning: bottomLine, issues: ['no legal document found; page text not analyzed (privacy)'],
     optOutLinks: [], cached: false
   });
+  rec.record('verdict', { risk: 'Unknown', label: 'Failed', score: 0, retrievalFailure: true, cached: false, optOutLinks: 0, unreadableDocs: 0 });
+  finishEpisode('Failed');
   logStage("no-document short-circuit");
   return { summary, optOutLinks: [] };
 }
@@ -80,17 +195,26 @@ const cacheVerificationText = buildCacheVerificationText(textToAnalyze);
 
 // --- STEP 2: MEMORY AGENT ---
 // Cache reads happen only after fetching current text, so Supabase can verify similarity.
+let cacheOutcome = 'skipped';
+let cacheSimilarity;
 if (domain && fetched) {
   const supabaseResult = await readFromSupabase(domain, cacheVerificationText);
-  if (supabaseResult && !isCurrentSchemaSummary(supabaseResult.summary)) {
+  if (supabaseResult && typeof supabaseResult.similarity === 'number' && Number.isFinite(supabaseResult.similarity)) {
+    cacheSimilarity = supabaseResult.similarity;
+  }
+  if (!supabaseResult) {
+    cacheOutcome = 'miss';
+  } else if (!isCurrentSchemaSummary(supabaseResult.summary)) {
+    cacheOutcome = 'stale-schema';
     console.log("[Orchestrator] Cached summary predates the current overlay schema (missing risk verdict or 'What They Collect') — re-analyzing to refresh");
-  } else if (supabaseResult && looksLikeLegalDocument(textToAnalyze) && !contentFingerprintMatches(supabaseResult.summary, textToAnalyze)) {
+  } else if (looksLikeLegalDocument(textToAnalyze) && !contentFingerprintMatches(supabaseResult.summary, textToAnalyze)) {
     // Only re-analyze on a fingerprint mismatch when the FRESH fetch is itself a
     // credible legal document. A nav-shell re-fetch (e.g. candidate-guessing on an
     // auth subdomain that returns an empty SPA shell) must NOT invalidate a good
     // cache and force a worse "couldn't read" re-analysis — serve the cache. (FIXPLAN #1b)
+    cacheOutcome = 'stale-fingerprint';
     console.log("[Orchestrator] Source documents changed since cached (fingerprint mismatch) — re-analyzing");
-  } else if (supabaseResult) {
+  } else {
     const cachedEvaluation = validateEvaluation(
       evaluateAnalysis(stripInjectionWarning(stripHeadlineChrome(stripEvalChrome(supabaseResult.summary))))
     );
@@ -108,13 +232,25 @@ if (domain && fetched) {
         warning: cachedEvaluation.warning, issues: cachedEvaluation.issues || [],
         optOutLinks: supabaseResult.optOutLinks || [], cached: true
       });
+      rec.record('cache', { read: 'hit', similarity: cacheSimilarity });
+      {
+        const riskMatch = /tg-risk\s+tg-risk-(low|moderate|high|unknown)/i.exec(supabaseResult.summary || '');
+        const risk = riskMatch ? riskMatch[1][0].toUpperCase() + riskMatch[1].slice(1).toLowerCase() : 'Unknown';
+        rec.record('verdict', {
+          risk, label: 'Cached', score: cachedEvaluation.score, retrievalFailure: false, cached: true,
+          optOutLinks: (supabaseResult.optOutLinks || []).length, unreadableDocs: 0
+        });
+      }
+      finishEpisode('Cached');
       logStage("cache hit");
       return { summary: cachedSummary, optOutLinks: supabaseResult.optOutLinks };
     }
+    cacheOutcome = 'quality-reject';
     console.warn("[Orchestrator] Cached summary failed local quality gate — running full analysis");
   }
   console.log("[Orchestrator] No semantic match — running full analysis");
 }
+rec.record('cache', { read: cacheOutcome, similarity: cacheSimilarity });
 logStage("cache");
 
 // --- STEP 2.5: INJECTION SCANNER ---
@@ -123,17 +259,24 @@ const safeText = scanResult.strippedText;
 if (!scanResult.clean) {
   console.warn('[Orchestrator] Injection attempt detected — pattern stripped before analysis:', scanResult.pattern);
 }
+rec.record('scan', { injection: !scanResult.clean });
 
 // --- STEP 3: LINK FOLLOWER AGENT ---
 const privacyHtml = fetched ? fetched.privacyHtml : null;
 const privacyUrl = fetched ? fetched.privacyUrl : null;
-const { text: enrichedText, optOutLinks } = await linkFollowerStub(safeText, source, privacyHtml, privacyUrl, fetched?.hasSupplementalPrivacy || false);
+const linkResult = await linkFollowerStub(safeText, source, privacyHtml, privacyUrl, fetched?.hasSupplementalPrivacy || false);
+const { text: enrichedText, optOutLinks } = linkResult;
 logStage("link follower");
 const displayOptOutLinks = [
   ...new Set(
     [...(fetched?.documentLinks || []), ...optOutLinks].map(upgradeInsecureUrl)
   )
 ].filter(url => validateLinkFollowerUrl(url) && isRelevantPrivacyActionUrl(url));
+rec.record('links', {
+  candidates: Number.isInteger(linkResult.candidates) ? linkResult.candidates : optOutLinks.length,
+  followed: Number.isInteger(linkResult.followed) ? linkResult.followed : 0,
+  displayed: displayOptOutLinks.length
+});
 
 const cacheSourceUrls = [...new Set([
   pageUrl,
@@ -164,7 +307,8 @@ const unreadableDocs = [
 
   // --- STEP 4: ANALYZER AGENT ---
   let result = null;
-  result = await runWithRetry(() => analyzeWithModel(enrichedText, source), "[Analyzer]");
+  let analyzerAttempts = 0;
+  result = await runWithRetry(() => { analyzerAttempts++; return analyzeWithModel(enrichedText, source); }, "[Analyzer]");
   logStage("analyzer");
 
   if (result && result.summary) {
@@ -178,11 +322,15 @@ const unreadableDocs = [
         warning: result.summary, issues: ['configuration required'],
         optOutLinks: displayOptOutLinks, cached: false
       });
+      rec.record('analyze', analyzeFactsFor(result, enrichedText, false, analyzerAttempts > 1));
+      rec.record('verdict', { risk: 'Unknown', label: 'Configuration', score: 0, retrievalFailure: false, cached: false, optOutLinks: displayOptOutLinks.length, unreadableDocs: unreadableDocs.length });
+      finishEpisode('Configuration');
       return result;
     }
   } else {
     console.warn('[Orchestrator] Analyzer returned:', JSON.stringify(result).slice(0, 300));
   }
+  rec.record('analyze', analyzeFactsFor(result, enrichedText, false, analyzerAttempts > 1));
 
   // --- STEP 4.5: CRITIC/JUDGE AGENT ---
   let criticVerdict = null;
@@ -214,6 +362,10 @@ const unreadableDocs = [
     } else {
       console.log(`[Orchestrator] Critic not run (not configured) — continuing without`);
     }
+    {
+      const facts = criticFactsFor(criticResult);
+      rec.record('critic', facts.data, facts.local);
+    }
   }
   logStage("critic");
 
@@ -221,6 +373,7 @@ const unreadableDocs = [
   const rawEvaluation = evaluateAnalysis(result ? result.summary : null, criticVerdict);
 
   let evaluation = capForUnverifiedCritic(validateEvaluation(rawEvaluation), criticFailed);
+  const criticCapApplied = criticFailed && !!rawEvaluation && rawEvaluation.label === 'Strong';
 
   console.log(`[Orchestrator] Evaluator — Label: ${evaluation.label}, Score: ${evaluation.score}`);
 
@@ -229,8 +382,10 @@ const unreadableDocs = [
   // a scanned PDF that 400'd and we fell back to a thin nav shell), the analysis can't be
   // trusted no matter how confident the summary reads. Cap it to Failed with an honest
   // warning and DON'T escalate — a stronger model can't fix bad source text.
+  let thinSourceCapApplied = false;
   if (result && evaluation.label !== 'Failed' && textToAnalyze && !looksLikeLegalDocument(textToAnalyze)) {
     console.log("[Orchestrator] Source is not a credible legal document — capping confidence (thin/unreadable source, no escalation)");
+    thinSourceCapApplied = true;
     evaluation = validateEvaluation({
       score: Math.min(evaluation.score, 50),
       label: 'Failed',
@@ -241,6 +396,16 @@ const unreadableDocs = [
       criticVerdict: evaluation.criticVerdict || criticVerdict || null
     });
   }
+  rec.record('evaluate', {
+    score: Number.isInteger(evaluation.score) ? evaluation.score : Math.round(evaluation.score),
+    label: evaluation.label,
+    issues: (Array.isArray(evaluation.issues) ? evaluation.issues : (rawEvaluation && Array.isArray(rawEvaluation.issues) ? rawEvaluation.issues : []))
+      .slice(0, 40).map(i => String(i).slice(0, 200)),
+    contradictions: Array.isArray(evaluation.contradictions) ? evaluation.contradictions.length : 0,
+    thinSourceCap: thinSourceCapApplied,
+    criticCap: criticCapApplied,
+    escalate: !!evaluation.escalate
+  });
 
   // --- ESCALATION (ESCALATION-002, ESCALATION-003, ESCALATION-006) ---
   let escalatedAccepted = false;
@@ -261,8 +426,9 @@ const unreadableDocs = [
 
     if (shouldEscalate) {
       console.log(`[Orchestrator] Escalating to Opus — first-pass score: ${evaluation.score}, count: ${escalationCount + 1}/${CAP} (resets ${new Date(stored.resetAt).toLocaleTimeString()})`);
+      let escalatedAttempts = 0;
       const escalatedResult = await runWithRetry(
-        () => analyzeWithModel(enrichedText, source, true),
+        () => { escalatedAttempts++; return analyzeWithModel(enrichedText, source, true); },
         "[Analyzer-Opus]"
       );
 
@@ -302,6 +468,7 @@ const unreadableDocs = [
           (mentionsRetrievalFailure(escalatedResult.summary) && !mentionsRetrievalFailure(result.summary)) ||
           coreCriticConcernCount(escalatedCritic) > coreCriticConcernCount(criticVerdict);
 
+        let escalationReason = 'not-better';
         if (escalatedEvaluation.score > evaluation.score) {
           result = escalatedResult;
           evaluation = escalatedEvaluation;
@@ -309,6 +476,7 @@ const unreadableDocs = [
           cacheWriteReceipt = escalatedCriticResult?._writeReceipt || null;
           activeCacheContext = escalatedCacheContext;
           escalatedAccepted = true;
+          escalationReason = 'higher-score';
           console.log(`[Orchestrator] Opus result accepted — higher quality score`);
         } else if (escalatedWorseGrounding) {
           result = escalatedResult;
@@ -317,9 +485,22 @@ const unreadableDocs = [
           cacheWriteReceipt = escalatedCriticResult?._writeReceipt || null;
           activeCacheContext = escalatedCacheContext;
           escalatedAccepted = true;
+          escalationReason = 'conservative-grounding';
           console.log(`[Orchestrator] Opus downgraded core grounding — adopting the more conservative result`);
         } else {
           console.log(`[Orchestrator] Opus result not better — keeping first-pass result`);
+        }
+        {
+          const facts = analyzeFactsFor(escalatedResult, enrichedText, true, escalatedAttempts > 1);
+          rec.record('escalate', {
+            attempted: true, capReached: false,
+            model: facts.model, stopReason: facts.stopReason, usage: facts.usage, status: facts.status,
+            score: Number.isInteger(escalatedEvaluation.score) ? escalatedEvaluation.score : Math.round(escalatedEvaluation.score),
+            label: escalatedEvaluation.label,
+            accepted: escalatedAccepted, reason: escalationReason,
+            criticRan: !!escalatedCriticResult, criticFailed: escalatedCriticFailed,
+            criticConcerns: coreCriticConcernCount(escalatedCritic)
+          });
         }
 
         stored.count = escalationCount + 1;
@@ -329,12 +510,18 @@ const unreadableDocs = [
         // (both fire-and-forget on the same domain) and persist a pre-badge
         // duplicate tagged 'anthropic-escalated' even when the Haiku result
         // was kept.
+      } else {
+        rec.record('escalate', { attempted: true, capReached: false, status: 'error', accepted: false, reason: 'failed' });
       }
     } else {
       console.log(`[Orchestrator] Opus cap reached (${escalationCount}/${CAP}) — using first-pass result. Resets ${new Date(stored.resetAt).toLocaleTimeString()}`);
+      rec.record('escalate', { attempted: false, capReached: true, accepted: false, reason: 'cap' });
     }
   }
 
+  let trustedRisk = 'Unknown';
+  let trustedBottomLine = '';
+  let genuineRetrievalFailure = false;
   if (result) {
     // The analyzer PROPOSES a one-line bottom line + risk word. Extract them
     // BEFORE stripping, then decide the trusted verdict ourselves.
@@ -344,9 +531,9 @@ const unreadableDocs = [
     // Trusted risk verdict, gated by analysis confidence: if we couldn't
     // reliably read the document, never show a reassuring risk — say so. A
     // poisoned document therefore can't force a green verdict. (extends SECURITY-022)
-    let trustedRisk, trustedBottomLine;
     if (isGenuineRetrievalFailure(result.summary, criticVerdict)) {
       // We genuinely couldn't read the document (nav shell / placeholder) — say so.
+      genuineRetrievalFailure = true;
       trustedRisk = 'Unknown';
       trustedBottomLine = "We couldn't reliably read this document. Open it yourself before agreeing.";
     } else if (evaluation.label === 'Failed') {
@@ -393,8 +580,20 @@ const unreadableDocs = [
       warning: fallbackSummary, issues: ['analyzer failed after retry'],
       optOutLinks: displayOptOutLinks, cached: false
     });
+    rec.record('verdict', { risk: 'Unknown', label: 'Error', score: 0, retrievalFailure: false, cached: false, optOutLinks: displayOptOutLinks.length, unreadableDocs: unreadableDocs.length });
+    finishEpisode('Error');
     return { summary: fallbackSummary };
   }
+
+  rec.record('verdict', {
+    risk: trustedRisk,
+    label: evaluation.label,
+    score: Number.isInteger(evaluation.score) ? evaluation.score : Math.round(evaluation.score),
+    retrievalFailure: genuineRetrievalFailure,
+    cached: false,
+    optOutLinks: displayOptOutLinks.length,
+    unreadableDocs: unreadableDocs.length
+  }, trustedBottomLine ? { bottomLine: String(trustedBottomLine).slice(0, 400) } : undefined);
 
   // --- STEP 6: SAVE TO MEMORY ---
   if (domain && isCacheableEvaluation(evaluation)) {
@@ -404,10 +603,12 @@ const unreadableDocs = [
         writeReceipt: cacheWriteReceipt,
         analysisSummary: result.summaryBeforeTrustedChrome || result.summary,
         cacheContext: activeCacheContext
-      } : null);
+      } : null,
+      (outcome) => { if (outcome && typeof outcome === 'object') rec.record('write', outcome); });
     console.log("[Orchestrator] Analysis saved to memory for:", domain);
   } else if (domain) {
     console.log("[Orchestrator] Analysis not saved — quality gate did not pass:", evaluation.label);
+    rec.record('write', { attempted: false, result: 'skipped-quality' });
   }
 
   console.log("[Orchestrator] Relay complete");
@@ -419,6 +620,7 @@ const unreadableDocs = [
     warning: evaluation.warning, issues: evaluation.issues || [],
     optOutLinks: displayOptOutLinks, cached: false
   });
+  finishEpisode(evaluation.label);
   return { summary: result.summary, optOutLinks: displayOptOutLinks, unreadableDocs };
 }
 
@@ -548,7 +750,7 @@ const uniqueLinks = allLinks;
 
   if (uniqueLinks.length === 0) {
     console.log("[LinkFollower] No opt-out links found — passing text through unchanged");
-    return { text, optOutLinks: [] };
+    return { text, optOutLinks: [], candidates: 0, followed: 0 };
   }
 
   const toFollow = uniqueLinks.slice(0, hasSupplementalPrivacy ? 1 : 3);
@@ -604,13 +806,15 @@ const uniqueLinks = allLinks;
 
   if (appendSections.length === 0) {
     console.log("[LinkFollower] No content retrieved from links — passing text through unchanged");
-    return { text, optOutLinks: uniqueLinks };
+    return { text, optOutLinks: uniqueLinks, candidates: uniqueLinks.length, followed: 0 };
   }
 
   console.log(`[LinkFollower] Appending ${appendSections.length} opt-out sections to document`);
   return {
     text: text + "\n\n" + appendSections.join("\n\n"),
-    optOutLinks: followedLinks
+    optOutLinks: followedLinks,
+    candidates: uniqueLinks.length,
+    followed: followedLinks.length
   };
 }
 

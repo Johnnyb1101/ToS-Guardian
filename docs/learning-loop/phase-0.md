@@ -83,3 +83,42 @@ Two corrections found on the way, both included:
 Not verified yet, needs the owner: the reconstructed migration against the production
 project (queries in `migrations/README.md`), and the first real run against a dev proxy once
 the dev database exists and `.env.dev` holds the trainer key.
+
+## Checkpoint B — status (2026-09-06): landed, awaiting review and commit
+
+What landed:
+
+- `episode.js`: schema v1, per-stage allowlists, recorder, assembler, `stripLocal()` and
+  the uploadable validator that enforce zero user data. Loads both as a service-worker
+  script and as a Node module. Ships in the release build.
+- Orchestrator records every stage from the agents' return values; no agent signature
+  changed. Analyzer and critic returns carry provider, model, usage, stop reason, and a
+  status; the fetcher reports its discovery path and which mechanism produced each
+  document; the site lookup says static or learned; cache writes report their outcome.
+- Content script: `classifyAgreeButton()` names the detection branch (`isAgreeButton` is
+  now a thin wrapper), and in observer mode reports trigger and render facts through a new
+  validated `observerEvent` message. The analysis request may carry a 16-hex episode id.
+- Options page: Developer section with the Observer mode toggle and collector port.
+- `tools/observer.js` collector, `tools/report.js` and `tools/report-lib.js` report,
+  batch runner writes one episode per site (`--episodes`).
+- Docs: `observer-mode.md`, `episode-schema.md`.
+
+Evidence:
+
+- Full extension suite green: logic 235, system 85, detection 40, render-security 25,
+  proxy-contract 83, batch-lib 35, episode 56. New coverage includes: observer off records
+  nothing; observer on records every stage in order with valid events; assembled episode
+  validates and its stripped form validates as uploadable with no page URL anywhere; a
+  throwing sink never breaks the relay; the message boundary rejects unknown fields, wrong
+  stages, oversized local values, bad ids, and popup senders for observer events; the
+  detection branch names match the boolean for ten scenarios.
+- Headless smoke against a keyless local proxy: Discord produced a valid episode
+  (known-urls path, both documents, 100k chars, legal check true, two hidden-tab hits,
+  Configuration verdict at $0) and its uploadable form validated.
+- Collector smoke: seven synthetic live events accepted (204), an event with a smuggled
+  text field rejected (400), the assembled episode kept its local layer, and one report
+  rendered the live and headless episodes together.
+
+Not verified yet, needs the owner: a real browser click-through with the collector running
+(the observer message path is covered by tests, not by a live tab), and the first paid run
+against a dev proxy once the dev database exists.
