@@ -899,7 +899,11 @@ function sanitizeForPrompt(text) {
     .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .split("\n")
-    .map(line => line.trim().length > 2000 ? line.trim().slice(0, 2000) : line.trim())
+    // Trim AFTER the cap as well: a line cut at 2000 chars could keep a trailing
+    // space that a second sanitize pass removed, making the function
+    // non-idempotent. The cache-verification text must be a byte-for-byte
+    // substring of the sanitized analyzer source, so sanitizing must be stable.
+    .map(line => { const trimmed = line.trim(); return trimmed.length > 2000 ? trimmed.slice(0, 2000).trimEnd() : trimmed; })
     .filter(line => line.length > 0)
     .join("\n")
     .trim();

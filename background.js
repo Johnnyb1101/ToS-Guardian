@@ -14,6 +14,7 @@ importScripts("evaluator.js");
 importScripts("critic.js");
 importScripts("siteDatabase.js");
 importScripts("tosUtils.js");
+importScripts("episode.js");
 importScripts("orchestrator.js");
 const browser = globalThis.browser || chrome;
 const PROXY_URL = "https://tos-guardian-proxy-production.up.railway.app";
@@ -26,16 +27,47 @@ function proxyFetch(url, options = {}) {
   return fetch(url, options);
 }
 
+// --- Observer sink (learning loop, phase 0) ---
+// Posts one episode event to the local collector. Developer setting, off by
+// default (tosGuardianObserver.enabled), localhost only, fire-and-forget: it
+// can never block or fail the relay. The batch runner replaces this function
+// with an in-process capture, so nothing here runs headlessly.
+function observerSink(event, observer) {
+  const port = observer && Number.isInteger(observer.port) && observer.port > 0 ? observer.port : OBSERVER_DEFAULT_PORT;
+  try {
+    fetch(`http://127.0.0.1:${port}/events`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(event)
+    }).then((response) => {
+      // Diagnostics only: a rejected or unreachable collector must never affect
+      // the relay, but it should be visible in the service worker console.
+      if (!response.ok) console.warn(`[Observer] Collector at 127.0.0.1:${port} rejected a ${event.stage} event (HTTP ${response.status})`);
+    }).catch((err) => {
+      console.warn(`[Observer] Could not reach the collector at 127.0.0.1:${port} for a ${event.stage} event: ${err && err.message ? err.message : err}`);
+    });
+  } catch (e) {
+    console.warn(`[Observer] Could not start a collector request: ${e && e.message ? e.message : e}`);
+  }
+}
+
 // One-time migration (audit refactor #5): API keys used to be stored in
 // chrome.storage.local and sent straight from the browser. They now live ONLY
 // in the proxy's Railway environment, so purge any leftover keys from the
 // browser profile — nothing in the extension reads them anymore.
 browser.storage.local.remove(['apiKey_anthropic', 'apiKey_openai']);
 
-// Write an analysis result to Supabase community cache
-async function writeToSupabase(domain, summary, aiProvider, optOutLinks = [], privacyText = '', provenance = null) {
+// Write an analysis result to Supabase community cache. `onOutcome`, when
+// given, receives one episode-shaped write fact (learning loop, phase 0); it
+// is optional and its failure never affects the write.
+async function writeToSupabase(domain, summary, aiProvider, optOutLinks = [], privacyText = '', provenance = null, onOutcome = null) {
+  const report = (outcome) => {
+    if (typeof onOutcome !== 'function') return;
+    try { onOutcome(outcome); } catch (e) { /* never surface */ }
+  };
   if (!provenance?.writeReceipt || !provenance?.analysisSummary || !provenance?.cacheContext) {
     console.log('[Supabase] Shared-cache write skipped — no verified proxy provenance for', domain);
+    report({ attempted: false, result: 'skipped-no-provenance' });
     return;
   }
   try {
@@ -60,34 +92,41 @@ async function writeToSupabase(domain, summary, aiProvider, optOutLinks = [], pr
       // self-diagnosing in the console (no need to re-derive the text). (#12)
       const info = await response.json().catch(() => ({}));
       console.warn(`[Supabase] Write blocked by security scan for ${domain} — [${info.category || 'unknown'}] ${info.reason || ''}`.trim());
+      report({ attempted: true, result: 'blocked', category: typeof info.category === 'string' ? info.category.slice(0, 200) : undefined });
       return;
     }
     if (response.status === 429) {
       console.warn('[Supabase] Write rate limited for', domain);
+      report({ attempted: true, result: 'rate-limited' });
       return;
     }
     if (!response.ok) {
       const errBody = await response.json().catch(() => ({}));
       console.warn('[Supabase] Write failed with status', response.status, 'for', domain, '—', errBody.reason || errBody.error || 'unknown');
+      report({ attempted: true, result: 'failed', category: typeof errBody.error === 'string' ? errBody.error.slice(0, 200) : undefined });
       return;
     }
     const data = await response.json();
     if (data.success) {
       console.log('[Supabase] Analysis written for', domain);
+      report({ attempted: true, result: 'written' });
+    } else {
+      report({ attempted: true, result: 'failed' });
     }
   } catch (err) {
     console.error('[Supabase] Write error:', err);
+    report({ attempted: true, result: 'error' });
   }
 }
 
 // Save an analysis result for a domain
-function saveAnalysis(domain, summary, tosText, optOutLinks = [], aiProvider = 'anthropic', provenance = null) {
+function saveAnalysis(domain, summary, tosText, optOutLinks = [], aiProvider = 'anthropic', provenance = null, onOutcome = null) {
   browser.storage.local.get("tosAcknowledged", (result) => {
     const ack = result.tosAcknowledged || {};
     delete ack[domain];
     browser.storage.local.set({ tosAcknowledged: ack });
   });
-  writeToSupabase(domain, summary, aiProvider, optOutLinks, tosText, provenance);
+  writeToSupabase(domain, summary, aiProvider, optOutLinks, tosText, provenance, onOutcome);
 }
 
 async function readFromSupabase(domain, privacyText = '') {
@@ -122,7 +161,11 @@ async function readFromSupabase(domain, privacyText = '') {
         try { return validateLinkFollowerUrl(url); }
         catch { return false; }
       });
-      return { summary: data.result, optOutLinks: validatedLinks };
+      return {
+        summary: data.result,
+        optOutLinks: validatedLinks,
+        similarity: typeof data.similarity === 'number' && Number.isFinite(data.similarity) ? data.similarity : undefined
+      };
     }
     return null;
   } catch (err) {
@@ -141,12 +184,17 @@ async function fetcherAgent(pageUrl, pageHtml = "", knownUrls = null) {
   const noteUnreadablePdf = (url) => {
     if (url && !unreadablePdfUrls.includes(url)) unreadablePdfUrls.push(url);
   };
-  const result = await fetcherAgentInner(pageUrl, pageHtml, knownUrls, noteUnreadablePdf);
+  // Fetch-mechanism meter (learning loop, phase 0): counts which mechanism
+  // actually produced a document, so the episode log can say whether the
+  // hidden tab or the proxy did the work. Per call, like noteUnreadablePdf.
+  const meter = { hiddenTab: 0, proxy: 0, attempts: 0 };
+  const result = await fetcherAgentInner(pageUrl, pageHtml, knownUrls, noteUnreadablePdf, meter);
   if (result && unreadablePdfUrls.length > 0) result.unreadablePdfUrls = unreadablePdfUrls;
+  if (result) result.mechanisms = meter;
   return result;
 }
 
-async function fetcherAgentInner(pageUrl, pageHtml = "", knownUrls = null, noteUnreadablePdf = null) {
+async function fetcherAgentInner(pageUrl, pageHtml = "", knownUrls = null, noteUnreadablePdf = null, meter = null) {
   try {
     if (!pageUrl || pageUrl.startsWith("file://")) {
       console.log("[Fetcher] Local file, using page text");
@@ -162,12 +210,12 @@ async function fetcherAgentInner(pageUrl, pageHtml = "", knownUrls = null, noteU
       // (which overlaps the explicit list). Only discover (enrich:true) when no list.
       const hasKnownSupplemental = !!(knownUrls.supplemental && knownUrls.supplemental.length);
       const [tosResult, privacyResult] = await Promise.all([
-        tryFetchCandidates([knownUrls.tos], 'tos', true, noteUnreadablePdf),
-        tryFetchCandidates([knownUrls.privacy], 'privacy', !hasKnownSupplemental, noteUnreadablePdf)
+        tryFetchCandidates([knownUrls.tos], 'tos', true, noteUnreadablePdf, meter),
+        tryFetchCandidates([knownUrls.privacy], 'privacy', !hasKnownSupplemental, noteUnreadablePdf, meter)
       ]);
       if (tosResult || privacyResult) {
         const supplementalResults = hasKnownSupplemental
-          ? (await Promise.all(knownUrls.supplemental.map(url => tryFetchCandidates([url], 'privacy', false, noteUnreadablePdf)))).filter(Boolean)
+          ? (await Promise.all(knownUrls.supplemental.map(url => tryFetchCandidates([url], 'privacy', false, noteUnreadablePdf, meter)))).filter(Boolean)
           : [];
         const combined = [
           tosResult ? `=== TERMS OF SERVICE ===\n${tosResult.text}` : "",
@@ -177,6 +225,7 @@ async function fetcherAgentInner(pageUrl, pageHtml = "", knownUrls = null, noteU
         const sourceUrl = tosResult?.sourceUrl || privacyResult?.sourceUrl;
         await learnSite(pageUrl, knownUrls.tos, knownUrls.privacy);
         return {
+          path: 'known-urls',
           text: combined,
           sourceUrl,
           privacyHtml: [privacyResult?.html || "", ...supplementalResults.map(result => result.html || "")].filter(Boolean).join("\n\n") || null,
@@ -216,8 +265,8 @@ async function fetcherAgentInner(pageUrl, pageHtml = "", knownUrls = null, noteU
       console.log(`[Fetcher] Found ${tosHrefs.length} ToS links and ${privacyHrefs.length} privacy links in page HTML`);
 
       const [tosFromPage, privacyFromPage] = await Promise.all([
-        tryFetchCandidates([...new Set(tosHrefs)], 'tos', true, noteUnreadablePdf),
-        tryFetchCandidates([...new Set(privacyHrefs)], 'privacy', true, noteUnreadablePdf)
+        tryFetchCandidates([...new Set(tosHrefs)], 'tos', true, noteUnreadablePdf, meter),
+        tryFetchCandidates([...new Set(privacyHrefs)], 'privacy', true, noteUnreadablePdf, meter)
       ]);
 
       if (tosFromPage || privacyFromPage) {
@@ -229,6 +278,7 @@ async function fetcherAgentInner(pageUrl, pageHtml = "", knownUrls = null, noteU
         console.log(`[Fetcher] Got documents from page HTML links`);
         await learnSite(pageUrl, tosFromPage?.sourceUrl || null, privacyFromPage?.sourceUrl || null);
         return {
+          path: 'page-links',
           text: combined,
           sourceUrl,
           privacyHtml: privacyFromPage?.html || null,
@@ -261,8 +311,8 @@ async function fetcherAgentInner(pageUrl, pageHtml = "", knownUrls = null, noteU
         console.log(`[Fetcher] Link text scan found ${tosTextHrefs.length} ToS and ${privacyTextHrefs.length} privacy links`);
 
         const [tosFromText, privacyFromText] = await Promise.all([
-          tosTextHrefs.length > 0 ? tryFetchCandidates([...new Set(tosTextHrefs)], 'tos', true, noteUnreadablePdf) : null,
-          privacyTextHrefs.length > 0 ? tryFetchCandidates([...new Set(privacyTextHrefs)], 'privacy', true, noteUnreadablePdf) : null
+          tosTextHrefs.length > 0 ? tryFetchCandidates([...new Set(tosTextHrefs)], 'tos', true, noteUnreadablePdf, meter) : null,
+          privacyTextHrefs.length > 0 ? tryFetchCandidates([...new Set(privacyTextHrefs)], 'privacy', true, noteUnreadablePdf, meter) : null
         ]);
 
         if (tosFromText || privacyFromText) {
@@ -274,6 +324,7 @@ async function fetcherAgentInner(pageUrl, pageHtml = "", knownUrls = null, noteU
           console.log(`[Fetcher] Got documents from link text extraction`);
           await learnSite(pageUrl, tosFromText?.sourceUrl || null, privacyFromText?.sourceUrl || null);
           return {
+            path: 'link-text',
             text: combined,
             sourceUrl,
             privacyHtml: privacyFromText?.html || null,
@@ -315,8 +366,8 @@ async function fetcherAgentInner(pageUrl, pageHtml = "", knownUrls = null, noteU
             if (homeTosHrefs.length > 0 || homePrivacyHrefs.length > 0) {
               console.log(`[Fetcher] Homepage footer found ${homeTosHrefs.length} ToS and ${homePrivacyHrefs.length} privacy links`);
               const [tosFromHome, privacyFromHome] = await Promise.all([
-                homeTosHrefs.length > 0 ? tryFetchCandidates([...new Set(homeTosHrefs)], 'tos', true, noteUnreadablePdf) : null,
-                homePrivacyHrefs.length > 0 ? tryFetchCandidates([...new Set(homePrivacyHrefs)], 'privacy', true, noteUnreadablePdf) : null
+                homeTosHrefs.length > 0 ? tryFetchCandidates([...new Set(homeTosHrefs)], 'tos', true, noteUnreadablePdf, meter) : null,
+                homePrivacyHrefs.length > 0 ? tryFetchCandidates([...new Set(homePrivacyHrefs)], 'privacy', true, noteUnreadablePdf, meter) : null
               ]);
               if (tosFromHome || privacyFromHome) {
                 const combined = [
@@ -327,6 +378,7 @@ async function fetcherAgentInner(pageUrl, pageHtml = "", knownUrls = null, noteU
                 console.log(`[Fetcher] Got documents from homepage footer scan`);
                 await learnSite(pageUrl, tosFromHome?.sourceUrl || null, privacyFromHome?.sourceUrl || null);
                 return {
+                  path: 'homepage-footer',
                   text: combined,
                   sourceUrl,
                   privacyHtml: privacyFromHome?.html || null,
@@ -375,8 +427,8 @@ async function fetcherAgentInner(pageUrl, pageHtml = "", knownUrls = null, noteU
     ];
 
     const [tosResult, privacyResult] = await Promise.all([
-      tryFetchCandidates(tosCandidates, 'tos', true, noteUnreadablePdf),
-      tryFetchCandidates(privacyCandidates, 'privacy', true, noteUnreadablePdf)
+      tryFetchCandidates(tosCandidates, 'tos', true, noteUnreadablePdf, meter),
+      tryFetchCandidates(privacyCandidates, 'privacy', true, noteUnreadablePdf, meter)
     ]);
 
     if (tosResult || privacyResult) {
@@ -387,6 +439,7 @@ async function fetcherAgentInner(pageUrl, pageHtml = "", knownUrls = null, noteU
       const sourceUrl = tosResult?.sourceUrl || privacyResult?.sourceUrl;
       console.log(`[Fetcher] Combined ToS + Privacy Policy from ${domain}`);
       return {
+        path: 'candidates',
         text: combined,
         sourceUrl,
         privacyHtml: privacyResult?.html || null,
@@ -479,21 +532,26 @@ async function firstSuccessful(items, worker, concurrency = 3) {
 
 // Fetch a single URL: hidden tab first (renders JS), proxy as fallback. Returns
 // { text, html, sourceUrl } or null. Does NOT follow hubs — one hop only.
-async function fetchSingleCandidate(url, noteUnreadablePdf = null) {
+async function fetchSingleCandidate(url, noteUnreadablePdf = null, meter = null) {
+  if (meter) meter.attempts++;
   // Hidden tab first — renders JavaScript, gets real content. Keep polling past
   // the nav shell until the text actually looks like a legal document, so SPA
   // legal pages aren't captured as navigation chrome.
   const tabResult = await fetchWithHiddenTab(url, { accept: looksLikeLegalDocument });
   if (tabResult && tabResult.text && tabResult.text.length > 500) {
+    if (meter) meter.hiddenTab++;
     return { text: tabResult.text, html: tabResult.html, sourceUrl: url };
   }
   // Proxy fallback — for CORS-restricted or Next.js sites
   const nextResult = await fetchNextJsDocument(url, noteUnreadablePdf);
-  if (nextResult) return { text: nextResult.text, html: nextResult.html, sourceUrl: url };
+  if (nextResult) {
+    if (meter) meter.proxy++;
+    return { text: nextResult.text, html: nextResult.html, sourceUrl: url };
+  }
   return null;
 }
 
-async function tryFetchCandidates(candidates, kind = null, enrich = true, noteUnreadablePdf = null) {
+async function tryFetchCandidates(candidates, kind = null, enrich = true, noteUnreadablePdf = null, meter = null) {
   // Central URL validation gate (SECURITY-020)
   const validCandidates = candidates.filter(url => {
     if (isAssetUrl(url)) {
@@ -509,7 +567,7 @@ async function tryFetchCandidates(candidates, kind = null, enrich = true, noteUn
   // Race them with bounded concurrency so a page of dead guesses no longer
   // costs one full hidden-tab timeout each in series.
   const winner = await firstSuccessful(validCandidates, async (url) => {
-    const base = await fetchSingleCandidate(url, noteUnreadablePdf);
+    const base = await fetchSingleCandidate(url, noteUnreadablePdf, meter);
     if (!base) return null;
 
     // Hub-follow: bank/credit-union/insurer sites often land on a "Privacy &
@@ -520,7 +578,7 @@ async function tryFetchCandidates(candidates, kind = null, enrich = true, noteUn
       const deeperUrl = extractDeeperLegalLink(base.html, url, kind || 'privacy');
       if (deeperUrl && validateDocumentUrl(deeperUrl)) {
         console.log(`[Fetcher] ${url} looks like a legal hub — following deeper link: ${deeperUrl}`);
-        const deep = await fetchSingleCandidate(deeperUrl, noteUnreadablePdf);
+        const deep = await fetchSingleCandidate(deeperUrl, noteUnreadablePdf, meter);
         if (deep && looksLikeLegalDocument(deep.text)) {
           console.log(`[Fetcher] Deeper link yielded real legal content: ${deeperUrl}`);
           return deep;
@@ -540,7 +598,7 @@ async function tryFetchCandidates(candidates, kind = null, enrich = true, noteUn
   // fold their text into the winner for ONE unified analysis. (Privacy only; one
   // hop; capped; skips anything not readable. Zero extra fetches when none exist.)
   if (enrich && winner && kind === 'privacy' && winner.html) {
-    await enrichWithSupplementalNotices(winner, noteUnreadablePdf);
+    await enrichWithSupplementalNotices(winner, noteUnreadablePdf, meter);
   }
   return winner;
 }
@@ -548,7 +606,7 @@ async function tryFetchCandidates(candidates, kind = null, enrich = true, noteUn
 // Mutates `primary` in place: appends up to 2 complementary privacy notices linked
 // from its HTML (GLBA/Consumer + state/CCPA) to primary.text, source-tagged so the
 // analyzer sees the document boundaries. Records the urls on primary.supplementalUrls.
-async function enrichWithSupplementalNotices(primary, noteUnreadablePdf = null) {
+async function enrichWithSupplementalNotices(primary, noteUnreadablePdf = null, meter = null) {
   const supplementalUrls = extractSupplementalPrivacyLinks(primary.html, primary.sourceUrl, {
     exclude: [primary.sourceUrl],
     limit: 3 // fetch a few; keep the first 2 that actually yield a readable notice
@@ -560,7 +618,7 @@ async function enrichWithSupplementalNotices(primary, noteUnreadablePdf = null) 
   if (supplementalUrls.length === 0) return;
 
   console.log(`[Fetcher] Gathering supplemental privacy notices: ${supplementalUrls.join(', ')}`);
-  const fetched = await Promise.all(supplementalUrls.map(url => fetchSingleCandidate(url, noteUnreadablePdf)));
+  const fetched = await Promise.all(supplementalUrls.map(url => fetchSingleCandidate(url, noteUnreadablePdf, meter)));
 
   const kept = [];
   for (const doc of fetched) {
@@ -742,6 +800,9 @@ async function trustedMessageIdentity(request, sender, { allowPopup = false } = 
 // The second caller joins the first's in-flight promise and renders its result.
 // Also makes the 5a "Try again" button and any #5 re-show join rather than spawn.
 const dedupeRelay = createInFlightDeduper(); // shares one run across concurrent relays per registrable domain
+// Episode id of the relay in flight per domain, so a joined relay can be
+// recorded as deduped against it (learning loop, phase 0).
+const activeRelayEpisodes = new Map();
 
 function handleBackgroundMessage(request, sender, sendResponse) {
   if (!request || typeof request !== 'object' || Array.isArray(request) || typeof request.action !== 'string') {
@@ -750,8 +811,15 @@ function handleBackgroundMessage(request, sender, sendResponse) {
   }
 
   if (request.action === "analyzeTos") {
-    if (!hasOnlyFields(request, new Set(['action', 'text', 'pageHtml', 'pageUrl']))) {
+    if (!hasOnlyFields(request, new Set(['action', 'text', 'pageHtml', 'pageUrl', 'episodeId']))) {
       sendResponse(invalidMessage('analyzeTos contains unsupported fields'));
+      return false;
+    }
+    // Optional, observer mode only: the content script's own episode id so its
+    // trigger and render facts join the relay's. Strictly 16 hex chars; it has
+    // no effect on the analysis and is ignored when observer mode is off.
+    if (request.episodeId !== undefined && !isEpisodeId(request.episodeId)) {
+      sendResponse(invalidMessage('episodeId must be 16 hex chars'));
       return false;
     }
     if (typeof request.text !== 'string') {
@@ -781,10 +849,18 @@ function handleBackgroundMessage(request, sender, sendResponse) {
         sendResponse(invalidMessage('popup requests cannot supply pageHtml'));
         return;
       }
+      const episodeId = request.episodeId;
       const result = await dedupeRelay(
         identity.domain,
-        () => runOrchestrator(identity.url, request.text, request.pageHtml || ''),
-        (key) => console.log(`[Orchestrator] Joining in-flight relay for ${key} (deduped)`)
+        () => {
+          if (episodeId) activeRelayEpisodes.set(identity.domain, episodeId);
+          return runOrchestrator(identity.url, request.text, request.pageHtml || '', { episodeId })
+            .finally(() => { if (activeRelayEpisodes.get(identity.domain) === episodeId) activeRelayEpisodes.delete(identity.domain); });
+        },
+        (key) => {
+          console.log(`[Orchestrator] Joining in-flight relay for ${key} (deduped)`);
+          if (episodeId) recordJoinedRelay(episodeId, key, activeRelayEpisodes.get(key));
+        }
       );
       sendResponse(result);
     })().catch(err => {
@@ -874,8 +950,72 @@ function handleBackgroundMessage(request, sender, sendResponse) {
     return true;
   }
 
+  // Observer mode (learning loop, phase 0): the content script reports the
+  // two facts the background cannot see, which detection branch fired and
+  // what the overlay rendered. Content senders only, one episode id, one of
+  // two stages, data and local layers validated by episode.js allowlists.
+  // Accepted-but-ignored when observer mode is off, so a stale content script
+  // never gets an error for a setting that changed underneath it.
+  if (request.action === "observerEvent") {
+    if (!hasOnlyFields(request, new Set(['action', 'episodeId', 'stage', 'data', 'local']))) {
+      sendResponse({ ...invalidMessage('observerEvent contains unsupported fields'), ok: false });
+      return false;
+    }
+    if (!isEpisodeId(request.episodeId)) {
+      sendResponse({ ...invalidMessage('episodeId must be 16 hex chars'), ok: false });
+      return false;
+    }
+    if (request.stage !== 'trigger' && request.stage !== 'render') {
+      sendResponse({ ...invalidMessage('observerEvent stage must be trigger or render'), ok: false });
+      return false;
+    }
+    const dataCheck = validateEventData(request.stage, request.data);
+    if (!dataCheck.valid) {
+      sendResponse({ ...invalidMessage(`observerEvent data rejected: ${dataCheck.errors[0]}`), ok: false });
+      return false;
+    }
+    const localCheck = validateLocal(request.local);
+    if (!localCheck.valid) {
+      sendResponse({ ...invalidMessage(`observerEvent local rejected: ${localCheck.errors[0]}`), ok: false });
+      return false;
+    }
+
+    (async () => {
+      const identity = await trustedMessageIdentity(request, sender);
+      if (!identity.valid) {
+        sendResponse({ ...invalidMessage(identity.reason), ok: false });
+        return;
+      }
+      const observer = await readObserverConfig(browser.storage.local);
+      if (!observer.enabled) {
+        sendResponse({ ok: true, recorded: false });
+        return;
+      }
+      const event = createEvent(request.episodeId, request.stage, request.data, { local: request.local });
+      observerSink(event, observer);
+      sendResponse({ ok: true, recorded: true });
+    })().catch(err => {
+      console.error('[Observer] Event handling failed:', err);
+      sendResponse({ ok: false });
+    });
+    return true;
+  }
+
   sendResponse({ error: 'unknown_action', reason: 'Unsupported background action' });
   return false;
+}
+
+// A relay that joined another in-flight relay for the same domain never runs
+// the orchestrator, so its episode would otherwise have no relay stage at all.
+async function recordJoinedRelay(episodeId, domain, joinedEpisodeId) {
+  try {
+    const observer = await readObserverConfig(browser.storage.local);
+    if (!observer.enabled) return;
+    const data = { deduped: true, mode: 'live' };
+    if (typeof domain === 'string' && validateDomainKey(domain)) data.domain = domain;
+    if (isEpisodeId(joinedEpisodeId)) data.joinedEpisodeId = joinedEpisodeId;
+    observerSink(createEvent(episodeId, 'relay', data), observer);
+  } catch (e) { /* never surface */ }
 }
 
 browser.runtime.onMessage.addListener(handleBackgroundMessage);
@@ -983,20 +1123,24 @@ ${trimmedText}`;
     });
     const data = await response.json().catch(() => ({}));
 
+    // `status` and the provider/model/usage fields are for the episode log
+    // (learning loop, phase 0); the orchestrator keys behavior off `summary`
+    // exactly as before.
     if (response.status === 503 && data.error === 'provider_not_configured') {
-      return { summary: `⚠️ No ${providerName} API key set on the analysis server. Add ${provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY'} to the proxy's Railway environment.` };
+      return { summary: `⚠️ No ${providerName} API key set on the analysis server. Add ${provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY'} to the proxy's Railway environment.`, status: 'config', provider };
     }
     if (response.status === 503 && data.error === 'provider_busy') {
-      return { summary: "Error: analysis service busy — please try again shortly." };
+      return { summary: "Error: analysis service busy — please try again shortly.", status: 'busy', provider };
     }
     if (response.status === 429) {
       return { summary: data.error === 'daily_limit_reached'
         ? "Error: daily analysis safety limit reached — please try again tomorrow."
-        : "Error: analysis rate limited — please try again in a minute." };
+        : "Error: analysis rate limited — please try again in a minute.",
+        status: data.error === 'daily_limit_reached' ? 'daily-limit' : 'rate-limited', provider };
     }
     if (!response.ok || !data.text) {
       console.log(`[Analyzer] Relay error (${response.status}):`, JSON.stringify(data).slice(0, 500));
-      return { summary: "Error: " + (data.reason || data.error?.message || data.error || "Unknown error") };
+      return { summary: "Error: " + (data.reason || data.error?.message || data.error || "Unknown error"), status: 'error', provider };
     }
 
     console.log(`[Analyzer] Relay response — model: ${data.model}, length: ${data.text.length} chars, stop_reason: ${data.stopReason}`);
@@ -1005,7 +1149,12 @@ ${trimmedText}`;
       providerAnalysis: data.text,
       analysisSource: trimmedText,
       analysisReceipt: data.analysisReceipt || null,
-      providerTag: `${provider}${escalate ? '-escalated' : ''}`
+      providerTag: `${provider}${escalate ? '-escalated' : ''}`,
+      provider,
+      model: typeof data.model === 'string' ? data.model : '',
+      stopReason: typeof data.stopReason === 'string' ? data.stopReason : '',
+      usage: data.usage && typeof data.usage === 'object' ? data.usage : undefined,
+      status: 'ok'
     };
   }
 
@@ -1027,12 +1176,21 @@ ${trimmedText}`;
 
     const data = await response.json();
     if (data.choices && data.choices[0]) {
-      return { summary: data.choices[0].message.content };
+      const u = data.usage && typeof data.usage === 'object' ? data.usage : {};
+      const count = (v) => (Number.isInteger(v) && v >= 0 ? v : 0);
+      return {
+        summary: data.choices[0].message.content,
+        provider: 'ollama',
+        model: 'llama3',
+        stopReason: typeof data.choices[0].finish_reason === 'string' ? data.choices[0].finish_reason : '',
+        usage: { inputTokens: count(u.prompt_tokens), outputTokens: count(u.completion_tokens), cacheReadTokens: 0, cacheWriteTokens: 0 },
+        status: 'ok'
+      };
     } else {
       console.log("API response:", JSON.stringify(data));
-      return { summary: "Error: " + (data.error?.message || "Unknown error") };
+      return { summary: "Error: " + (data.error?.message || "Unknown error"), status: 'error', provider: 'ollama' };
     }
   }
 
-  return { summary: "⚠️ Unknown provider selected. Open TOS Guardian settings to choose a provider." };
+  return { summary: "⚠️ Unknown provider selected. Open TOS Guardian settings to choose a provider.", status: 'config', provider: 'unknown' };
 }

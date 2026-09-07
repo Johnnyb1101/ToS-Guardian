@@ -2,7 +2,9 @@
 //
 // Runs the REAL extension pipeline (fetcher → link follower → analyzer →
 // critic → evaluator) against a list of domains, headlessly in Node, and
-// writes a CSV report: domain, label, score, timing, token usage, cost.
+// writes a CSV report plus one episode record per site (episode.js schema,
+// ndjson) — the same record the extension produces in observer mode, so
+// headless runs and live click-throughs feed the same reports.
 //
 // It loads the actual extension source files in a vm context (same approach
 // as tests/system.test.js) with two substitutions forced by the environment:
@@ -26,20 +28,22 @@
 //   node tools/batch-runner.js <sites.txt | domain [domain ...]> [options]
 //
 // Options:
-//   --proxy <url>   proxy to run against (or set TOS_PROXY_URL). Required
-//                   unless --production is given.
-//   --production    run against the production proxy, spending its key
-//   --budget <usd>  stop before the next site once priced cost reaches this
-//   --escalate      allow Opus escalation (default: off; cap of 5 still applies)
-//   --cache         allow cache reads on the target proxy (default: off)
-//   --write         allow cache and learned-site writes on the target proxy
-//                   (default: off so batch runs do not mutate a cache)
-//   --no-critic     skip the critic/judge LLM pass (cheaper, less strict)
-//   --delay <ms>    pause between sites (default 1000)
-//   --timeout <ms>  per-site timeout (default 180000)
-//   --limit <n>     only run the first n sites from the list
-//   --out <file>    CSV output path (default batch-results-<timestamp>.csv)
-//   --verbose       stream pipeline console output
+//   --proxy <url>     proxy to run against (or set TOS_PROXY_URL). Required
+//                     unless --production is given.
+//   --production      run against the production proxy, spending its key
+//   --budget <usd>    stop before the next site once priced cost reaches this
+//   --episodes <file> episode ndjson path (default batch-episodes-<timestamp>.ndjson)
+//   --no-episodes     do not write episode records
+//   --escalate        allow Opus escalation (default: off; cap of 5 still applies)
+//   --cache           allow cache reads on the target proxy (default: off)
+//   --write           allow cache and learned-site writes on the target proxy
+//                     (default: off so batch runs do not mutate a cache)
+//   --no-critic       skip the critic/judge LLM pass (cheaper, less strict)
+//   --delay <ms>      pause between sites (default 1000)
+//   --timeout <ms>    per-site timeout (default 180000)
+//   --limit <n>       only run the first n sites from the list
+//   --out <file>      CSV output path (default batch-results-<timestamp>.csv)
+//   --verbose         stream pipeline console output
 //
 // Exit codes: 0 finished, 1 usage or fatal error, 3 stopped by --budget.
 
@@ -55,6 +59,7 @@ const {
   applyProxyOverride,
   budgetExceeded
 } = require('./batch-lib');
+const Episode = require('../episode');
 
 const repoRoot = path.resolve(__dirname, '..');
 
@@ -66,6 +71,8 @@ const opts = {
   proxy: null,
   production: false,
   budget: null,
+  episodes: null,
+  writeEpisodes: true,
   escalate: false,
   cache: false,
   write: false,
@@ -83,22 +90,26 @@ for (let i = 0; i < args.length; i++) {
     console.log('Usage: node tools/batch-runner.js <sites.txt | domain [domain ...]> [options]');
     console.log('');
     console.log('Options:');
-    console.log('  --proxy <url>   proxy to run against (or set TOS_PROXY_URL); required unless --production');
-    console.log('  --production    run against the production proxy, spending its key');
-    console.log('  --budget <usd>  stop before the next site once priced cost reaches this');
-    console.log('  --cache         allow cache reads (default: off)');
-    console.log('  --escalate      allow Opus escalation');
-    console.log('  --write         allow cache and learned-site writes');
-    console.log('  --no-critic     skip the critic/judge pass');
-    console.log('  --delay <ms>    pause between sites (default: 1000)');
-    console.log('  --timeout <ms>  per-site timeout (default: 180000)');
-    console.log('  --limit <n>     only run the first n sites');
-    console.log('  --out <file>    CSV output path');
-    console.log('  --verbose       stream pipeline logs');
+    console.log('  --proxy <url>     proxy to run against (or set TOS_PROXY_URL); required unless --production');
+    console.log('  --production      run against the production proxy, spending its key');
+    console.log('  --budget <usd>    stop before the next site once priced cost reaches this');
+    console.log('  --episodes <file> episode ndjson path (default batch-episodes-<timestamp>.ndjson)');
+    console.log('  --no-episodes     do not write episode records');
+    console.log('  --cache           allow cache reads (default: off)');
+    console.log('  --escalate        allow Opus escalation');
+    console.log('  --write           allow cache and learned-site writes');
+    console.log('  --no-critic       skip the critic/judge pass');
+    console.log('  --delay <ms>      pause between sites (default: 1000)');
+    console.log('  --timeout <ms>    per-site timeout (default: 180000)');
+    console.log('  --limit <n>       only run the first n sites');
+    console.log('  --out <file>      CSV output path');
+    console.log('  --verbose         stream pipeline logs');
     process.exit(0);
   } else if (a === '--proxy') opts.proxy = args[++i];
   else if (a === '--production') opts.production = true;
   else if (a === '--budget') opts.budget = Number(args[++i]);
+  else if (a === '--episodes') opts.episodes = args[++i];
+  else if (a === '--no-episodes') opts.writeEpisodes = false;
   else if (a === '--escalate') opts.escalate = true;
   else if (a === '--cache') opts.cache = true;
   else if (a === '--no-cache') opts.cache = false;
@@ -114,7 +125,7 @@ for (let i = 0; i < args.length; i++) {
 }
 
 if (inputs.length === 0) {
-  console.error('Usage: node tools/batch-runner.js <sites.txt | domain [domain ...]> --proxy <url> | --production [--budget usd] [--cache] [--escalate] [--write] [--no-critic] [--delay ms] [--timeout ms] [--limit n] [--out file.csv] [--verbose]');
+  console.error('Usage: node tools/batch-runner.js <sites.txt | domain [domain ...]> --proxy <url> | --production [--budget usd] [--episodes file] [--cache] [--escalate] [--write] [--no-critic] [--delay ms] [--timeout ms] [--limit n] [--out file.csv] [--verbose]');
   process.exit(1);
 }
 
@@ -229,7 +240,10 @@ async function directFetch(url, timeoutMs = 15000) {
 // ---------------------------------------------------------------------------
 let storageData = {
   selectedProvider: 'anthropic',
-  tosGuardianDebug: true
+  tosGuardianDebug: true,
+  // Observer mode on, with the sink replaced below by an in-process capture,
+  // so every site yields an episode record without any network collector.
+  tosGuardianObserver: { enabled: true, port: 0 }
 };
 if (!opts.escalate) {
   // Pre-exhaust the escalation cap so the orchestrator never calls Opus.
@@ -297,7 +311,7 @@ const context = {
 };
 vm.createContext(context);
 
-for (const file of ['vendor/tldts-7.4.8.umd.min.js', 'tosUtils.js', 'evaluator.js', 'critic.js', 'siteDatabase.js', 'orchestrator.js', 'background.js']) {
+for (const file of ['vendor/tldts-7.4.8.umd.min.js', 'tosUtils.js', 'evaluator.js', 'critic.js', 'siteDatabase.js', 'episode.js', 'orchestrator.js', 'background.js']) {
   let source = fs.readFileSync(path.join(repoRoot, file), 'utf8');
   if (file === 'background.js') source = applyProxyOverride(source, proxyTarget.url);
   vm.runInContext(source, context, { filename: file });
@@ -314,6 +328,12 @@ context.fetchWithHiddenTab = async (url) => {
   if (!fetched) return null;
   const text = context.stripHtml(fetched.html);
   return { text, html: fetched.html };
+};
+
+// Episode events are captured in-process instead of posted to a collector.
+context.observerSink = (event) => {
+  const state = runState.getStore();
+  if (state) state.events.push(event);
 };
 
 if (!opts.cache) {
@@ -347,12 +367,19 @@ function csvEscape(value) {
 }
 
 async function runSite(domain) {
+  const episodeId = Episode.newEpisodeId();
   const state = {
     controller: new AbortController(),
     usage: [],
     llmCalls: 0,
     logs: [],
-    lastResult: null
+    lastResult: null,
+    events: [
+      Episode.createEvent(episodeId, 'trigger', {
+        source: 'batch', branch: 'batch', controlTag: 'other',
+        authForm: false, passwordField: false, knownDomain: false, frame: false
+      })
+    ]
   };
 
   return runState.run(state, async () => {
@@ -368,7 +395,7 @@ async function runSite(domain) {
           const home = await directFetch(pageUrl);
           const pageHtml = home ? home.html : '';
           const pageText = home ? context.stripHtml(home.html).slice(0, 20000) : '';
-          await context.runOrchestrator(pageUrl, pageText, pageHtml);
+          await context.runOrchestrator(pageUrl, pageText, pageHtml, { episodeId, mode: 'batch' });
         })(),
         opts.timeout,
         state.controller
@@ -380,8 +407,11 @@ async function runSite(domain) {
     const verdict = state.lastResult?.domain === domain ? state.lastResult : null;
     const usage = state.usage.slice();
     const { cost, unpriced } = estimateCost(usage);
+    const episode = Episode.assembleEpisode(state.events);
+    const episodeCheck = episode ? Episode.validateEpisode(episode) : { valid: false, errors: ['no events'] };
     const row = {
       domain,
+      episode_id: episodeId,
       label: verdict ? verdict.label : (error ? 'Error' : 'Unknown'),
       score: verdict && verdict.score !== null ? verdict.score : '',
       cached: verdict ? verdict.cached : '',
@@ -401,21 +431,28 @@ async function runSite(domain) {
     if ((row.label === 'Error' || row.label === 'Unknown') && !opts.verbose) {
       for (const line of state.logs.slice(-5)) console.log('    ' + line);
     }
-    return row;
+    if (!episodeCheck.valid) {
+      console.log(`    episode record invalid: ${episodeCheck.errors.slice(0, 3).join('; ')}`);
+    }
+    return { row, episode: episodeCheck.valid ? episode : null };
   });
 }
 
 (async () => {
-  const columns = ['domain', 'label', 'score', 'cached', 'duration_ms', 'llm_calls', 'models', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'est_cost_usd', 'unpriced_calls', 'opt_out_links', 'issues', 'error'];
+  const columns = ['domain', 'episode_id', 'label', 'score', 'cached', 'duration_ms', 'llm_calls', 'models', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'est_cost_usd', 'unpriced_calls', 'opt_out_links', 'issues', 'error'];
   const rows = [];
   const startedAt = new Date();
+  const stamp = startedAt.toISOString().replace(/[:T]/g, '-').slice(0, 19);
+  const episodesPath = opts.writeEpisodes ? (opts.episodes || `batch-episodes-${stamp}.ndjson`) : null;
   let totalCost = 0;
   let budgetStopped = false;
+  let episodesWritten = 0;
 
   console.log(`TOS Guardian batch runner — ${domains.length} site(s)`);
   console.log(`  proxy: ${proxyTarget.url}${proxyTarget.isProduction ? '  <-- PRODUCTION: this run spends the production key and counts against its daily fuse' : ''}`);
   console.log(`  cache reads: ${opts.cache ? 'on' : 'OFF'} | cache writes: ${opts.write ? 'ON' : 'off'} | escalation: ${opts.escalate ? 'ON' : 'off'} | critic: ${opts.critic ? 'on' : 'OFF'} | budget: ${opts.budget === null ? 'none' : `$${opts.budget.toFixed(2)}`}`);
   console.log(`  pricing table as of ${PRICING_AS_OF} (tools/batch-lib.js); unpriced calls are reported, never guessed`);
+  console.log(`  episodes: ${episodesPath || 'off'}`);
   console.log('');
 
   for (let i = 0; i < domains.length; i++) {
@@ -426,9 +463,13 @@ async function runSite(domain) {
     }
     const domain = domains[i];
     process.stdout.write(`[${i + 1}/${domains.length}] ${domain} ... `);
-    const row = await runSite(domain);
+    const { row, episode } = await runSite(domain);
     rows.push(row);
     totalCost += Number(row.est_cost_usd);
+    if (episodesPath && episode) {
+      fs.appendFileSync(episodesPath, JSON.stringify(episode) + '\n', 'utf8');
+      episodesWritten++;
+    }
     const scorePart = row.score !== '' ? ` ${row.score}/100` : '';
     const cachePart = row.cached === true ? ' (cached)' : '';
     const unpricedPart = row.unpriced_calls ? ` (+${row.unpriced_calls} unpriced)` : '';
@@ -439,7 +480,6 @@ async function runSite(domain) {
   }
 
   // CSV
-  const stamp = startedAt.toISOString().replace(/[:T]/g, '-').slice(0, 19);
   const outPath = opts.out || `batch-results-${stamp}.csv`;
   const csv = [columns.join(',')]
     .concat(rows.map(r => columns.map(c => csvEscape(r[c])).join(',')))
@@ -464,6 +504,7 @@ async function runSite(domain) {
   console.log(`  tokens: ${totalIn.toLocaleString()} in / ${totalOut.toLocaleString()} out / ${totalCacheRead.toLocaleString()} cache-read — est. cost $${totalCost.toFixed(4)}${totalUnpriced ? ` (+${totalUnpriced} unpriced call(s): add the model to tools/batch-lib.js)` : ''}`);
   if (budgetStopped) console.log(`  stopped by --budget with ${domains.length - rows.length} site(s) not run`);
   console.log(`  report: ${outPath}`);
+  if (episodesPath) console.log(`  episodes: ${episodesPath} (${episodesWritten} record(s)); render with: node tools/report.js ${episodesPath}`);
   if (budgetStopped) process.exit(3);
 })().catch(err => {
   console.error(err);

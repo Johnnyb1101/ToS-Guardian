@@ -180,6 +180,32 @@ checkEnter('Enter in a plain text/search field does not fire', { path: '/', body
 checkEnter('Enter on a search-results page never fires', { host: 'www.google.com', path: '/search', search: '?q=paypal' },
   field({ type: 'password' }), false);
 
+// --- Detection branch names (observer mode reports which branch fired) ------
+// classifyAgreeButton is what isAgreeButton wraps; its `fires` must match the
+// boolean above and its `branch` must name the deciding rule.
+function checkBranch(name, page, button, expected) {
+  let got;
+  try {
+    const ctx = makeCtx(page);
+    const result = ctx.classifyAgreeButton(button);
+    got = result.fires === ctx.isAgreeButton(button) ? result.branch : `MISMATCH fires=${result.fires}`;
+  } catch (e) {
+    got = `THREW: ${e.message}`;
+  }
+  rows.push({ status: got === expected ? 'PASS' : 'FAIL', name, expected, got });
+}
+checkBranch('branch: explicit label', {}, btn({ text: 'I Agree' }), 'high-confidence');
+checkBranch('branch: password field', { password: true }, btn({ text: 'Sign up' }), 'password-field');
+checkBranch('branch: nearby consent text', { bodyText: 'welcome' },
+  btn({ text: 'Continue', ancestors: [{ innerText: 'By continuing you agree to our Terms of Use' }] }), 'proximity-consent');
+checkBranch('branch: signup with an auth form', { emails: [{}] }, btn({ text: 'Sign up' }), 'signup-auth-form');
+checkBranch('branch: generic continue on an auth URL', { emails: [{}], path: '/sign-in', bodyText: 'welcome back' }, btn({ text: 'Continue' }), 'generic-auth-page');
+checkBranch('branch: page-wide agreement context', { bodyText: 'by signing up you agree to our privacy policy' }, btn({ text: 'Continue with Google' }), 'page-agreement-context');
+checkBranch('branch: no intent word', { emails: [{}], bodyText: 'privacy policy' }, btn({ text: 'Learn more' }), 'no-intent');
+checkBranch('branch: search results', { host: 'www.google.com', path: '/search', search: '?q=x', password: true }, btn({ text: 'Sign in' }), 'search-results');
+checkBranch('branch: no context', { bodyText: 'hello there' }, btn({ text: 'Sign up' }), 'no-context');
+checkBranch('branch: empty label', {}, btn({ text: '' }), 'empty');
+
 // A full fetch + Analyzer + Critic + escalation can legitimately exceed 90s.
 // Keep the visible relay deadline and cross-navigation pending marker aligned.
 const contentSource = fs.readFileSync(path.join(root, 'content.js'), 'utf8');

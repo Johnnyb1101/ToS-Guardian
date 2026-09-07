@@ -8,3 +8,7 @@ SECURITY_SPRINT_PLAN.md
 
 # batch runner reports land in the working directory by default
 batch-results-*.csv
+batch-episodes-*.ndjson
+
+# observer collector output (local episode events; may hold page URLs)
+observer/

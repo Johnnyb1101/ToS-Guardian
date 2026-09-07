@@ -131,17 +131,21 @@ function hasAuthProximity(el) {
   return false;
 }
 
-function isAgreeButton(el) {
+// Classify a control the same tiered way isAgreeButton always has, but name
+// the branch that decided. `fires` is exactly the old boolean; `branch` is
+// what observer mode reports (learning loop, phase 0) so a site that slips
+// through can be tuned from a record instead of a DevTools session.
+function classifyAgreeButton(el) {
   const text = el.innerText?.toLowerCase().trim() || "";
   const value = el.value?.toLowerCase().trim() || "";
   const ariaLabel = el.getAttribute?.("aria-label")?.toLowerCase().trim() || "";
   const title = el.getAttribute?.("title")?.toLowerCase().trim() || "";
   const combined = text || value || ariaLabel || title;
-  if (!combined) return false;
+  if (!combined) return { fires: false, branch: 'empty' };
 
   // Never fire on a search-results page (its snippets are full of other sites'
   // login/signup text). (FIXPLAN #3)
-  if (pageIsSearchResults()) return false;
+  if (pageIsSearchResults()) return { fires: false, branch: 'search-results' };
 
   // High confidence: explicit agree/accept/signup language — fire on the label alone.
   const highConfidence = [
@@ -149,7 +153,7 @@ function isAgreeButton(el) {
     "accept all", "accept & continue", "accept and continue", "i accept", "i consent",
     "continue with sso", "sign up free", "sign up with email"
   ];
-  if (highConfidence.some(k => combined.includes(k))) return true;
+  if (highConfidence.some(k => combined.includes(k))) return { fires: true, branch: 'high-confidence' };
 
   // Account-creation intent. Matched broadly ("create my account", "create your
   // profile") because creating an account always forms an agreement — but every
@@ -171,39 +175,44 @@ function isAgreeButton(el) {
   const generic = ["continue", "get started", "join now", "join free"]
     .some(k => combined.includes(k));
 
-  if (!signupIntent && !signin && !generic) return false;
+  if (!signupIntent && !signin && !generic) return { fires: false, branch: 'no-intent' };
 
   // Everything below requires real context so generic words never fire on
   // arbitrary pages.
 
   // Consent text or legal links right next to the button.
-  if (hasProximityConsent(el)) return true;
+  if (hasProximityConsent(el)) return { fires: true, branch: 'proximity-consent' };
 
   // A password field means this is unambiguously a login/signup flow.
-  if (pageHasPasswordField()) return true;
+  if (pageHasPasswordField()) return { fires: true, branch: 'password-field' };
 
   const authForm = pageHasAuthForm();
 
   // Account creation + an auth form on the page.
-  if (signupIntent && authForm) return true;
+  if (signupIntent && authForm) return { fires: true, branch: 'signup-auth-form' };
 
   // Signing in (incl. SSO) on a page that has an auth form.
-  if (signin && authForm) return true;
+  if (signin && authForm) return { fires: true, branch: 'signin-auth-form' };
 
   // Generic "continue" is weak, so it only fires when the page clearly IS an
   // auth page — an auth form plus an auth-looking URL or auth text right around
   // the button. Catches magic-link logins (no password field, no Terms links)
   // without firing on e-commerce "Continue" buttons that merely sit near an
   // email box.
-  if (generic && authForm && (pageUrlLooksLikeAuth() || hasAuthProximity(el))) return true;
+  if (generic && authForm && (pageUrlLooksLikeAuth() || hasAuthProximity(el))) return { fires: true, branch: 'generic-auth-page' };
 
   // On domains we already know host legal docs, be more permissive — but still
   // require a real auth form on the page. Bare "Login"/"Sign up" TEXT alone must
   // not fire (it appears in search-result snippets, nav, footers, etc.). (FIXPLAN #3)
-  if (domainIsKnown && authForm) return true;
+  if (domainIsKnown && authForm) return { fires: true, branch: 'known-domain-auth-form' };
 
   // Page-wide agreement context (SSO buttons, etc.).
-  return pageHasAgreementContext();
+  if (pageHasAgreementContext()) return { fires: true, branch: 'page-agreement-context' };
+  return { fires: false, branch: 'no-context' };
+}
+
+function isAgreeButton(el) {
+  return classifyAgreeButton(el).fires;
 }
 
 // --- ENTER-KEY TRIGGER for formless logins ---
@@ -381,6 +390,7 @@ function showGuardianOverlay(event, sourceButton = null) {
   }, { passive: true });
 
   overlayRoot.getElementById("tg-proceed").addEventListener("click", () => {
+    reportObserverEvent("render", { shown: true }, { userAction: "accept" });
     interceptActive = false;
     acknowledgedDomains.add(currentDomainKey());
     clearPendingOverlay();
@@ -407,6 +417,7 @@ function showGuardianOverlay(event, sourceButton = null) {
   });
 
   overlayRoot.getElementById("tg-leave").addEventListener("click", () => {
+    reportObserverEvent("render", { shown: true }, { userAction: "back" });
     interceptActive = false;
     clearPendingOverlay();
     overlay.remove();
@@ -438,12 +449,13 @@ function showGuardianOverlay(event, sourceButton = null) {
   };
 
   // Resolve the overlay into an honest error state with a retry affordance.
-  const showAnalysisError = (message) => {
+  const showAnalysisError = (message, errorKind = "timeout") => {
     analysisResponded = true;
     clearAnalysisTimers();
     const summaryEl = overlayRoot.getElementById("tg-summary");
     if (!summaryEl) return;
     summaryEl.innerHTML = formatSummary(message, []);
+    reportRender(overlayRoot, errorKind, true);
     // Put "Try again" in the FOOTER, not the scrollable summary — appended to the
     // summary it floated at the bottom-left and could sit half-off the card. The
     // footer's flex-wrap gives it the full first row above Accept / Go Back.
@@ -495,7 +507,9 @@ function showGuardianOverlay(event, sourceButton = null) {
       {
         action: "analyzeTos",
         text: boundMessageField(fullText, MAX_BACKGROUND_TEXT_CHARS),
-        pageHtml: boundMessageField(document.documentElement.innerHTML, MAX_BACKGROUND_HTML_CHARS)
+        pageHtml: boundMessageField(document.documentElement.innerHTML, MAX_BACKGROUND_HTML_CHARS),
+        // Observer mode only: the same id as this page's trigger fact.
+        ...(observerEnabled && currentTrigger ? { episodeId: currentTrigger.episodeId } : {})
       },
       (result, err) => {
         if (analysisResponded) return;
@@ -505,7 +519,8 @@ function showGuardianOverlay(event, sourceButton = null) {
         if (!summaryEl) return;
         if (err) {
           showAnalysisError(
-            "TOS Guardian could not reach the background service worker. Reload the extension and try again."
+            "TOS Guardian could not reach the background service worker. Reload the extension and try again.",
+            "channel"
           );
           return;
         }
@@ -524,6 +539,7 @@ function showGuardianOverlay(event, sourceButton = null) {
             btn.textContent = open ? "Show less ▴" : "Show more ▾";
           });
         });
+        reportRender(overlayRoot, null, false);
         revealActions();
       },
       { attempts: 2 }
@@ -538,6 +554,85 @@ function showGuardianOverlay(event, sourceButton = null) {
 // Resilient to React re-rendering DOM nodes.
 let interceptActive = false;
 const acknowledgedDomains = new Set();
+
+// --- OBSERVER (learning loop, phase 0) ---
+// Developer setting, off by default (tosGuardianObserver.enabled in storage).
+// When on, this script reports the two facts the background cannot see: which
+// detection branch fired, and what the overlay rendered. They travel over the
+// privileged message boundary, which validates them against episode.js, and
+// out to a collector on this machine only. With the flag off nothing here
+// runs and analyzeTos is sent exactly as before. Reload a tab after changing
+// the setting; the flag is read once at init.
+let observerEnabled = false;
+let currentTrigger = null;
+
+function readObserverFlag() {
+  try {
+    browser.storage.local.get(['tosGuardianObserver'], (result) => {
+      if (browser.runtime.lastError) return;
+      observerEnabled = !!(result && result.tosGuardianObserver && result.tosGuardianObserver.enabled === true);
+    });
+  } catch (e) { /* storage unavailable: stay off */ }
+}
+
+function newTriggerId() {
+  const bytes = new Uint8Array(8);
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") crypto.getRandomValues(bytes);
+  else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  let hex = "";
+  for (let i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, "0");
+  return hex;
+}
+
+function reportObserverEvent(stage, data, local) {
+  if (!observerEnabled || !currentTrigger) return;
+  const message = { action: "observerEvent", episodeId: currentTrigger.episodeId, stage, data };
+  if (local && Object.keys(local).length > 0) message.local = local;
+  try { sendMessageWithRetry(message, () => {}, { attempts: 1 }); } catch (e) { /* never surface */ }
+}
+
+function controlTagFor(el) {
+  const tag = (el && el.tagName ? String(el.tagName) : "").toLowerCase();
+  return ["button", "a", "input", "form", "textarea", "body"].includes(tag) ? tag : "other";
+}
+
+// Start an observed episode for an interception. The id is generated here so
+// the trigger fact, the analysis, and the render fact all share it.
+function beginObservedTrigger(source, branch, control) {
+  if (!observerEnabled) return;
+  currentTrigger = { episodeId: newTriggerId(), source };
+  const label = control && typeof control.innerText === "string" ? control.innerText.trim().slice(0, 200) : "";
+  reportObserverEvent("trigger", {
+    source,
+    branch: String(branch || "none").slice(0, 200),
+    controlTag: controlTagFor(control),
+    authForm: pageHasAuthForm(),
+    passwordField: pageHasPasswordField(),
+    knownDomain: domainIsKnown,
+    frame: isFrame
+  }, { pageUrl: String(window.location?.href || "").slice(0, 2048), controlLabel: label || undefined });
+}
+
+// Read what the overlay actually shows, from the closed shadow root.
+function reportRender(overlayRoot, errorKind, retry) {
+  if (!observerEnabled || !currentTrigger || !overlayRoot) return;
+  const count = (selector) => { try { return overlayRoot.querySelectorAll(selector).length; } catch (e) { return 0; } };
+  const riskEl = (() => { try { const all = overlayRoot.querySelectorAll(".tg-risk"); return all[all.length - 1] || null; } catch (e) { return null; } })();
+  const riskMatch = riskEl ? /tg-risk-(low|moderate|high|unknown)/.exec(riskEl.className || "") : null;
+  const badgeEl = (() => { try { const all = overlayRoot.querySelectorAll(".tg-eval-badge"); return all[all.length - 1] || null; } catch (e) { return null; } })();
+  const badgeMatch = badgeEl ? /tg-eval-(strong|adequate|failed)/.exec(badgeEl.className || "") : null;
+  const data = {
+    shown: true,
+    sections: count(".tg-category"),
+    optOutLinksShown: count(".tg-optout-link"),
+    unreadableShown: count(".tg-unreadable-link"),
+    error: errorKind || "none",
+    retry: !!retry
+  };
+  if (riskMatch) data.risk = riskMatch[1][0].toUpperCase() + riskMatch[1].slice(1);
+  if (badgeMatch) data.confidenceLabel = badgeMatch[1][0].toUpperCase() + badgeMatch[1].slice(1);
+  reportObserverEvent("render", data);
+}
 
 // Key acknowledgments + cache by REGISTRABLE domain (eTLD+1) so a "Sign In" on
 // www.x.com and the "Log In" on its auth subdomain login.x.com are treated as
@@ -589,6 +684,7 @@ function maybeShowPendingOverlay() {
       interceptActive = true;
       setTimeout(() => { interceptActive = false; }, 5000);
       const synthetic = { preventDefault() {}, stopImmediatePropagation() {}, stopPropagation() {}, target: document.body, currentTarget: document.body };
+      beginObservedTrigger("pending-reshow", "pending-reshow", document.body);
       showGuardianOverlay(synthetic, null);
       clearPendingOverlay();
     });
@@ -612,6 +708,7 @@ document.addEventListener("click", (event) => {
   setTimeout(() => { interceptActive = false; }, 5000);
 
   console.log('[TOS Guardian] Intercepted click on:', hookedEl.tagName);
+  beginObservedTrigger("click", classifyAgreeButton(hookedEl).branch, hookedEl);
 
   const domain = currentDomainKey();
   // Persist BEFORE any navigation can tear this page down, so the destination page
@@ -671,6 +768,7 @@ document.addEventListener("submit", (event) => {
   interceptActive = true;
   setTimeout(() => { interceptActive = false; }, 5000);
   markPendingOverlay(); // FIXPLAN #5 — survive a navigating submit
+  beginObservedTrigger("submit", agreeBtn ? classifyAgreeButton(agreeBtn).branch : "form-context", agreeBtn || form);
   showGuardianOverlay(syntheticEvent, agreeBtn || form);
 }, true);
 
@@ -698,6 +796,7 @@ document.addEventListener("keydown", (event) => {
 
   console.log('[TOS Guardian] Intercepted Enter on auth field:', field.tagName);
   markPendingOverlay(); // FIXPLAN #5 — survive a navigating submit
+  beginObservedTrigger("enter", isPasswordField(field) ? "enter-password" : "enter-email", field);
   showGuardianOverlay(event, field);
 }, true);
 
@@ -745,6 +844,7 @@ let domainIsKnown = false;
 
 function initTosGuardian() {
   if (!shouldRunInFrame()) return;
+  readObserverFlag();
 
   const domain = currentDomainKey();
 

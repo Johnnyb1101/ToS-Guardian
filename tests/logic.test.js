@@ -1140,6 +1140,30 @@ async function testDeduper() {
   }
 }
 
+// sanitizeForPrompt must be idempotent. The semantic-cache verification text is
+// a slice of the ALREADY-sanitized analyzer source, and the proxy requires that
+// slice to be a byte-for-byte substring of the source it signed. A long line cut
+// at the 2000-char cap used to keep a trailing space that a second pass removed,
+// which rejected the critic chain on dense legal text (Capital One, Navy Federal
+// in the first observed live run, 2026-09-06).
+{
+  const word = 'lorem ';
+  let line = '';
+  while (line.length < 2600) line += word;
+  line = line.slice(0, 1999) + ' ' + line.slice(2000);
+  const text = '=== PRIVACY POLICY ===\n' + line + '\nnext line';
+  const once = utils.sanitizeForPrompt(text);
+  mustEqual('sanitizeForPrompt', 'idempotent on a long line cut at the cap', once, utils.sanitizeForPrompt(once));
+  mustFalse('sanitizeForPrompt', 'leaves no trailing space before a newline', false, /[ \t]\n/.test(once));
+  const samples = [
+    'Hello <script>alert(1)</script> world <style>p{}</style> tail',
+    'Line\u0000one\u0007 two\u200b three\t\tfour  \n\n\n\nfive',
+    '1 < 2 and <b>bold</b> 3 > 4\n\n\n<p>para</p>'
+  ];
+  mustTrue('sanitizeForPrompt', 'idempotent on tag, control-char, and blank-line samples', true,
+    samples.every(s => utils.sanitizeForPrompt(utils.sanitizeForPrompt(s)) === utils.sanitizeForPrompt(s)));
+}
+
 testDeduper().then(() => {
   printTable();
 

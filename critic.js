@@ -60,6 +60,8 @@ ${trimmedSource}`;
     let responseText = null;
     let stopReason = null;
     let writeReceipt = null;
+    let criticModel = '';
+    let criticUsage = null;
 
     if (provider === 'anthropic' || provider === 'openai') {
       // Relay through the proxy — no API key in the browser (audit refactor #5).
@@ -94,11 +96,16 @@ ${trimmedSource}`;
 
       if (!response.ok) {
         console.warn(`[Critic] Relay error (${response.status}): ${data.reason || data.error || 'unknown'}`);
-        return { failed: true };
+        // The episode log keeps the HTTP status and the proxy's error code so a
+        // failed critic is diagnosable from the record, not just the console.
+        const code = typeof data.error === 'string' ? data.error.slice(0, 60) : 'unknown';
+        return { failed: true, _reason: `relay-error:${response.status}:${code}` };
       }
       responseText = data.text;
       stopReason = data.stopReason; // "end_turn" | "max_tokens" | "stop" | "length" | ...
       writeReceipt = data.writeReceipt || null;
+      criticModel = typeof data.model === 'string' ? data.model : '';
+      criticUsage = data.usage && typeof data.usage === 'object' ? data.usage : null;
     }
 
     if (provider === 'ollama') {
@@ -120,11 +127,12 @@ ${trimmedSource}`;
       const data = await response.json();
       responseText = data.choices?.[0]?.message?.content;
       stopReason = data.choices?.[0]?.finish_reason;
+      criticModel = model;
     }
 
     if (!responseText) {
       console.warn(`[Critic] No response text (stop_reason: ${stopReason || 'unknown'})`);
-      return { failed: true };
+      return { failed: true, _reason: 'no-response' };
     }
 
     const jsonMatch = responseText.match(/\{[\s\S]*\}/);
@@ -142,7 +150,7 @@ ${trimmedSource}`;
         `hasOpenBrace: ${hasOpenBrace} (likely ${stopReason === 'max_tokens' || stopReason === 'length' || (hasOpenBrace && !txt.includes('}')) ? 'TRUNCATED' : 'malformed/non-JSON'}). ` +
         `Response: ${JSON.stringify(snippet)}`
       );
-      return { failed: true };
+      return { failed: true, _reason: 'unparseable' };
     }
 
     const verdict = JSON.parse(jsonMatch[0]);
@@ -180,6 +188,11 @@ ${trimmedSource}`;
 
     applyDeterministicGrounding(verdict, analysisSummary, sourceText);
     verdict._writeReceipt = writeReceipt;
+    // For the episode log (learning loop, phase 0); underscore-prefixed like
+    // _writeReceipt so the verdict fields stay the six section names.
+    verdict._model = criticModel;
+    verdict._usage = criticUsage;
+    verdict._stopReason = typeof stopReason === 'string' ? stopReason : '';
 
     const unsupported = fields.filter(f => verdict[f] === 'unsupported').length;
     const vague = fields.filter(f => verdict[f] === 'vague').length;
@@ -194,7 +207,7 @@ ${trimmedSource}`;
 
   } catch (e) {
     console.warn('[Critic] Failed — pipeline continues without critic:', e.message);
-    return { failed: true };
+    return { failed: true, _reason: 'exception' };
   }
 }
 

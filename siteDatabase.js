@@ -60,7 +60,7 @@ async function lookupSite(pageUrl) {
 
     if (STATIC_SITES[hostname]) {
       console.log(`[SiteDB] ✅ Static match: ${hostname}`);
-      return STATIC_SITES[hostname];
+      return { ...STATIC_SITES[hostname], source: 'static' };
     }
 
     const parts = hostname.split(".");
@@ -68,7 +68,7 @@ async function lookupSite(pageUrl) {
       const candidate = parts.slice(i).join(".");
       if (STATIC_SITES[candidate]) {
         console.log(`[SiteDB] ✅ Static match (subdomain): ${hostname} → ${candidate}`);
-        return STATIC_SITES[candidate];
+        return { ...STATIC_SITES[candidate], source: 'static' };
       }
     }
 
@@ -89,7 +89,7 @@ async function lookupSite(pageUrl) {
             }
           }
           console.log(`[SiteDB] ✅ Supabase match: ${hostname}`);
-          return { tos: data.tos, privacy: data.privacy, supplemental: data.supplemental || [] };
+          return { tos: data.tos, privacy: data.privacy, supplemental: data.supplemental || [], source: 'learned' };
         }
       }
     } catch (e) {

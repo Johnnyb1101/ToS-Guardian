@@ -83,3 +83,92 @@ Two corrections found on the way, both included:
 Not verified yet, needs the owner: the reconstructed migration against the production
 project (queries in `migrations/README.md`), and the first real run against a dev proxy once
 the dev database exists and `.env.dev` holds the trainer key.
+
+## Checkpoint B — status (2026-09-06): landed, awaiting review and commit
+
+What landed:
+
+- `episode.js`: schema v1, per-stage allowlists, recorder, assembler, `stripLocal()` and
+  the uploadable validator that enforce zero user data. Loads both as a service-worker
+  script and as a Node module. Ships in the release build.
+- Orchestrator records every stage from the agents' return values; no agent signature
+  changed. Analyzer and critic returns carry provider, model, usage, stop reason, and a
+  status; the fetcher reports its discovery path and which mechanism produced each
+  document; the site lookup says static or learned; cache writes report their outcome.
+- Content script: `classifyAgreeButton()` names the detection branch (`isAgreeButton` is
+  now a thin wrapper), and in observer mode reports trigger and render facts through a new
+  validated `observerEvent` message. The analysis request may carry a 16-hex episode id.
+- Options page: Developer section with the Observer mode toggle and collector port.
+- `tools/observer.js` collector, `tools/report.js` and `tools/report-lib.js` report,
+  batch runner writes one episode per site (`--episodes`).
+- Docs: `observer-mode.md`, `episode-schema.md`.
+
+Evidence:
+
+- Full extension suite green: logic 235, system 85, detection 40, render-security 25,
+  proxy-contract 83, batch-lib 35, episode 56. New coverage includes: observer off records
+  nothing; observer on records every stage in order with valid events; assembled episode
+  validates and its stripped form validates as uploadable with no page URL anywhere; a
+  throwing sink never breaks the relay; the message boundary rejects unknown fields, wrong
+  stages, oversized local values, bad ids, and popup senders for observer events; the
+  detection branch names match the boolean for ten scenarios.
+- Headless smoke against a keyless local proxy: Discord produced a valid episode
+  (known-urls path, both documents, 100k chars, legal check true, two hidden-tab hits,
+  Configuration verdict at $0) and its uploadable form validated.
+- Collector smoke: seven synthetic live events accepted (204), an event with a smuggled
+  text field rejected (400), the assembled episode kept its local layer, and one report
+  rendered the live and headless episodes together.
+
+Not verified yet, needs the owner: a real browser click-through with the collector running
+(the observer message path is covered by tests, not by a live tab), and the first paid run
+against a dev proxy once the dev database exists.
+
+### Live verification (2026-09-06)
+
+A real browser click-through with the collector running delivered events end to end. Two
+defects found on the way, both fixed in the follow-up commit on `learning-loop/phase-0b`:
+
+- The Observer toggle sat in its own card below the provider Save button, so ticking it
+  stored nothing until Save was clicked elsewhere. The toggle now saves itself on change and
+  shows a status line naming the port it posts to.
+- The collector sink and the orchestrator were silent on failure by design, which made the
+  first run undiagnosable. The service worker console now logs when observer mode is on and
+  when the collector cannot be reached or rejects an event. The collector also answers
+  Chrome's private-network preflight header.
+
+Diagnostic recipe that found it, kept here for next time: in the extension's service worker
+console, `typeof observerSink` proves the loaded code is current, and
+`chrome.storage.local.get('tosGuardianObserver', console.log)` shows whether the flag exists.
+
+### First observed run (2026-09-06, 11 live episodes)
+
+Report saved locally as `observer/report-2026-09-06.md` (ignored by git). Headlines: overlay
+shown on 11 of 11; 8 fresh analyses at $0.95 total; 3 Strong, 3 Adequate, 2 Failed, 2
+cached; escalation attempted 3 times and adopted twice on conservative-grounding grounds.
+
+**Defect found and fixed from the record.** Capital One and Navy Federal both showed
+`critic: failed, reason: relay-error`, were capped to Adequate, and could not be cached
+(`write: skipped-no-provenance`). Cause, reproduced with a unit probe: `sanitizeForPrompt`
+was not idempotent. A line longer than its 2000-char cap was cut and could keep a trailing
+space that a second pass removed. The write receipt's verification text was built by
+sanitizing the already-sanitized analyzer source, so on dense legal text the slice was no
+longer a byte-for-byte substring of the source the proxy signed, and the proxy rejected the
+critic chain. Fix: the sanitizer trims after the cap (idempotent, pinned by three logic
+tests), and the verification text is now a plain slice of the signed source (pinned by a
+system test with a dense source). The critic failure reason now records the HTTP status and
+the proxy's error code, so the next such failure names itself.
+
+**Lesson candidates for the loop, not changed here (tier 3, need review):**
+- Harvard, 101s, no document found: the page was an SSO subdomain, candidate guessing used
+  that hostname instead of the registrable domain, and `runWithRetry` re-ran the whole
+  discovery because "no documents" is returned as null, doubling the time. Two separate
+  fixes: try registrable-domain candidates too; treat a clean "none found" as final.
+- live.com: the documents live on microsoft.com. A learned site entry cannot express that
+  (same-registrable-domain rule), and the static list only knows microsoft.com. Candidate
+  for a static entry; note the rule tension for cross-domain document hosting.
+- CNN and Fox News fetched privacy hub pages and ended Failed after conservative escalation
+  ($0.20 and $0.11). Honest, but a hub-page recognizer would save the escalation cost.
+- Trigger branches seen: proximity-consent 5, page-agreement-context 3, password-field 2,
+  form-context 1. The weakest branch fired on apus.edu and foxnews.com; worth a look.
+- The local layer held OAuth state, nonce, and code-challenge parameters in two page URLs
+  (Harvard, Microsoft). The uploadable form drops them; that is the rule working.

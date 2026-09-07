@@ -31,6 +31,7 @@ const RUNTIME_FILES = [
   "vendor/tldts-7.4.8.umd.min.js",
   "vendor/tldts.LICENSE",
   "tosUtils.js",
+  "episode.js",
   // content scripts
   "shadowDom.js",
   "content.js",

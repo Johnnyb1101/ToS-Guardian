@@ -125,7 +125,8 @@ const spies = {
   writeToSupabase: makeSpy('writeToSupabase', async () => null),
   saveAnalysis: makeSpy('saveAnalysis', async () => null),
   fetchWithHiddenTab: makeSpy('fetchWithHiddenTab', async () => ({ text: 'Fetched opt-out page '.repeat(30), html: '<p>ok</p>' })),
-  validateLinkFollowerUrl: makeSyncSpy('validateLinkFollowerUrl', () => true)
+  validateLinkFollowerUrl: makeSyncSpy('validateLinkFollowerUrl', () => true),
+  observerSink: makeSyncSpy('observerSink', () => true)
 };
 
 const context = {
@@ -145,7 +146,7 @@ const context = {
 };
 
 vm.createContext(context);
-for (const file of ['vendor/tldts-7.4.8.umd.min.js', 'tosUtils.js', 'evaluator.js', 'orchestrator.js']) {
+for (const file of ['vendor/tldts-7.4.8.umd.min.js', 'tosUtils.js', 'evaluator.js', 'episode.js', 'orchestrator.js']) {
   vm.runInContext(fs.readFileSync(path.join(repoRoot, file), 'utf8'), context, { filename: file });
 }
 originalEvaluateAnalysis = context.evaluateAnalysis;
@@ -493,6 +494,28 @@ ${strongSummary('clean source')}`
       'verified analyzer source', spies.saveAnalysis.calls[0][2]);
   });
 
+  // The write receipt binds a verification text that the proxy requires to be a
+  // byte-for-byte substring of the analyzer source it signed. A dense source with
+  // a line longer than the sanitizer's cap must still satisfy that.
+  await runTest(async () => {
+    let longLine = '';
+    while (longLine.length < 2600) longLine += 'affiliates share ';
+    longLine = longLine.slice(0, 1999) + ' ' + longLine.slice(2000);
+    const denseSource = context.sanitizeForPrompt('=== TERMS OF SERVICE ===\nTerms.\n\n=== PRIVACY POLICY ===\n' + longLine + '\nWe share with affiliates.');
+    const raw = '🧭 BOTTOM LINE\nThey share.\n🧭 RISK LEVEL\nHigh\n' + strongSummary('Dense');
+    spies.analyzeWithModel.impl = async () => ({
+      summary: raw, providerAnalysis: raw, analysisSource: denseSource, analysisReceipt: 'analysis-token', providerTag: 'anthropic'
+    });
+    spies.runCritic.impl = async () => ({
+      dataCollection: 'grounded', dataSelling: 'grounded', optOutRights: 'grounded',
+      howToOptOut: 'grounded', autoRenewal: 'skipped', dataDeletion: 'grounded', flags: [], _writeReceipt: 'write-token'
+    });
+    await context.runOrchestrator('https://chase.com/signup', 'page text', '<html></html>');
+    const privacyText = spies.runCritic.calls[0][2].cacheContext.privacyText;
+    mustTrue('runCritic', 'verification text is a substring of a dense analyzer source', true, denseSource.includes(privacyText));
+    mustTrue('runCritic', 'verification text starts at the privacy policy marker', true, privacyText.startsWith('=== PRIVACY POLICY'));
+  });
+
   // Adequate results should also save because they are acceptable with a warning.
   await runTest(async () => {
     spies.analyzeWithModel.impl = async () => ({ summary: adequateSummary('Adequate') });
@@ -687,6 +710,95 @@ ${strongSummary('clean source')}`
     spies.fetcherAgent.impl = async () => { throw new Error('permanent'); };
     await context.runOrchestrator('https://chase.com/terms', DEFAULT_FETCHED_TEXT, '<html></html>');
     mustEqual('analyzeWithModel', 'analyzes page text when the page itself is a legal document', 1, spies.analyzeWithModel.calls.filter(args => args[2] !== true).length);
+  });
+
+  // --- Observer mode (learning loop, phase 0) ---------------------------------
+  // Off by default: a full relay records nothing and never touches the sink.
+  await runTest(async () => {
+    await context.runOrchestrator('https://chase.com/signup', 'page text', '<html></html>');
+    mustEqual('observer', 'disabled observer never calls the sink', 0, spies.observerSink.calls.length);
+  });
+
+  // On: every stage records a valid event, in pipeline order, and the assembled
+  // episode validates both locally and after stripLocal() as uploadable.
+  await runTest(async () => {
+    storageData.tosGuardianObserver = { enabled: true, port: 3123 };
+    spies.saveAnalysis.impl = async (...args) => { if (typeof args[6] === 'function') args[6]({ attempted: true, result: 'written' }); return null; };
+    spies.analyzeWithModel.impl = async () => ({
+      summary: strongSummary('Observed'), providerAnalysis: strongSummary('Observed'), analysisSource: DEFAULT_FETCHED_TEXT,
+      analysisReceipt: 'analysis-token', providerTag: 'anthropic', provider: 'anthropic', model: 'claude-sonnet-4-6',
+      stopReason: 'end_turn', usage: { inputTokens: 1200, outputTokens: 300, cacheReadTokens: 0, cacheWriteTokens: 0 }, status: 'ok'
+    });
+    spies.runCritic.impl = async () => ({
+      dataCollection: 'grounded', dataSelling: 'grounded', optOutRights: 'grounded',
+      howToOptOut: 'grounded', autoRenewal: 'skipped', dataDeletion: 'grounded',
+      flags: [], adjustments: [], _writeReceipt: 'write-token', _model: 'claude-sonnet-4-6', _stopReason: 'end_turn',
+      _usage: { inputTokens: 2000, outputTokens: 200 }
+    });
+    await context.runOrchestrator('https://chase.com/signup?session=secret', 'page text', '<html></html>', { episodeId: '0123456789abcdef' });
+    const events = spies.observerSink.calls.map(c => c[0]);
+    const stages = events.map(e => e.stage);
+    mustDeep('observer', 'records every stage in pipeline order',
+      ['relay', 'fetch', 'cache', 'scan', 'links', 'analyze', 'critic', 'evaluate', 'verdict', 'write', 'end'], stages);
+    mustTrue('observer', 'every event validates against the schema', true, events.every(e => context.validateEvent(e).valid));
+    mustTrue('observer', 'events carry the caller-supplied episode id', true, events.every(e => e.episodeId === '0123456789abcdef'));
+    const episode = context.assembleEpisode(events);
+    mustTrue('observer', 'assembled episode validates', true, context.validateEpisode(episode).valid);
+    mustEqual('observer', 'relay stage names the registrable domain and static lookup', 'chase.com/static',
+      `${episode.stages.relay.domain}/${episode.stages.relay.siteLookup}`);
+    mustEqual('observer', 'fetch stage records the document hash and legal check', true,
+      episode.stages.fetch.looksLegal === true && /^[0-9a-f]{8}$/.test(episode.stages.fetch.textHash));
+    mustFalse('observer', 'fetch document URLs never include the page URL', false,
+      JSON.stringify(episode.stages.fetch.documentUrls).includes('signup'));
+    mustTrue('observer', 'page URL lives only in the local layer', true,
+      episode.local.fetch.pageUrl.includes('session=secret'));
+    mustEqual('observer', 'analyze stage carries model and usage', 'claude-sonnet-4-6/1200', `${episode.stages.analyze.model}/${episode.stages.analyze.usage.inputTokens}`);
+    mustEqual('observer', 'critic stage carries verdicts and receipt', 'grounded/true', `${episode.stages.critic.verdicts.dataSelling}/${episode.stages.critic.receipt}`);
+    mustEqual('observer', 'verdict stage carries the trusted risk and label', 'Unknown/Strong', `${episode.stages.verdict.risk}/${episode.stages.verdict.label}`);
+    mustEqual('observer', 'write outcome is recorded from the save callback', 'written', episode.stages.write.result);
+    const uploadable = context.stripLocal(episode);
+    const check = context.validateEpisode(uploadable, { uploadable: true });
+    mustTrue('observer', 'stripped episode validates as uploadable (zero user data)', true, check.valid);
+    mustFalse('observer', 'stripped episode carries no page URL anywhere', false, JSON.stringify(uploadable).includes('session=secret'));
+  });
+
+  // On: a cache hit records the cached verdict and no analysis stage.
+  await runTest(async () => {
+    storageData.tosGuardianObserver = { enabled: true, port: 3123 };
+    spies.readFromSupabase.impl = async () => ({ summary: cachedEntry(strongSummary('Cached')), optOutLinks: ['https://chase.com/optout'], similarity: 0.97 });
+    await context.runOrchestrator('https://chase.com/signup', 'page text', '<html></html>');
+    const episode = context.assembleEpisode(spies.observerSink.calls.map(c => c[0]));
+    mustEqual('observer', 'cache hit is recorded with its similarity', 'hit/0.97', `${episode.stages.cache.read}/${episode.stages.cache.similarity}`);
+    mustEqual('observer', 'cache hit verdict is marked cached', true, episode.stages.verdict.cached === true && episode.stages.verdict.label === 'Cached');
+    mustEqual('observer', 'cache hit records no analyze stage', undefined, episode.stages.analyze);
+  });
+
+  // On: an analyzer failure is an error verdict, and the episode still ends.
+  await runTest(async () => {
+    storageData.tosGuardianObserver = { enabled: true, port: 3123 };
+    spies.analyzeWithModel.impl = async () => null;
+    await context.runOrchestrator('https://chase.com/signup', 'page text', '<html></html>');
+    const episode = context.assembleEpisode(spies.observerSink.calls.map(c => c[0]));
+    mustEqual('observer', 'analyzer failure is recorded as an error status', 'error', episode.stages.analyze.status);
+    mustEqual('observer', 'analyzer failure is an Error verdict with a false end.ok', 'Error/false', `${episode.stages.verdict.label}/${episode.stages.end.ok}`);
+  });
+
+  // On: the escalation cap is recorded, not just logged.
+  await runTest(async () => {
+    storageData.tosGuardianObserver = { enabled: true, port: 3123 };
+    storageData.opusEscalationData = { count: 5, resetAt: mockNow + 86400000 };
+    spies.analyzeWithModel.impl = async () => ({ summary: failedSummary('capped') });
+    await context.runOrchestrator('https://chase.com/signup', 'page text', '<html></html>');
+    const episode = context.assembleEpisode(spies.observerSink.calls.map(c => c[0]));
+    mustEqual('observer', 'escalation blocked by the cap is recorded', 'cap', episode.stages.escalate && episode.stages.escalate.reason);
+  });
+
+  // On: a sink that throws never disturbs the relay.
+  await runTest(async () => {
+    storageData.tosGuardianObserver = { enabled: true, port: 3123 };
+    spies.observerSink.impl = () => { throw new Error('collector down'); };
+    const got = await context.runOrchestrator('https://chase.com/signup', 'page text', '<html></html>');
+    mustTrue('observer', 'a throwing sink never breaks the analysis', true, got.summary.includes('Analysis confidence'));
   });
 
   printTable();
