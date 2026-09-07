@@ -12,3 +12,7 @@ batch-episodes-*.ndjson
 
 # observer collector output (local episode events; may hold page URLs)
 observer/
+
+# learning loop reference set: frozen third-party document text and run artifacts stay local
+reference/sources/
+reference/runs/

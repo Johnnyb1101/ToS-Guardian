@@ -1,0 +1,1338 @@
+{
+  "v": 1,
+  "updatedAt": "2026-09-06T23:59:57.865Z",
+  "holdoutShare": 0.3,
+  "sites": {
+    "acorns.com": {
+      "domain": "acorns.com",
+      "frozenAt": "2026-09-06T23:46:33.316Z",
+      "split": "work",
+      "docType": "financial",
+      "docTypeOverride": null,
+      "textHash": "3dbe6138a89d8fec6205a5b621b90e26417209128487c0f3554e4470a50d8914",
+      "textChars": 102961,
+      "enrichedChars": 165666,
+      "looksLegal": true,
+      "path": "page-links",
+      "documentUrls": [
+        "https://www.acorns.com/terms/",
+        "https://www.acorns.com/privacy/"
+      ],
+      "optOutLinks": [
+        "https://www.acorns.com/privacy/",
+        "https://www.networkadvertising.org/managing/opt_out.asp",
+        "https://www.acorns.com/privacy/#h_2529689630011672332596809"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/acorns.com.json",
+      "curatedType": "financial"
+    },
+    "airbnb.com": {
+      "domain": "airbnb.com",
+      "frozenAt": "2026-09-06T23:53:25.209Z",
+      "split": "work",
+      "docType": "media",
+      "docTypeOverride": null,
+      "textHash": "655f264caa4482f087056937bea8b59d319db18b37f1963f29b3836befe03f1d",
+      "textChars": 263249,
+      "enrichedChars": 265339,
+      "looksLegal": true,
+      "path": "known-urls",
+      "documentUrls": [
+        "https://www.airbnb.com/help/article/2908",
+        "https://www.airbnb.com/help/article/2855"
+      ],
+      "optOutLinks": [
+        "https://www.airbnb.com/help/article/2855",
+        "https://www.airbnb.com/help/sale-share-opt-out"
+      ],
+      "supplementalCount": 1,
+      "injectionStripped": false,
+      "sourceFile": "sources/airbnb.com.json",
+      "curatedType": "commerce"
+    },
+    "amazon.com": {
+      "domain": "amazon.com",
+      "frozenAt": "2026-09-06T23:52:51.789Z",
+      "split": "holdout",
+      "docType": "commerce",
+      "docTypeOverride": null,
+      "textHash": "144e96be02f6d397f6f97123f1fcfd3c0acf599fa48abe32208db079f4477c6e",
+      "textChars": 69945,
+      "enrichedChars": 69945,
+      "looksLegal": true,
+      "path": "known-urls",
+      "documentUrls": [
+        "https://www.amazon.com/gp/help/customer/display.html?nodeId=508088",
+        "https://www.amazon.com/gp/help/customer/display.html?nodeId=468496"
+      ],
+      "optOutLinks": [
+        "https://www.amazon.com/gp/help/customer/display.html?nodeId=468496"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/amazon.com.json",
+      "curatedType": "commerce"
+    },
+    "americanexpress.com": {
+      "domain": "americanexpress.com",
+      "frozenAt": "2026-09-06T23:45:27.029Z",
+      "split": "holdout",
+      "docType": "media",
+      "docTypeOverride": null,
+      "textHash": "c139e312281adc4fc484ac2ce80e5f7a087e861e18bb711f490d1b6f4cf85f13",
+      "textChars": 79968,
+      "enrichedChars": 79968,
+      "looksLegal": true,
+      "path": "page-links",
+      "documentUrls": [
+        "https://www.americanexpress.com/us/legal-disclosures/website-rules-and-regulations.html?inav=en_us_legalfooter_terms_of_service",
+        "https://www.americanexpress.com/us/company/privacy-center/online-privacy-disclosures/?inav=en_us_legalfooter_adchoices#what-are-your-choices"
+      ],
+      "optOutLinks": [
+        "https://www.americanexpress.com/us/company/privacy-center/online-privacy-disclosures/?inav=en_us_legalfooter_adchoices#what-are-your-choices"
+      ],
+      "supplementalCount": 1,
+      "injectionStripped": false,
+      "sourceFile": "sources/americanexpress.com.json",
+      "curatedType": "financial"
+    },
+    "apus.edu": {
+      "domain": "apus.edu",
+      "frozenAt": "2026-09-06T23:54:21.567Z",
+      "split": "work",
+      "docType": "education",
+      "docTypeOverride": null,
+      "textHash": "24dcb42164fad7d294692ab583eadce504efa12d1f8cbb133db1673db3b38fb2",
+      "textChars": 89999,
+      "enrichedChars": 89999,
+      "looksLegal": true,
+      "path": "page-links",
+      "documentUrls": [
+        "https://apus.edu/terms/",
+        "https://apus.edu/privacy/"
+      ],
+      "optOutLinks": [
+        "https://apus.edu/privacy/"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/apus.edu.json",
+      "curatedType": "education"
+    },
+    "capitalone.com": {
+      "domain": "capitalone.com",
+      "frozenAt": "2026-09-06T23:44:28.694Z",
+      "split": "holdout",
+      "docType": "financial",
+      "docTypeOverride": null,
+      "textHash": "94b91d2a7fe10849314ab2c28c6183fa185019ef8e37a90e83c8c19c3b46b4e3",
+      "textChars": 86508,
+      "enrichedChars": 89474,
+      "looksLegal": true,
+      "path": "known-urls",
+      "documentUrls": [
+        "https://www.capitalone.com/digital/terms-conditions/",
+        "https://www.capitalone.com/privacy/",
+        "https://www.capitalone.com/privacy/notice/en-us",
+        "https://www.capitalone.com/privacy/online-privacy-policy/",
+        "https://www.capitalone.com/privacy/ccpa-disclosure/"
+      ],
+      "optOutLinks": [
+        "https://www.capitalone.com/privacy/",
+        "https://www.capitalone.com/privacy/notice/en-us",
+        "https://www.capitalone.com/privacy/online-privacy-policy/",
+        "https://www.capitalone.com/privacy/ccpa-disclosure/",
+        "https://www.capitalone.com/privacy/your-california-privacy-choices/"
+      ],
+      "supplementalCount": 3,
+      "injectionStripped": false,
+      "sourceFile": "sources/capitalone.com.json",
+      "curatedType": "financial"
+    },
+    "chase.com": {
+      "domain": "chase.com",
+      "frozenAt": "2026-09-06T23:44:57.947Z",
+      "split": "work",
+      "docType": "financial",
+      "docTypeOverride": null,
+      "textHash": "1f9096deef1383185850526777f3e5d8ee921832dedd14ac81c0a7f69b08466f",
+      "textChars": 37297,
+      "enrichedChars": 37653,
+      "looksLegal": true,
+      "path": "page-links",
+      "documentUrls": [
+        "https://chase.com/digital/resources/terms-of-use",
+        "https://chase.com/digital/resources/privacy-security/security/how-we-protect-you"
+      ],
+      "optOutLinks": [
+        "https://chase.com/digital/resources/privacy-security/security/how-we-protect-you",
+        "https://optout.aboutads.info/?c=2&amp;lang=EN"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/chase.com.json",
+      "curatedType": "financial"
+    },
+    "cnn.com": {
+      "domain": "cnn.com",
+      "frozenAt": "2026-09-06T23:49:45.933Z",
+      "split": "holdout",
+      "docType": "other",
+      "docTypeOverride": null,
+      "textHash": "c778debb184a88e5cd695667c38ce63e53ebcf2837d78eb86e22d99da88e79ee",
+      "textChars": 9654,
+      "enrichedChars": 15896,
+      "looksLegal": true,
+      "path": "page-links",
+      "documentUrls": [
+        "https://www.cnn.com/audio/podcasts/terms-of-service-with-clare-duffy",
+        "https://www.cnn.com/privacy"
+      ],
+      "optOutLinks": [
+        "https://www.cnn.com/privacy",
+        "https://fonts.googleapis.com/css?family=Muli:400,600,700|Red+Hat+Text:400,500,700&display=swap"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/cnn.com.json",
+      "curatedType": "media"
+    },
+    "coinbase.com": {
+      "domain": "coinbase.com",
+      "frozenAt": "2026-09-06T23:46:04.895Z",
+      "split": "holdout",
+      "docType": "technology",
+      "docTypeOverride": null,
+      "textHash": "a3dc3a5a9859d22e91621cc830867e1a64f3ec855c3cbfb721fbe14f70590427",
+      "textChars": 62862,
+      "enrichedChars": 62862,
+      "looksLegal": true,
+      "path": "page-links",
+      "documentUrls": [
+        "https://coinbase.com/legal/privacy"
+      ],
+      "optOutLinks": [
+        "https://coinbase.com/legal/privacy"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/coinbase.com.json",
+      "curatedType": "financial"
+    },
+    "coursera.org": {
+      "domain": "coursera.org",
+      "frozenAt": "2026-09-06T23:54:49.618Z",
+      "split": "work",
+      "docType": "education",
+      "docTypeOverride": null,
+      "textHash": "6b1a55bcb4e40fe4e40329006aa081a5179a9d2e09e67ecc7394316699026f81",
+      "textChars": 110557,
+      "enrichedChars": 110557,
+      "looksLegal": true,
+      "path": "page-links",
+      "documentUrls": [
+        "https://www.coursera.org/about/terms",
+        "https://www.coursera.org/about/privacy"
+      ],
+      "optOutLinks": [
+        "https://www.coursera.org/about/privacy"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/coursera.org.json",
+      "curatedType": "education"
+    },
+    "discord.com": {
+      "domain": "discord.com",
+      "frozenAt": "2026-09-06T23:44:08.572Z",
+      "split": "work",
+      "docType": "social",
+      "docTypeOverride": null,
+      "textHash": "1ce167ef9b90d28dd051488259480f0fb58e0199cc2ad079890ff76674872f19",
+      "textChars": 100415,
+      "enrichedChars": 100415,
+      "looksLegal": true,
+      "path": "known-urls",
+      "documentUrls": [
+        "https://discord.com/terms",
+        "https://discord.com/privacy"
+      ],
+      "optOutLinks": [
+        "https://discord.com/privacy"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/discord.com.json",
+      "curatedType": "social"
+    },
+    "discover.com": {
+      "domain": "discover.com",
+      "frozenAt": "2026-09-06T23:45:12.848Z",
+      "split": "work",
+      "docType": "financial",
+      "docTypeOverride": null,
+      "textHash": "ec28075d120dcfddfd4afb6457c3ae148e96b68fd353135bc704cf3edeca3141",
+      "textChars": 93551,
+      "enrichedChars": 93551,
+      "looksLegal": true,
+      "path": "page-links",
+      "documentUrls": [
+        "https://discover.com/discover-terms-of-use/?ICMPGN=PUB_FTR_QL_TERMS",
+        "https://www.discover.com/privacy-statement/online-privacy-statement.html"
+      ],
+      "optOutLinks": [
+        "https://www.discover.com/privacy-statement/online-privacy-statement.html"
+      ],
+      "supplementalCount": 1,
+      "injectionStripped": false,
+      "sourceFile": "sources/discover.com.json",
+      "curatedType": "financial"
+    },
+    "dropbox.com": {
+      "domain": "dropbox.com",
+      "frozenAt": "2026-09-06T23:51:46.767Z",
+      "split": "work",
+      "docType": "technology",
+      "docTypeOverride": null,
+      "textHash": "2b09eab89d1d2b86a610eda51af465bcf7b68aed144c49f04fa89fdead188328",
+      "textChars": 27872,
+      "enrichedChars": 27872,
+      "looksLegal": true,
+      "path": "page-links",
+      "documentUrls": [
+        "https://dropbox.com/terms"
+      ],
+      "optOutLinks": [],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/dropbox.com.json",
+      "curatedType": "technology"
+    },
+    "duckduckgo.com": {
+      "domain": "duckduckgo.com",
+      "frozenAt": "2026-09-06T23:52:14.905Z",
+      "split": "holdout",
+      "docType": "technology",
+      "docTypeOverride": null,
+      "textHash": "8a5482d3c41196338d7f5cc5e43232f7a563956b7ebd48c5ede3a82ccd6b60a0",
+      "textChars": 16012,
+      "enrichedChars": 16012,
+      "looksLegal": true,
+      "path": "page-links",
+      "documentUrls": [
+        "https://duckduckgo.com/terms",
+        "https://duckduckgo.com/compare-privacy"
+      ],
+      "optOutLinks": [
+        "https://duckduckgo.com/compare-privacy"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/duckduckgo.com.json",
+      "curatedType": "technology"
+    },
+    "ebay.com": {
+      "domain": "ebay.com",
+      "frozenAt": "2026-09-06T23:53:01.389Z",
+      "split": "work",
+      "docType": "commerce",
+      "docTypeOverride": null,
+      "textHash": "ac656bbca344f24f78680e5c17a433e8937b15b157183806fe334b1388b90c00",
+      "textChars": 272079,
+      "enrichedChars": 272079,
+      "looksLegal": true,
+      "path": "known-urls",
+      "documentUrls": [
+        "https://www.ebay.com/help/policies/member-behaviour-policies/user-agreement?id=4259",
+        "https://www.ebay.com/help/policies/member-behaviour-policies/user-privacy-notice-privacy-policy?id=4260"
+      ],
+      "optOutLinks": [
+        "https://www.ebay.com/help/policies/member-behaviour-policies/user-privacy-notice-privacy-policy?id=4260"
+      ],
+      "supplementalCount": 1,
+      "injectionStripped": false,
+      "sourceFile": "sources/ebay.com.json",
+      "curatedType": "commerce"
+    },
+    "epicgames.com": {
+      "domain": "epicgames.com",
+      "frozenAt": "2026-09-06T23:54:00.484Z",
+      "split": "holdout",
+      "docType": "gaming",
+      "docTypeOverride": null,
+      "textHash": "b4ab2d766894f99aae7f16f84912e68ab6f7b42db1dff6155f13651500fe3614",
+      "textChars": 129690,
+      "enrichedChars": 129690,
+      "looksLegal": true,
+      "path": "known-urls",
+      "documentUrls": [
+        "https://www.epicgames.com/tos",
+        "https://www.epicgames.com/privacypolicy"
+      ],
+      "optOutLinks": [
+        "https://www.epicgames.com/privacypolicy"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/epicgames.com.json",
+      "curatedType": "gaming"
+    },
+    "etsy.com": {
+      "domain": "etsy.com",
+      "frozenAt": "2026-09-06T23:59:38.295Z",
+      "split": "holdout",
+      "docType": "other",
+      "curatedType": "commerce",
+      "docTypeOverride": null,
+      "textHash": "ff2b1d7f7f4ff11f42adb59612536357fe3b96cf5213ad6188dcac69ecf5c896",
+      "textChars": 152,
+      "enrichedChars": 152,
+      "looksLegal": false,
+      "path": "known-urls",
+      "documentUrls": [
+        "https://www.etsy.com/legal/terms-of-use/",
+        "https://www.etsy.com/legal/privacy/"
+      ],
+      "optOutLinks": [
+        "https://www.etsy.com/legal/privacy/"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/etsy.com.json"
+    },
+    "facebook.com": {
+      "domain": "facebook.com",
+      "frozenAt": "2026-09-06T23:58:31.936Z",
+      "split": "work",
+      "docType": "other",
+      "curatedType": "social",
+      "docTypeOverride": null,
+      "textHash": "ee2f7ca5dd0e832a381233d3cec55bf8c42f1960aee6d7aee08a8c48f69fd99e",
+      "textChars": 322,
+      "enrichedChars": 322,
+      "looksLegal": false,
+      "path": "known-urls",
+      "documentUrls": [
+        "https://www.facebook.com/terms.php",
+        "https://www.facebook.com/privacy/policy/"
+      ],
+      "optOutLinks": [
+        "https://www.facebook.com/privacy/policy/"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/facebook.com.json"
+    },
+    "foxnews.com": {
+      "domain": "foxnews.com",
+      "frozenAt": "2026-09-06T23:50:01.322Z",
+      "split": "work",
+      "docType": "media",
+      "docTypeOverride": null,
+      "textHash": "5fbaba39136f6ecb5e9c53c6c456776d135cdc2c9d9b4634aa31817da45cdd5c",
+      "textChars": 183157,
+      "enrichedChars": 185550,
+      "looksLegal": true,
+      "path": "page-links",
+      "documentUrls": [
+        "https://www.foxnews.com/terms-of-use",
+        "https://www.foxnews.com/privacy-policy"
+      ],
+      "optOutLinks": [
+        "https://www.foxnews.com/privacy-policy",
+        "https://www.foxlocal.com/donotsell/index.html",
+        "https://optout.aboutads.info/#/"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/foxnews.com.json",
+      "curatedType": "media"
+    },
+    "github.com": {
+      "domain": "github.com",
+      "frozenAt": "2026-09-06T23:51:05.118Z",
+      "split": "holdout",
+      "docType": "technology",
+      "docTypeOverride": null,
+      "textHash": "0d9a90d91e58b14981ea1fd808c8122c353d372eb67a3521c4927b873969bcfa",
+      "textChars": 93784,
+      "enrichedChars": 100928,
+      "looksLegal": true,
+      "path": "known-urls",
+      "documentUrls": [
+        "https://docs.github.com/en/site-policy/github-terms/github-terms-of-service",
+        "https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement"
+      ],
+      "optOutLinks": [
+        "https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement",
+        "https://optout.networkadvertising.org"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/github.com.json",
+      "curatedType": "technology"
+    },
+    "google.com": {
+      "domain": "google.com",
+      "frozenAt": "2026-09-06T23:52:45.007Z",
+      "split": "work",
+      "docType": "technology",
+      "docTypeOverride": null,
+      "textHash": "59d273620eb5fbc931271c291ed4e8ff0ece150dcb185c500e83317c30032766",
+      "textChars": 95231,
+      "enrichedChars": 95627,
+      "looksLegal": true,
+      "path": "known-urls",
+      "documentUrls": [
+        "https://policies.google.com/terms",
+        "https://policies.google.com/privacy"
+      ],
+      "optOutLinks": [
+        "https://policies.google.com/privacy",
+        "https://www.google.com/history/optout?utm_source=pp"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/google.com.json",
+      "curatedType": "technology"
+    },
+    "harvard.edu": {
+      "domain": "harvard.edu",
+      "frozenAt": "2026-09-06T23:54:35.727Z",
+      "split": "work",
+      "docType": "education",
+      "docTypeOverride": null,
+      "textHash": "70907a609bbbcc36964a6d964cf8fab8d022336266ad46766788506f0701edc9",
+      "textChars": 11930,
+      "enrichedChars": 18583,
+      "looksLegal": true,
+      "path": "page-links",
+      "documentUrls": [
+        "https://www.harvard.edu/privacy-statement/"
+      ],
+      "optOutLinks": [
+        "https://www.harvard.edu/privacy-statement/",
+        "https://www.networkadvertising.org/managing/opt_out.asp"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/harvard.edu.json",
+      "curatedType": "education"
+    },
+    "instagram.com": {
+      "domain": "instagram.com",
+      "frozenAt": "2026-09-06T23:58:45.045Z",
+      "split": "work",
+      "docType": "other",
+      "curatedType": "social",
+      "docTypeOverride": null,
+      "textHash": "e2b9d0b791cdf7ace04200659697b66a1bf53c5396927b926c85e94df0828c23",
+      "textChars": 195,
+      "enrichedChars": 195,
+      "looksLegal": false,
+      "path": "known-urls",
+      "documentUrls": [
+        "https://help.instagram.com/581066165581870",
+        "https://privacycenter.instagram.com/policy"
+      ],
+      "optOutLinks": [
+        "https://privacycenter.instagram.com/policy"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/instagram.com.json"
+    },
+    "lendingclub.com": {
+      "domain": "lendingclub.com",
+      "frozenAt": "2026-09-06T23:46:48.151Z",
+      "split": "work",
+      "docType": "financial",
+      "docTypeOverride": null,
+      "textHash": "d5d993281993ab7a5139ba63ce1c151775353459ea4c5b47fd860e54280d176d",
+      "textChars": 92270,
+      "enrichedChars": 101597,
+      "looksLegal": true,
+      "path": "page-links",
+      "documentUrls": [
+        "https://lendingclub.com/legal/deposits/personal-products-terms-and-conditions",
+        "https://lendingclub.com/legal/privacy-policy#online-privacy-policy"
+      ],
+      "optOutLinks": [
+        "https://lendingclub.com/legal/privacy-policy#online-privacy-policy",
+        "https://tools.google.com/dlpage/gaoptout/.",
+        "https://optout.networkadvertising.org/?c=1",
+        "https://optout.aboutads.info/?c=2&amp;lang=EN"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/lendingclub.com.json",
+      "curatedType": "financial"
+    },
+    "lendingtree.com": {
+      "domain": "lendingtree.com",
+      "frozenAt": "2026-09-06T23:47:02.411Z",
+      "split": "work",
+      "docType": "financial",
+      "docTypeOverride": null,
+      "textHash": "93ddaaa926f364efe83d52097de30f069349d0b906fe36f9992f0c15c5d5e049",
+      "textChars": 131602,
+      "enrichedChars": 139109,
+      "looksLegal": true,
+      "path": "page-links",
+      "documentUrls": [
+        "https://www.lendingtree.com/legal/terms-of-use/",
+        "https://www.lendingtree.com/legal/privacy-policy/"
+      ],
+      "optOutLinks": [
+        "https://www.lendingtree.com/legal/privacy-policy/",
+        "https://optout.aboutads.info/?c=2&amp;lang=EN;",
+        "https://optout.networkadvertising.org/?c=1."
+      ],
+      "supplementalCount": 1,
+      "injectionStripped": false,
+      "sourceFile": "sources/lendingtree.com.json",
+      "curatedType": "financial"
+    },
+    "linkedin.com": {
+      "domain": "linkedin.com",
+      "frozenAt": "2026-09-06T23:48:00.846Z",
+      "split": "work",
+      "docType": "social",
+      "docTypeOverride": null,
+      "textHash": "2feb3d86e5012cfa2d1c49e4f7bef37c8b481f327414df3f0b9e11ba51ce0681",
+      "textChars": 100833,
+      "enrichedChars": 111684,
+      "looksLegal": true,
+      "path": "known-urls",
+      "documentUrls": [
+        "https://www.linkedin.com/legal/user-agreement",
+        "https://www.linkedin.com/legal/privacy-policy"
+      ],
+      "optOutLinks": [
+        "https://www.linkedin.com/legal/privacy-policy",
+        "https://www.linkedin.com/psettings/data-sharing",
+        "https://www.linkedin.com/psettings/research-invitations",
+        "https://www.linkedin.com/help/linkedin/answer/62931?trk=microsites-frontend_legal_privacy-policy&lang=en"
+      ],
+      "supplementalCount": 1,
+      "injectionStripped": false,
+      "sourceFile": "sources/linkedin.com.json",
+      "curatedType": "social"
+    },
+    "microsoft.com": {
+      "domain": "microsoft.com",
+      "frozenAt": "2026-09-06T23:52:38.150Z",
+      "split": "holdout",
+      "docType": "technology",
+      "docTypeOverride": null,
+      "textHash": "75146356ca961aa4300bdd8c4570e77d28eba12d2ac7820f050c705517ffb7ba",
+      "textChars": 338924,
+      "enrichedChars": 375069,
+      "looksLegal": true,
+      "path": "known-urls",
+      "documentUrls": [
+        "https://www.microsoft.com/en-us/servicesagreement/",
+        "https://privacy.microsoft.com/en-us/privacystatement"
+      ],
+      "optOutLinks": [
+        "https://privacy.microsoft.com/en-us/privacystatement",
+        "https://rewards.microsoft.com/optout",
+        "https://www.appsflyer.com/optout"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/microsoft.com.json",
+      "curatedType": "technology"
+    },
+    "mozilla.org": {
+      "domain": "mozilla.org",
+      "frozenAt": "2026-09-06T23:52:28.918Z",
+      "split": "holdout",
+      "docType": "other",
+      "docTypeOverride": null,
+      "textHash": "65da3d75885c87e6943ab619f1aa1ec5c801e01c2817f5855ff485b7eceeef38",
+      "textChars": 6384,
+      "enrichedChars": 6384,
+      "looksLegal": true,
+      "path": "page-links",
+      "documentUrls": [
+        "https://mozilla.org/en-US/privacy/websites/cookie-settings/"
+      ],
+      "optOutLinks": [
+        "https://mozilla.org/en-US/privacy/websites/cookie-settings/"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/mozilla.org.json",
+      "curatedType": "technology"
+    },
+    "navyfederal.org": {
+      "domain": "navyfederal.org",
+      "frozenAt": "2026-09-06T23:44:43.278Z",
+      "split": "work",
+      "docType": "financial",
+      "docTypeOverride": null,
+      "textHash": "0b49d8a510f2ba82216fd3f1fd69e8a0b3225a73271c5fb270940f438606dd5c",
+      "textChars": 169010,
+      "enrichedChars": 169010,
+      "looksLegal": true,
+      "path": "link-text",
+      "documentUrls": [
+        "https://navyfederal.org/content/dam/nfculibs/pdfs/membership/nfcu_652a.pdf",
+        "https://navyfederal.org/policy.html"
+      ],
+      "optOutLinks": [
+        "https://navyfederal.org/policy.html"
+      ],
+      "supplementalCount": 2,
+      "injectionStripped": false,
+      "sourceFile": "sources/navyfederal.org.json",
+      "curatedType": "financial"
+    },
+    "netflix.com": {
+      "domain": "netflix.com",
+      "frozenAt": "2026-09-06T23:53:39.333Z",
+      "split": "holdout",
+      "docType": "gaming",
+      "docTypeOverride": null,
+      "textHash": "8ce0865db0023c7522acb079f228d1a2e78f62c4e38b73e1953eb6c0c7d03d4d",
+      "textChars": 132155,
+      "enrichedChars": 132155,
+      "looksLegal": true,
+      "path": "known-urls",
+      "documentUrls": [
+        "https://help.netflix.com/legal/termsofuse",
+        "https://help.netflix.com/legal/privacy"
+      ],
+      "optOutLinks": [
+        "https://help.netflix.com/legal/privacy"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/netflix.com.json",
+      "curatedType": "media"
+    },
+    "notion.so": {
+      "domain": "notion.so",
+      "frozenAt": "2026-09-06T23:52:01.321Z",
+      "split": "work",
+      "docType": "technology",
+      "docTypeOverride": null,
+      "textHash": "8bd8bc8246a25787584f4711bf71cbe06cef9d7d59bb63daaac07d54b8231f76",
+      "textChars": 35073,
+      "enrichedChars": 42564,
+      "looksLegal": true,
+      "path": "page-links",
+      "documentUrls": [
+        "https://www.notion.com/trust/privacy-policy#california"
+      ],
+      "optOutLinks": [
+        "https://www.notion.com/trust/privacy-policy#california",
+        "https://optout.networkadvertising.org/#!/",
+        "https://optout.aboutads.info/#!/"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/notion.so.json",
+      "curatedType": "technology"
+    },
+    "nytimes.com": {
+      "domain": "nytimes.com",
+      "frozenAt": "2026-09-06T23:50:15.772Z",
+      "split": "work",
+      "docType": "social",
+      "docTypeOverride": null,
+      "textHash": "a235d66d97d1a2815082686e4cc71a0db79dede20d48a0b5586ab1ed9bb2869f",
+      "textChars": 79897,
+      "enrichedChars": 241705,
+      "looksLegal": true,
+      "path": "page-links",
+      "documentUrls": [
+        "https://www.nytimes.com/interactive/2026/us/elections/midterms-house-senate-key-races.html",
+        "https://help.nytimes.com/hc/en-us/articles/10940941449492-The-New-York-Times-Company-Privacy-Policy"
+      ],
+      "optOutLinks": [
+        "https://help.nytimes.com/hc/en-us/articles/10940941449492-The-New-York-Times-Company-Privacy-Policy",
+        "https://help.nytimes.com/hc/en-us/articles/10940941449492-The-New-York-Times-Company-Privacy-Policy#v-opt-out-of-targeted-advertising-and-sales-or-sharing-of-personal-information-54",
+        "https://help.nytimes.com/hc/en-us/articles/10940941449492-The-New-York-Times-Company-Privacy-Policy#iii-do-not-sell-or-share-my-personal-information-60",
+        "https://tools.google.com/dlpage/gaoptout"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/nytimes.com.json",
+      "curatedType": "media"
+    },
+    "ollama.com": {
+      "domain": "ollama.com",
+      "frozenAt": "2026-09-06T23:51:18.462Z",
+      "split": "holdout",
+      "docType": "technology",
+      "docTypeOverride": null,
+      "textHash": "b447007cb8422a1a0a02194fab08c857c9166cf8d47700d3170cc74d9f8b8da3",
+      "textChars": 20933,
+      "enrichedChars": 20933,
+      "looksLegal": true,
+      "path": "page-links",
+      "documentUrls": [
+        "https://ollama.com/terms",
+        "https://ollama.com/privacy"
+      ],
+      "optOutLinks": [
+        "https://ollama.com/privacy"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/ollama.com.json",
+      "curatedType": "technology"
+    },
+    "paypal.com": {
+      "domain": "paypal.com",
+      "frozenAt": "2026-09-06T23:45:51.220Z",
+      "split": "work",
+      "docType": "financial",
+      "docTypeOverride": null,
+      "textHash": "312cce7ae251c7b6b7afbcdcbb6c44f1b46d39f810525ec3865be8f4b821f0c8",
+      "textChars": 287570,
+      "enrichedChars": 295055,
+      "looksLegal": true,
+      "path": "known-urls",
+      "documentUrls": [
+        "https://www.paypal.com/us/legalhub/useragreement-full",
+        "https://www.paypal.com/us/legalhub/privacy-full"
+      ],
+      "optOutLinks": [
+        "https://www.paypal.com/us/legalhub/privacy-full",
+        "https://optout.aboutads.info/?c=2&amp;lang=EN",
+        "https://www.paypal.com/myaccount/privacy/privacyhub"
+      ],
+      "supplementalCount": 1,
+      "injectionStripped": false,
+      "sourceFile": "sources/paypal.com.json",
+      "curatedType": "financial"
+    },
+    "pinterest.com": {
+      "domain": "pinterest.com",
+      "frozenAt": "2026-09-06T23:59:06.566Z",
+      "split": "holdout",
+      "docType": "social",
+      "curatedType": "social",
+      "docTypeOverride": null,
+      "textHash": "2cf63900ad222f32b361b3a667794f0998a8570d4f3f7bc1deec18224e11504d",
+      "textChars": 80030,
+      "enrichedChars": 80030,
+      "looksLegal": true,
+      "path": "candidates",
+      "documentUrls": [
+        "https://pinterest.com/about/terms",
+        "https://pinterest.com/about/privacy"
+      ],
+      "optOutLinks": [
+        "https://pinterest.com/about/privacy"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/pinterest.com.json"
+    },
+    "reddit.com": {
+      "domain": "reddit.com",
+      "frozenAt": "2026-09-06T23:48:07.549Z",
+      "split": "work",
+      "docType": "technology",
+      "docTypeOverride": null,
+      "textHash": "fbf1a374abcc8e5aadc15d7a2fe8ac54681b4a9c55bc53ea1fbcf2d8775d598e",
+      "textChars": 109435,
+      "enrichedChars": 109435,
+      "looksLegal": true,
+      "path": "known-urls",
+      "documentUrls": [
+        "https://www.redditinc.com/policies/user-agreement",
+        "https://www.redditinc.com/policies/privacy-policy"
+      ],
+      "optOutLinks": [
+        "https://www.redditinc.com/policies/privacy-policy"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/reddit.com.json",
+      "curatedType": "social"
+    },
+    "robinhood.com": {
+      "domain": "robinhood.com",
+      "frozenAt": "2026-09-06T23:46:18.652Z",
+      "split": "work",
+      "docType": "financial",
+      "docTypeOverride": null,
+      "textHash": "7e1a7ddcec58f683081d9ed35b2eb4256ac88873a2a042e9968e63a1789baaf6",
+      "textChars": 44756,
+      "enrichedChars": 44756,
+      "looksLegal": true,
+      "path": "page-links",
+      "documentUrls": [
+        "https://cdn.robinhood.com/assets/robinhood/legal/Robinhood%20Terms%20and%20Conditions.pdf",
+        "https://robinhood.com/us/en/support/articles/rhm-privacy-statement/"
+      ],
+      "optOutLinks": [
+        "https://robinhood.com/us/en/support/articles/rhm-privacy-statement/"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/robinhood.com.json",
+      "curatedType": "financial"
+    },
+    "rumble.com": {
+      "domain": "rumble.com",
+      "frozenAt": "2026-09-06T23:59:26.018Z",
+      "split": "work",
+      "docType": "other",
+      "curatedType": "media",
+      "docTypeOverride": null,
+      "textHash": "489bd80eb7b946ae74a813e9e2e3906978eec27082b322e1ddd872d9cc6f793f",
+      "textChars": 164,
+      "enrichedChars": 164,
+      "looksLegal": false,
+      "path": "candidates",
+      "documentUrls": [
+        "https://rumble.com/terms",
+        "https://rumble.com/privacy"
+      ],
+      "optOutLinks": [
+        "https://rumble.com/privacy"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/rumble.com.json"
+    },
+    "slack.com": {
+      "domain": "slack.com",
+      "frozenAt": "2026-09-06T23:51:25.470Z",
+      "split": "holdout",
+      "docType": "technology",
+      "docTypeOverride": null,
+      "textHash": "2680866d4faad8f51c77f4ad863a1bf4180708faaa727cf6b0b11868a756f83c",
+      "textChars": 61373,
+      "enrichedChars": 61373,
+      "looksLegal": true,
+      "path": "known-urls",
+      "documentUrls": [
+        "https://slack.com/terms-of-service",
+        "https://slack.com/privacy-policy"
+      ],
+      "optOutLinks": [
+        "https://slack.com/privacy-policy",
+        "https://d34u8crftukxnk.cloudfront.net"
+      ],
+      "supplementalCount": 1,
+      "injectionStripped": false,
+      "sourceFile": "sources/slack.com.json",
+      "curatedType": "technology"
+    },
+    "snapchat.com": {
+      "domain": "snapchat.com",
+      "frozenAt": "2026-09-06T23:48:22.397Z",
+      "split": "work",
+      "docType": "social",
+      "docTypeOverride": null,
+      "textHash": "a51aaafdebe6b93d0bc7a5524cec4395b479222272a8fd742c5e260778625908",
+      "textChars": 54616,
+      "enrichedChars": 54616,
+      "looksLegal": true,
+      "path": "page-links",
+      "documentUrls": [
+        "https://snapchat.com/create/terms.html",
+        "https://values.snap.com/privacy/privacy-policy/chd-privacy-policy"
+      ],
+      "optOutLinks": [
+        "https://values.snap.com/privacy/privacy-policy/chd-privacy-policy"
+      ],
+      "supplementalCount": 1,
+      "injectionStripped": false,
+      "sourceFile": "sources/snapchat.com.json",
+      "curatedType": "social"
+    },
+    "sofi.com": {
+      "domain": "sofi.com",
+      "frozenAt": "2026-09-06T23:47:23.526Z",
+      "split": "work",
+      "docType": "financial",
+      "docTypeOverride": null,
+      "textHash": "8cbbf5f8d1196ad23904a7e9e4c9e07bb81a03ba5ce728a0e8d8be71b90a1bf1",
+      "textChars": 179484,
+      "enrichedChars": 187937,
+      "looksLegal": true,
+      "path": "candidates",
+      "documentUrls": [
+        "https://sofi.com/terms-of-use",
+        "https://sofi.com/privacy-policy"
+      ],
+      "optOutLinks": [
+        "https://sofi.com/privacy-policy",
+        "https://sofi.com/us-consumer-privacynotice",
+        "https://www.goldenpacificbank.com/optout.html"
+      ],
+      "supplementalCount": 1,
+      "injectionStripped": false,
+      "sourceFile": "sources/sofi.com.json",
+      "curatedType": "financial"
+    },
+    "spotify.com": {
+      "domain": "spotify.com",
+      "frozenAt": "2026-09-06T23:53:46.593Z",
+      "split": "holdout",
+      "docType": "social",
+      "docTypeOverride": null,
+      "textHash": "2d78e29f24d64069d97a02387832847a7230ce03e220cd50e5a2ac5508bcf36e",
+      "textChars": 101056,
+      "enrichedChars": 101405,
+      "looksLegal": true,
+      "path": "known-urls",
+      "documentUrls": [
+        "https://www.spotify.com/us/legal/end-user-agreement/",
+        "https://www.spotify.com/us/legal/privacy-policy/"
+      ],
+      "optOutLinks": [
+        "https://www.spotify.com/us/legal/privacy-policy/",
+        "https://www.spotify.com/account/privacy/"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/spotify.com.json",
+      "curatedType": "media"
+    },
+    "steampowered.com": {
+      "domain": "steampowered.com",
+      "frozenAt": "2026-09-06T23:53:53.897Z",
+      "split": "work",
+      "docType": "gaming",
+      "docTypeOverride": null,
+      "textHash": "b5d404145252d8159409f29b7fd680f1f0e931c1e26eaed15129aa99774a49f4",
+      "textChars": 83065,
+      "enrichedChars": 85116,
+      "looksLegal": true,
+      "path": "known-urls",
+      "documentUrls": [
+        "https://store.steampowered.com/subscriber_agreement/",
+        "https://store.steampowered.com/privacy_agreement/"
+      ],
+      "optOutLinks": [
+        "https://store.steampowered.com/privacy_agreement/",
+        "https://store.steampowered.com/account/emailoptout"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/steampowered.com.json",
+      "curatedType": "gaming"
+    },
+    "substack.com": {
+      "domain": "substack.com",
+      "frozenAt": "2026-09-06T23:50:44.725Z",
+      "split": "work",
+      "docType": "social",
+      "docTypeOverride": null,
+      "textHash": "184bec504c05d1c09362256b6efce41fe807921301210f30ba2d89883e1dc8ec",
+      "textChars": 46377,
+      "enrichedChars": 46377,
+      "looksLegal": true,
+      "path": "candidates",
+      "documentUrls": [
+        "https://substack.com/terms",
+        "https://substack.com/privacy"
+      ],
+      "optOutLinks": [
+        "https://substack.com/privacy"
+      ],
+      "supplementalCount": 1,
+      "injectionStripped": false,
+      "sourceFile": "sources/substack.com.json",
+      "curatedType": "media"
+    },
+    "tiktok.com": {
+      "domain": "tiktok.com",
+      "frozenAt": "2026-09-06T23:49:04.496Z",
+      "split": "work",
+      "docType": "social",
+      "docTypeOverride": null,
+      "textHash": "328100eeb44529fcd88c53a1424d3d310141b097a1ef68960bf176331a119bb8",
+      "textChars": 69449,
+      "enrichedChars": 72126,
+      "looksLegal": true,
+      "path": "known-urls",
+      "documentUrls": [
+        "https://www.tiktok.com/legal/page/us/terms-of-service/en",
+        "https://www.tiktok.com/legal/page/us/privacy-policy/en"
+      ],
+      "optOutLinks": [
+        "https://www.tiktok.com/legal/page/us/privacy-policy/en",
+        "https://support.tiktok.com/en/account-and-privacy/account-privacy-settings"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/tiktok.com.json",
+      "curatedType": "social"
+    },
+    "tumblr.com": {
+      "domain": "tumblr.com",
+      "frozenAt": "2026-09-06T23:49:24.541Z",
+      "split": "work",
+      "docType": "media",
+      "docTypeOverride": null,
+      "textHash": "ea0fe1a2b9feb63d60fbe55f68081da2ea44504f0e0d014eff328e5e1c7da1ce",
+      "textChars": 39434,
+      "enrichedChars": 39434,
+      "looksLegal": true,
+      "path": "page-links",
+      "documentUrls": [
+        "https://tumblr.com/policy/terms-of-service",
+        "https://tumblr.com/policy/privacy"
+      ],
+      "optOutLinks": [
+        "https://tumblr.com/policy/privacy"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/tumblr.com.json",
+      "curatedType": "social"
+    },
+    "twitch.tv": {
+      "domain": "twitch.tv",
+      "frozenAt": "2026-09-06T23:54:07.777Z",
+      "split": "holdout",
+      "docType": "social",
+      "docTypeOverride": null,
+      "textHash": "a82e1c89843011b62c69cbd08b42d8d65d6b7b47b4acbceb2ff8356457f94328",
+      "textChars": 91197,
+      "enrichedChars": 120428,
+      "looksLegal": true,
+      "path": "known-urls",
+      "documentUrls": [
+        "https://www.twitch.tv/p/en/legal/terms-of-service/",
+        "https://www.twitch.tv/p/en/legal/privacy-notice/"
+      ],
+      "optOutLinks": [
+        "https://www.twitch.tv/p/en/legal/privacy-notice/",
+        "https://legal.twitch.com/legal/privacy-choices",
+        "https://legal.twitch.com/legal/privacy-choices/"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/twitch.tv.json",
+      "curatedType": "gaming"
+    },
+    "uber.com": {
+      "domain": "uber.com",
+      "frozenAt": "2026-09-06T23:53:31.791Z",
+      "split": "work",
+      "docType": "commerce",
+      "docTypeOverride": null,
+      "textHash": "ad48b469a6e326b563d443b9bb6174a2f6d81ae067fbed25da43f92d61ea63fb",
+      "textChars": 156011,
+      "enrichedChars": 156011,
+      "looksLegal": true,
+      "path": "known-urls",
+      "documentUrls": [
+        "https://www.uber.com/legal/en/document/?name=general-terms-of-use&country=united-states&lang=en",
+        "https://www.uber.com/legal/en/document/?name=privacy-notice&country=united-states&lang=en"
+      ],
+      "optOutLinks": [
+        "https://www.uber.com/legal/en/document/?name=privacy-notice&country=united-states&lang=en"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/uber.com.json",
+      "curatedType": "commerce"
+    },
+    "usaa.com": {
+      "domain": "usaa.com",
+      "frozenAt": "2026-09-06T23:58:19.480Z",
+      "split": "work",
+      "docType": "other",
+      "curatedType": "financial",
+      "docTypeOverride": null,
+      "textHash": "8e6da976f294dffe54f2d219129f0cb1e63f594a78b53dd49ef4cb1bf0b7bd10",
+      "textChars": 252,
+      "enrichedChars": 252,
+      "looksLegal": false,
+      "path": "candidates",
+      "documentUrls": [
+        "https://usaa.com/terms",
+        "https://usaa.com/privacy-policy"
+      ],
+      "optOutLinks": [
+        "https://usaa.com/privacy-policy"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/usaa.com.json"
+    },
+    "walmart.com": {
+      "domain": "walmart.com",
+      "frozenAt": "2026-09-06T23:53:15.751Z",
+      "split": "work",
+      "docType": "commerce",
+      "docTypeOverride": null,
+      "textHash": "e2d65cc8d85a3bd29844235f06a0731689b5b7ed9eddf8888257a147f9c98cf7",
+      "textChars": 92256,
+      "enrichedChars": 92256,
+      "looksLegal": true,
+      "path": "known-urls",
+      "documentUrls": [
+        "https://www.walmart.com/help/article/walmart-com-terms-of-use/3b75080af40340d6bbd596f116fae5a0",
+        "https://www.walmart.com/help/article/walmart-privacy-notice/308b8b3a2c5747dc8a06f40af4ff4ead"
+      ],
+      "optOutLinks": [
+        "https://www.walmart.com/help/article/walmart-privacy-notice/308b8b3a2c5747dc8a06f40af4ff4ead"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/walmart.com.json",
+      "curatedType": "commerce"
+    },
+    "washingtonpost.com": {
+      "domain": "washingtonpost.com",
+      "frozenAt": "2026-09-06T23:50:30.571Z",
+      "split": "holdout",
+      "docType": "media",
+      "docTypeOverride": null,
+      "textHash": "8fddb090f95d4486987f54217fc46cf313b85f5c50bf78011faccf45b342418c",
+      "textChars": 63204,
+      "enrichedChars": 73919,
+      "looksLegal": true,
+      "path": "page-links",
+      "documentUrls": [
+        "https://www.washingtonpost.com/terms-of-service/",
+        "https://www.washingtonpost.com/privacy-policy/"
+      ],
+      "optOutLinks": [
+        "https://www.washingtonpost.com/privacy-policy/",
+        "https://www.washingtonpost.com/my-post/privacy-settings",
+        "https://tools.google.com/dlpage/gaoptout",
+        "https://www.washingtonpost.com/my-post/privacy-settings/?itid=lk_inline_manual_103&amp;itid=lk_inline_manual_100"
+      ],
+      "supplementalCount": 1,
+      "injectionStripped": false,
+      "sourceFile": "sources/washingtonpost.com.json",
+      "curatedType": "media"
+    },
+    "webmd.com": {
+      "domain": "webmd.com",
+      "frozenAt": "2026-09-06T23:55:04.430Z",
+      "split": "work",
+      "docType": "media",
+      "docTypeOverride": null,
+      "textHash": "6f1b4526f2df2287d2357eccf7d09e0c9240f1980fb3fa59440c61e834f9e3d5",
+      "textChars": 69430,
+      "enrichedChars": 84283,
+      "looksLegal": true,
+      "path": "page-links",
+      "documentUrls": [
+        "https://policies.google.com/terms",
+        "https://www.webmd.com/about-webmd-policies/about-privacy-policy"
+      ],
+      "optOutLinks": [
+        "https://www.webmd.com/about-webmd-policies/about-privacy-policy",
+        "https://liveramp.com/opt_out/.",
+        "https://liveramp.com/opt_out/",
+        "https://optout.aboutads.info/"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/webmd.com.json",
+      "curatedType": "health"
+    },
+    "wellsfargo.com": {
+      "domain": "wellsfargo.com",
+      "frozenAt": "2026-09-06T23:47:37.722Z",
+      "split": "work",
+      "docType": "financial",
+      "docTypeOverride": null,
+      "textHash": "0e2e644155463dfb0576ac661b839fe7d67a733501a1a7d21b08d8cb11e1c367",
+      "textChars": 27679,
+      "enrichedChars": 31850,
+      "looksLegal": true,
+      "path": "page-links",
+      "documentUrls": [
+        "https://wellsfargo.com/privacy-security/terms/",
+        "https://wellsfargo.com/privacy-security/fraud/report/"
+      ],
+      "optOutLinks": [
+        "https://wellsfargo.com/privacy-security/fraud/report/",
+        "https://wellsfargo.com/privacy-security/opt-out-notice/"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/wellsfargo.com.json",
+      "curatedType": "financial"
+    },
+    "x.com": {
+      "domain": "x.com",
+      "frozenAt": "2026-09-06T23:49:10.941Z",
+      "split": "holdout",
+      "docType": "social",
+      "docTypeOverride": null,
+      "textHash": "f3b796600219d9b6e2f7fda818073955e08d2b397f410f9eaa8f90e60f00c7ec",
+      "textChars": 113725,
+      "enrichedChars": 113725,
+      "looksLegal": true,
+      "path": "known-urls",
+      "documentUrls": [
+        "https://twitter.com/en/tos",
+        "https://twitter.com/en/privacy"
+      ],
+      "optOutLinks": [
+        "https://twitter.com/en/privacy"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/x.com.json",
+      "curatedType": "social"
+    },
+    "zocdoc.com": {
+      "domain": "zocdoc.com",
+      "frozenAt": "2026-09-06T23:59:57.862Z",
+      "split": "work",
+      "docType": "other",
+      "curatedType": "health",
+      "docTypeOverride": null,
+      "textHash": "6b18261ccbc45004c45ce49b4c8e6f66427afb41f822aa5b4574de21b466afa6",
+      "textChars": 156,
+      "enrichedChars": 156,
+      "looksLegal": false,
+      "path": "candidates",
+      "documentUrls": [
+        "https://zocdoc.com/terms-of-use",
+        "https://zocdoc.com/privacy-policy"
+      ],
+      "optOutLinks": [
+        "https://zocdoc.com/privacy-policy"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/zocdoc.com.json"
+    },
+    "zoom.us": {
+      "domain": "zoom.us",
+      "frozenAt": "2026-09-06T23:51:32.055Z",
+      "split": "holdout",
+      "docType": "commerce",
+      "docTypeOverride": null,
+      "textHash": "c761b8b7935a00a54ecb47b5133d104f2bd47d05ba96dbc2be159c8ad3f446cd",
+      "textChars": 163824,
+      "enrichedChars": 163824,
+      "looksLegal": true,
+      "path": "known-urls",
+      "documentUrls": [
+        "https://explore.zoom.us/en/terms/",
+        "https://explore.zoom.us/en/privacy/"
+      ],
+      "optOutLinks": [
+        "https://explore.zoom.us/en/privacy/"
+      ],
+      "supplementalCount": 0,
+      "injectionStripped": false,
+      "sourceFile": "sources/zoom.us.json",
+      "curatedType": "technology"
+    }
+  },
+  "skipped": {}
+}

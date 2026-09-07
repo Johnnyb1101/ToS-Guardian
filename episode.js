@@ -51,7 +51,7 @@ const RISKS = 'enum:Low|Moderate|High|Unknown';
 // `verdicts`, and `enum:a|b|c`.
 const STAGE_FIELDS = Object.freeze({
   trigger: {
-    source: 'enum:click|submit|enter|pending-reshow|popup|batch',
+    source: 'enum:click|submit|enter|pending-reshow|popup|batch|replay',
     branch: 'str',
     controlTag: 'enum:button|a|input|form|textarea|body|other',
     authForm: 'bool', passwordField: 'bool', knownDomain: 'bool', frame: 'bool'
@@ -60,10 +60,11 @@ const STAGE_FIELDS = Object.freeze({
     domain: 'domain',
     siteLookup: 'enum:static|learned|none',
     deduped: 'bool', joinedEpisodeId: 'hex16',
-    mode: 'enum:live|batch'
+    mode: 'enum:live|batch|replay',
+    sample: 'int'
   },
   fetch: {
-    path: 'enum:known-urls|page-links|link-text|homepage-footer|candidates|page-text|none|unknown',
+    path: 'enum:known-urls|page-links|link-text|homepage-footer|candidates|page-text|frozen|none|unknown',
     tosFound: 'bool', privacyFound: 'bool', supplementalCount: 'int',
     textChars: 'int', textHash: 'hex8', looksLegal: 'bool', unreadablePdfCount: 'int',
     documentUrls: 'urls', hiddenTabHits: 'int', proxyHits: 'int', attempts: 'int', retried: 'bool'
@@ -423,7 +424,7 @@ function validateEpisode(episode, options) {
       errors.push(...result.errors);
     }
   }
-  if (episode.mode !== 'live' && episode.mode !== 'batch') errors.push('episode.mode must be live or batch');
+  if (!['live', 'batch', 'replay'].includes(episode.mode)) errors.push('episode.mode must be live, batch, or replay');
   if (episode.local !== undefined) {
     if (!isPlainObject(episode.local)) errors.push('episode.local must be an object');
     else for (const stage of Object.keys(episode.local)) errors.push(...validateLocal(episode.local[stage]).errors);
