@@ -125,6 +125,18 @@ ok('assembled episode does NOT validate as uploadable', !E.validateEpisode(episo
   const two = E.assembleEpisodes([...fixtureEvents, E.createEvent('1111111111111111', 'trigger', { source: 'batch' }, { now: 1 })]);
   ok('assembleEpisodes separates ids and infers batch mode', two.length === 2 && two[1].mode === 'batch');
 }
+{
+  // Phase 1: replays of frozen reference sources are their own mode.
+  const replayId = '3333333333333333';
+  const replay = E.assembleEpisode([
+    E.createEvent(replayId, 'trigger', { source: 'replay', branch: 'replay', controlTag: 'other' }, { now: 10 }),
+    E.createEvent(replayId, 'relay', { domain: 'chase.com', siteLookup: 'none', mode: 'replay', sample: 2 }, { now: 11 }),
+    E.createEvent(replayId, 'fetch', { path: 'frozen', looksLegal: true, textChars: 5000, textHash: 'cafebabe' }, { now: 12 })
+  ]);
+  ok('replay episode validates with replay mode, a sample index, and the frozen path', E.validateEpisode(replay).valid && replay.mode === 'replay' && replay.stages.relay.sample === 2, E.validateEpisode(replay).errors.join('; '));
+  ok('replay mode survives stripLocal and validates as uploadable', E.validateEpisode(E.stripLocal(replay), { uploadable: true }).valid);
+  ok('an unknown mode is rejected', !E.validateEpisode({ ...replay, mode: 'dream' }).valid);
+}
 
 // --- the zero-user-data rule, in code -------------------------------------------------
 const uploadable = E.stripLocal(episode);

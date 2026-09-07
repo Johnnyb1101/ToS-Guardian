@@ -1,0 +1,81 @@
+# TOS Guardian reference set — candidate sites.
+# One registrable domain per line. `node tools/reference.js freeze reference/sites.txt`
+# fetches each site's legal documents once and freezes them under reference/sources/.
+#
+# A `# type: <name>` line sets the curated document type for the sites that follow it
+# (financial, health, education, government, social, media, commerce, gaming,
+# technology, other). The manifest records both this curated type and the
+# classifier's type; a human override in the manifest wins over both, then the
+# curated type, then the classifier. Other comment lines are ignored.
+
+# type: financial
+capitalone.com
+navyfederal.org
+chase.com
+discover.com
+americanexpress.com
+usaa.com
+paypal.com
+coinbase.com
+robinhood.com
+acorns.com
+lendingclub.com
+lendingtree.com
+sofi.com
+wellsfargo.com
+
+# type: social
+facebook.com
+instagram.com
+linkedin.com
+reddit.com
+snapchat.com
+pinterest.com
+tiktok.com
+x.com
+tumblr.com
+discord.com
+
+# type: media
+cnn.com
+foxnews.com
+nytimes.com
+washingtonpost.com
+substack.com
+rumble.com
+netflix.com
+spotify.com
+
+# type: technology
+github.com
+ollama.com
+slack.com
+zoom.us
+dropbox.com
+notion.so
+duckduckgo.com
+mozilla.org
+microsoft.com
+google.com
+
+# type: commerce
+amazon.com
+ebay.com
+etsy.com
+walmart.com
+airbnb.com
+uber.com
+
+# type: gaming
+steampowered.com
+epicgames.com
+twitch.tv
+
+# type: education
+apus.edu
+harvard.edu
+coursera.org
+
+# type: health
+webmd.com
+zocdoc.com
