@@ -1,6 +1,6 @@
 # Learning loop — Phase 1: reference set and jury
 
-Status: checkpoint C complete, awaiting review (2026-09-06); D and E pending. Follows phase 0 (`phase-0.md`).
+Status: checkpoints C and D complete, D awaiting review (2026-09-09); E pending. Follows phase 0 (`phase-0.md`).
 
 ## Goal
 
@@ -175,3 +175,110 @@ Evidence, not fixes. Nothing below was changed in this checkpoint.
 5. **Static site-database entries can be stale in a way the fetcher does not notice.**
    facebook.com and etsy.com resolved through `known-urls` and still produced shells: the
    URL is right, the server answers, and the content is not the document.
+
+## Checkpoint D as built (2026-09-09)
+
+**Jury operation (proxy).** `analysisOperations.js` gains `operation: "jury"`, accepted
+only when the process runs with `TRAINER_OPERATIONS=1`; without the flag the route answers
+exactly as for an unknown operation, so production cannot tell the operation exists. The
+rubric is server-owned: six sections graded for accuracy (correct, minor, major,
+fabricated, not-applicable) and completeness (complete, partial, missing,
+not-applicable), a fairness call on the bottom line, the jury's own risk level under the
+same rule the analyzer was given, quoted fabrications, and up to five omissions, returned
+as JSON only. It carries the same anti-injection instruction as the analyzer. The relay
+gains a `jury` model tier (`claude-opus-5`; `gpt-4o` for the OpenAI provider) that only
+the server-built request can select; a client sending `tier` is rejected as
+server-controlled. Jury calls cost five daily safety units, like an escalation, and carry
+the same input caps as the critic. Tests cover the gate, the prompt ownership, the tier,
+the units, the caps, and the route in both states.
+
+**Replay (extension).** `tools/reference.js replay` (implemented in `tools/replay.js`)
+runs frozen sources through the real orchestrator with site lookup, fetcher, and link
+follower answered from the frozen record, so the analyzer receives byte-for-byte the text
+it would have received live. The pipeline host now captures every analyzer and critic
+result per run, and the orchestrator records `mode: replay` and the sample index on the
+relay stage. Each replay writes one artifact per site and sample under
+`reference/runs/<run>/artifacts/` (analysis source, summary, critic verdict, evaluator
+result, usage, cost), plus `episodes.ndjson` in the live schema. Legal-document sources
+only unless asked; work split by default; the production proxy is refused; rerunning a run
+id resumes it.
+
+**Grading and report.** `tools/jury.js grade` sends each artifact's summary and analysis
+source to the jury and stores the verdict on the artifact; `tools/jury-lib.js` computes
+the score deterministically (0.6 accuracy + 0.4 completeness per applicable section,
+averaged to 100, minus ten per fabrication, floored at zero), critic-versus-jury
+agreement on whether a section is acceptable, and risk-level distance, and renders the
+baseline report by split, type, evaluator label, and section. Pure parts are covered by
+`tests/jury.test.js` and `tests/replay.test.js`.
+
+**Comment rule.** All phase 1 code was brought in line with the standing rule set on
+2026-09-09: comments only where the code would otherwise mislead. Nine one-line comments
+remain across the phase 1 tools; the rule is recorded in `CLAUDE.md` in both repos.
+
+## Checkpoint D results: five-site dry run (2026-09-09)
+
+Replay of the first five work-split sites (acorns, airbnb, apus.edu, chase, coursera)
+against the dev proxy with the trainer key, one sample each, escalation off, then graded
+by `claude-opus-5`. The run lives in `reference/runs/dry-run-1/` (local). Final numbers
+from `report.anthropic.md`:
+
+| | |
+|---|---|
+| Replay cost | $0.49 for 5 sites (analyzer + critic, about $0.10 a site) |
+| Jury cost | $0.84 for 5 verdicts (about $0.17 each; 12k to 29k input tokens, about 2.3k output including thinking) |
+| Full set estimate | about $13.50 for one pass of 50 sites with the jury, $5 without |
+| Jury score | mean 70.8, median 78, min 42 (apus.edu), max 83 |
+| Section accuracy | no major or fabricated verdict in any section |
+| Section completeness | partial on 4 of 5 for collection and sharing, 5 of 5 for opt-out rights, 3 of 4 for deletion |
+| Critic against jury | agree on 24 of 30 section verdicts (80%); weakest on auto-renewal (60%) |
+| Risk level | displayed risk matched the jury on 3; the two Failed verdicts show Unknown; the summary's own stated risk matched on 4 of 5 |
+| Bottom line | judged fair on 5 of 5 |
+| Fabrications | 2, both on apus.edu, both in HOW TO OPT OUT: an opt-out URL and a Settings menu path the document does not contain |
+| Omissions | 25 (the jury's cap of five per site was hit every time) |
+
+| site | evaluator | jury | note |
+|---|---|---|---|
+| apus.edu | Strong 100 | 42 | two fabricated specifics; the critic called every section grounded |
+| chase.com | Failed 60 | 68 | Unknown risk shown, jury says Moderate |
+| acorns.com | Strong 100 | 78 | first grading gave 84, regrading the same summary gave 78 |
+| airbnb.com | Failed 50 | 83 | Failed came from missing sections, not wrong ones: the analyzer saw 30,638 of 263,249 characters |
+| coursera.org | Adequate 80 | 83 | |
+
+**Three defects found and fixed on the way.** The pipeline host captured the analyzer's
+result by reference, and the orchestrator rewrites that object in place (strips the
+headline blocks, prepends the evaluator warning), so the first artifacts held the overlay
+text instead of the raw summary; the host now snapshots results, with a test. The proxy's
+response parser read the first content block, and `claude-opus-5` thinks by default, so
+every jury call came back "no content"; the parser now takes the first text block and the
+jury tier has its own 8,000-token completion ceiling, with tests. And the jury dropped one
+closing brace in five of five verdicts with the one-line JSON template; the parser repairs a
+missing brace and tolerates the resulting nesting, the template is now laid out with the
+nesting visible, and a re-grade on the new template returned balanced JSON. Because
+`jury-lib` re-derives every verdict from the stored raw text, the first five verdicts were
+recovered without paying for them again.
+
+## Lesson candidates from the dry run
+
+Evidence for later phases, not fixes.
+
+1. **Incompleteness, not inaccuracy, is the analyzer's main failure.** Accuracy was clean
+   across all thirty section verdicts; completeness was partial on most. The bullet caps
+   in the analyzer prompt (four or five bullets, under fifteen words) buy scannability at
+   the cost of rights the document actually names. A phase 5 lesson can target opt-out
+   rights specifically, where every site was partial.
+2. **The critic does not catch invented specifics.** apus.edu's HOW TO OPT OUT named an
+   ad-industry opt-out URL and a phone Settings path that the document does not contain;
+   the critic marked the section grounded and the evaluator awarded Strong 100. Critic
+   calibration (phase 5, OPP-115) should include fabricated URLs and menu paths.
+3. **The evaluator's label and the jury's score disagree in both directions.** Strong 100
+   sat over a jury 42, and Failed 50 over a jury 83. The evaluator measures structure and
+   the critic's outcome, not truth; the Failed on airbnb.com came from an analysis excerpt
+   that kept 30,638 of 263,249 characters, which is a fetcher and excerpt question, not an
+   analyzer error.
+4. **Same input, different verdict.** Two replays of the same five frozen sources gave
+   evaluator scores of 80/45/80/90/100 and then 100/50/100/60/80; the jury gave the same
+   acorns summary 84 and then 78. Any proof in phase 5 needs several samples per site
+   (`--samples`), which the replay already supports, and the jury should be averaged too.
+5. **The daily unit fuse needs raising for a full pass.** A 50-site pass with the jury
+   spends 50 x (1 + 1 + 5) = 350 units; `.env.dev` sets 250. Set `LLM_DAILY_UNIT_LIMIT=1000`
+   on the dev proxy before the full run.

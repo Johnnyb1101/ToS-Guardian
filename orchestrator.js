@@ -128,7 +128,8 @@ rec.record('relay', {
   domain: domain || undefined,
   siteLookup: knownUrls ? (knownUrls.source === 'learned' ? 'learned' : 'static') : 'none',
   deduped: false,
-  mode: options && options.mode === 'batch' ? 'batch' : 'live'
+  mode: options && (options.mode === 'batch' || options.mode === 'replay') ? options.mode : 'live',
+  sample: options && Number.isInteger(options.sample) ? options.sample : undefined
 });
 let fetched = null;
 let fetchAttempts = 0;

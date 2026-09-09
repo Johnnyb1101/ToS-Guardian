@@ -1,11 +1,3 @@
-// TOS Guardian — pipeline host tests (tools/pipeline-host.js)
-// Run: node tests/pipeline-host.test.js
-//
-// The host is the one definition of "the extension running headlessly in a
-// vm" shared by the batch runner, the reference freezer, and the replayer.
-// These tests pin the parts that do not need a network: the file list, the
-// overrides, the per-run state, and the site-list parser.
-
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -46,9 +38,6 @@ function ok(label, condition, detail = '') {
   const withEscalation = createPipelineHost({ proxyUrl: 'http://127.0.0.1:9', escalate: true });
   ok('escalation cap is untouched when escalate is on', withEscalation.storageData.opusEscalationData === undefined);
 
-  // The hidden-tab stand-in mirrors the extension's minimum-length gate: a
-  // hidden tab never resolves with 500 characters or fewer, it returns null so
-  // the fetcher falls through to the proxy.
   {
     const realFetch = globalThis.fetch;
     let body = '';
@@ -67,8 +56,40 @@ function ok(label, condition, detail = '') {
     }
   }
 
-  // Per-run state: episode events and console output are captured for the run
-  // that produced them, never leaked across runs.
+  {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (url, options) => {
+      const body = String((options && options.body) || '');
+      const text = body.includes('"operation":"critic"')
+        ? '{"dataCollection":"grounded","dataSelling":"unsupported","optOutRights":"grounded","howToOptOut":"vague","autoRenewal":"skipped","dataDeletion":"grounded","flags":["sharing overstated"]}'
+        : 'SUMMARY FROM FAKE PROXY';
+      const data = { text, stopReason: 'end_turn', model: 'claude-sonnet-4-6', provider: 'anthropic', usage: { inputTokens: 900, outputTokens: 120, cacheReadTokens: 0, cacheWriteTokens: 0 } };
+      return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => data, text: async () => JSON.stringify(data) };
+    };
+    try {
+      const captured = createPipelineHost({ proxyUrl: 'http://127.0.0.1:9', critic: true });
+      const state = captured.newRunState();
+      await captured.run(state, async () => {
+        const returned = await captured.context.analyzeWithModel('=== PRIVACY POLICY ===\nWe share data with affiliates.', 'https://x.example/privacy', false);
+        returned.summary = '<div class="tg-eval-warning">rewritten by the orchestrator</div>';
+        const verdict = await captured.context.runCritic('SUMMARY FROM FAKE PROXY', '=== PRIVACY POLICY ===\nWe share data with affiliates.');
+        verdict.dataSelling = 'grounded';
+      });
+      ok('analyzer results are captured on the run with their escalation flag',
+        state.analyses.length === 1 && state.analyses[0].escalated === false && state.analyses[0].result.summary === 'SUMMARY FROM FAKE PROXY' && state.analyses[0].result.status === 'ok',
+        JSON.stringify(state.analyses.map(a => a.result && a.result.summary)));
+      ok('captured results are snapshots, untouched by later rewrites', state.analyses[0].result.summary === 'SUMMARY FROM FAKE PROXY' && state.critics[0].dataSelling === 'unsupported');
+      ok('critic verdicts are captured on the run', state.critics.length === 1 && state.critics[0] && state.critics[0].dataSelling === 'unsupported', JSON.stringify(state.critics));
+      ok('proxy usage is recorded for both calls', state.llmCalls === 2 && state.usage.length === 2 && state.usage.every(u => u.model === 'claude-sonnet-4-6' && u.input === 900), JSON.stringify(state.usage));
+      const criticOff = createPipelineHost({ proxyUrl: 'http://127.0.0.1:9', critic: false });
+      const quiet = criticOff.newRunState();
+      await criticOff.run(quiet, async () => { await criticOff.context.runCritic('s', 't'); });
+      ok('a disabled critic records nothing', quiet.critics.length === 0 && quiet.llmCalls === 0);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }
+
   const stateA = host.newRunState();
   const stateB = host.newRunState();
   await host.run(stateA, async () => { ctx.observerSink({ stage: 'a' }); ctx.console.log('from A'); });
@@ -77,7 +98,6 @@ function ok(label, condition, detail = '') {
   ok('pipeline console output is captured per run and streamed to onLog', stateA.logs.length === 1 && /from A/.test(stateA.logs[0]) && logs.some(l => /from A/.test(l)) && stateB.logs.length === 0);
   ok('an event outside any run is dropped, not attributed to a stale run', (ctx.observerSink({ stage: 'x' }), stateA.events.length === 1 && stateB.events.length === 1));
 
-  // The dev test recorder's result is captured per run and not persisted.
   const stateC = host.newRunState();
   await host.run(stateC, async () => { await ctx.browser.storage.local.set({ tosGuardianLastResult: { domain: 'example.com', score: 50 }, other: 1 }); });
   ok('tosGuardianLastResult is captured on the run and kept out of storage', stateC.lastResult && stateC.lastResult.score === 50 && host.storageData.tosGuardianLastResult === undefined && host.storageData.other === 1);
@@ -85,7 +105,6 @@ function ok(label, condition, detail = '') {
   const got = await ctx.browser.storage.local.get({ missing: 'default', other: 0 });
   ok('storage.get honors defaults for missing keys only', got.missing === 'default' && got.other === 1);
 
-  // withTimeout aborts the run's controller so in-flight fetches stop too.
   const controller = new AbortController();
   let timedOut = false;
   try { await withTimeout(new Promise(() => {}), 20, controller); } catch (e) { timedOut = /timed out/.test(e.message); }
@@ -93,7 +112,6 @@ function ok(label, condition, detail = '') {
   const fast = await withTimeout(Promise.resolve('done'), 1000, new AbortController());
   ok('withTimeout passes a prompt result through', fast === 'done');
 
-  // Site list parsing.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-host-'));
   const listPath = path.join(dir, 'sites.txt');
   fs.writeFileSync(listPath, '# financial\nchase.com\nhttps://www.capitalone.com/path # trailing comment\n\nchase.com\nnot a domain at all\n', 'utf8');

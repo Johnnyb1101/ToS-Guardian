@@ -58,3 +58,40 @@ on each entry beside the classifier's. Tools use the human override if one is se
 otherwise the curated type, otherwise the classifier. `node tools/reference.js list`
 shows the classifier's answer where it disagrees, so the classifier can be tuned
 against the curated list over time without the set changing underneath it.
+
+## Replay
+
+A replay runs frozen sources through the real analyzer, critic, and evaluator against
+the dev proxy with no fetches: site lookup, fetcher, and link follower are answered from
+the frozen record, so the only cost is model calls and the only variable is the model.
+
+```bash
+node tools/reference.js replay --proxy http://localhost:3000 --split work --limit 5
+```
+
+Each run writes `runs/<run id>/artifacts/<domain>.<sample>.json` (the text the analyzer
+saw, its summary, the critic's verdict, the evaluator's result, usage and cost),
+`episodes.ndjson` in the same schema as live episodes, and `run.json`. Legal-document
+sources only unless `--include-shells`; `--samples n` repeats each site; `--budget`
+stops before the next site once priced cost reaches the amount; rerunning the same
+`--run` id skips finished artifacts. The production proxy is refused.
+
+## Jury
+
+The jury is a stronger model, chosen on the proxy, that reads the exact text the analyzer
+saw and grades the summary section by section: accuracy (correct, minor, major,
+fabricated) and completeness (complete, partial, missing), plus the bottom line, its own
+risk level, quoted fabrications, and omissions. The score is computed here, not by the
+model: each applicable section is 0.6 x accuracy + 0.4 x completeness, averaged to 100,
+minus 10 per fabrication, floored at 0.
+
+```bash
+node tools/jury.js grade reference/runs/<run id> --proxy http://localhost:3000
+node tools/jury.js report reference/runs/<run id>
+```
+
+`grade` stores the verdict on each artifact and writes `report.anthropic.md` and
+`report.anthropic.json` in the run directory: scores by split, type, and evaluator label;
+per-section error and incompleteness rates; how often the critic agreed with the jury on
+whether a section was acceptable; risk-level agreement; fabrications; cost. Needs
+`TRAINER_OPERATIONS=1` on the dev proxy. `--juror openai` asks the second model family.

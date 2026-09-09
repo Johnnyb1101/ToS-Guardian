@@ -1,9 +1,3 @@
-// TOS Guardian — reference set helpers (learning loop, phase 1)
-//
-// Pure functions behind tools/reference.js: the stable work/holdout split, the
-// frozen-source record and its validator, and the committed manifest. No
-// network, no vm, so tests/reference.test.js can cover them directly.
-
 'use strict';
 
 const crypto = require('crypto');
@@ -19,8 +13,6 @@ const SOURCES_DIR = path.join(REFERENCE_DIR, 'sources');
 const RUNS_DIR = path.join(REFERENCE_DIR, 'runs');
 const MANIFEST_PATH = path.join(REFERENCE_DIR, 'manifest.json');
 
-// The split is a pure function of the domain, so it never changes as sites are
-// added or removed, and no one can move a site between splits by re-running.
 function splitFor(domain, holdoutShare = DEFAULT_HOLDOUT_SHARE) {
   const digest = crypto.createHash('sha256').update(`tos-guardian-reference-split:${String(domain).toLowerCase()}`).digest();
   const unit = digest.readUInt32BE(0) / 0x100000000;
@@ -39,10 +31,6 @@ function isUrlList(value) {
   return Array.isArray(value) && value.every(u => typeof u === 'string' && /^https?:\/\//.test(u));
 }
 
-// A frozen source is exactly what the pipeline would hand the analyzer, plus
-// the facts a replay and the manifest need. `fetched.text` is the combined
-// document text before link-following; `enriched.text` is after it, which is
-// what analyzeWithModel budgets and sends.
 function validateFrozenSource(frozen) {
   const errors = [];
   if (!isPlainObject(frozen)) return { valid: false, errors: ['frozen source must be an object'] };
@@ -71,7 +59,6 @@ function validateFrozenSource(frozen) {
   return { valid: errors.length === 0, errors };
 }
 
-// The committed, text-free view of a frozen source.
 function manifestEntryFrom(frozen) {
   return {
     domain: frozen.domain,
@@ -93,8 +80,6 @@ function manifestEntryFrom(frozen) {
   };
 }
 
-// The type tools should use for a site: a human override wins, then the type
-// the curated list gave it, then the classifier's guess.
 function effectiveType(entry) {
   return entry.docTypeOverride || entry.curatedType || entry.docType || 'other';
 }
