@@ -95,3 +95,20 @@ node tools/jury.js report reference/runs/<run id>
 per-section error and incompleteness rates; how often the critic agreed with the jury on
 whether a section was acceptable; risk-level agreement; fabrications; cost. Needs
 `TRAINER_OPERATIONS=1` on the dev proxy. `--juror openai` asks the second model family.
+
+## Spot-check
+
+The spot-check is the human's read of a replay: a local page that shows the exact text
+the analyzer saw beside its summary, one line at a time, with a mark for each line
+(supported, not supported, unsure), a completeness call per section, the risk level, and
+the bottom line. The jury's and critic's verdicts stay hidden until a section is fully
+marked, so they cannot lead the reader. Marks save to `runs/<run id>/spotcheck/marks.json`
+as they are made; the agreement report measures the jury and the critic against the human.
+
+```bash
+node tools/spotcheck.js serve reference/runs/<run id>
+node tools/spotcheck.js agreement reference/runs/<run id>
+```
+
+The page is served on 127.0.0.1 only and nothing leaves the machine. Keyboard: 1, 2, 3
+mark the focused line, arrows or j and k move, Alt with an arrow changes site.

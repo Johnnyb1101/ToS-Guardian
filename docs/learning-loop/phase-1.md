@@ -1,6 +1,6 @@
 # Learning loop — Phase 1: reference set and jury
 
-Status: checkpoints C and D complete, D awaiting review (2026-09-09); E pending. Follows phase 0 (`phase-0.md`).
+Status: checkpoints C, D, and E complete; E awaiting review (2026-09-09). The full 50-site baseline run is next. Follows phase 0 (`phase-0.md`).
 
 ## Goal
 
@@ -282,3 +282,33 @@ Evidence for later phases, not fixes.
 5. **The daily unit fuse needs raising for a full pass.** A 50-site pass with the jury
    spends 50 x (1 + 1 + 5) = 350 units; `.env.dev` sets 250. Set `LLM_DAILY_UNIT_LIMIT=1000`
    on the dev proxy before the full run.
+
+## Checkpoint E as built (2026-09-09)
+
+**Spot-check page.** `tools/spotcheck.js serve <run>` serves a local page (127.0.0.1
+only) that shows, per site, the exact text the analyzer saw beside its summary parsed into
+sections and lines. Each line takes one of three marks (supported, not supported, unsure),
+each section a completeness call and an optional note, and each site a risk level and a
+bottom-line fairness call. Keyboard driven for speed: 1, 2, 3 mark the focused line and
+move on; arrows or j and k move; Alt with an arrow changes site. The jury's and critic's
+verdicts for a section stay hidden until every line in it is marked, so they cannot lead
+the reader; a per-site jury panel appears when the site is fully marked. Marks save to
+`reference/runs/<run>/spotcheck/marks.json` as they are made, validated server-side
+against a strict schema (known sections, known marks, known risk levels, site ids only).
+
+**Agreement.** `tools/spotcheck.js agreement <run>` (also the page's Agreement button)
+measures the jury and the critic against the human: whether a section is acceptable (no
+unsupported line) against the jury's accuracy verdict and the critic's grounded verdict,
+whether it is complete against the jury's completeness, the risk level, and the bottom
+line, overall and per section, plus a per-site table. `tools/spotcheck-lib.js` holds the
+summary parser (header variants such as "DATA SHARING & SELLING" included), the marks
+schema, the page model, and the agreement math; `tests/spotcheck.test.js` covers them and
+starts the server on an ephemeral port to exercise every route, including the rejection of
+malformed marks.
+
+**Verification.** Served the dry run, marked the first section of acorns.com by mouse and
+keyboard, answered the bottom line and risk, and confirmed the marks file, the reveal of the
+jury's notes, and the agreement report from the saved file. The test marks were then
+removed so the run starts clean. Full suite green (thirteen test files). The marks are the
+owner's judgments about model output on public documents; nothing about the owner is
+recorded and nothing leaves the machine.
