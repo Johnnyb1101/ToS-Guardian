@@ -1,10 +1,3 @@
-// TOS Guardian — document type classifier (learning loop, phase 1)
-//
-// Puts a frozen legal-document source into one of a few coarse types so the
-// reference set stays stratified and, later, lessons can be recalled by type.
-// Keyword-based and deterministic on purpose: cheap, explainable, and the
-// manifest lets a human override the result per site.
-
 'use strict';
 
 const DOCUMENT_TYPES = Object.freeze([
@@ -12,9 +5,6 @@ const DOCUMENT_TYPES = Object.freeze([
   'commerce', 'gaming', 'technology', 'other'
 ]);
 
-// Each phrase is matched case-insensitively as a whole word or phrase. Weights
-// favor terms that are near-unique to a type (regulatory names, notice titles)
-// over generic ones that appear in most policies.
 const SIGNALS = Object.freeze({
   financial: [
     ['gramm-leach-bliley', 4], ['glba', 4], ['nonaffiliates', 4], ['creditworthiness', 4],
@@ -75,9 +65,6 @@ function countMatches(text, phrase) {
   return matches ? matches.length : 0;
 }
 
-// Returns { type, scores } where scores maps every type to its weighted count.
-// A phrase contributes weight × min(count, 5), so a term repeated a hundred
-// times cannot single-handedly decide the type.
 function classifyDocumentType(text, domain) {
   const haystack = String(text || '').slice(0, 300000).toLowerCase();
   const scores = {};
@@ -85,6 +72,7 @@ function classifyDocumentType(text, domain) {
   for (const [type, signals] of Object.entries(SIGNALS)) {
     for (const [phrase, weight] of signals) {
       const count = countMatches(haystack, phrase);
+      // capped so one repeated word cannot outvote a regulatory notice
       if (count > 0) scores[type] += weight * Math.min(count, 5);
     }
   }

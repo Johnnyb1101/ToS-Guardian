@@ -1,50 +1,3 @@
-// TOS Guardian — Batch Test Runner
-//
-// Runs the REAL extension pipeline (fetcher → link follower → analyzer →
-// critic → evaluator) against a list of domains, headlessly in Node, and
-// writes a CSV report plus one episode record per site (episode.js schema,
-// ndjson) — the same record the extension produces in observer mode, so
-// headless runs and live click-throughs feed the same reports.
-//
-// The extension-in-a-vm host lives in tools/pipeline-host.js and is shared
-// with the reference freezer and replayer; see that file for the two
-// substitutions the environment forces (direct document fetch instead of a
-// hidden tab, in-memory chrome.storage.local).
-//
-// The pipeline is keyless: provider keys live on the proxy, which the runner
-// must be pointed at explicitly. Use a dev proxy (its own key, its own
-// database) for anything that is not a deliberate production check:
-//   node tools/batch-runner.js sites.txt --proxy http://localhost:3000
-// The proxy reports token usage and the exact model id on every analysis
-// response; cost is computed from that (tools/batch-lib.js) and never guessed.
-//
-// Verdicts are captured via the dev test recorder (tosGuardianDebug →
-// tosGuardianLastResult), so the CSV reports the same score/label/issues
-// the extension overlay would show.
-//
-// Usage:
-//   node tools/batch-runner.js <sites.txt | domain [domain ...]> [options]
-//
-// Options:
-//   --proxy <url>     proxy to run against (or set TOS_PROXY_URL). Required
-//                     unless --production is given.
-//   --production      run against the production proxy, spending its key
-//   --budget <usd>    stop before the next site once priced cost reaches this
-//   --episodes <file> episode ndjson path (default batch-episodes-<timestamp>.ndjson)
-//   --no-episodes     do not write episode records
-//   --escalate        allow Opus escalation (default: off; cap of 5 still applies)
-//   --cache           allow cache reads on the target proxy (default: off)
-//   --write           allow cache and learned-site writes on the target proxy
-//                     (default: off so batch runs do not mutate a cache)
-//   --no-critic       skip the critic/judge LLM pass (cheaper, less strict)
-//   --delay <ms>      pause between sites (default 1000)
-//   --timeout <ms>    per-site timeout (default 180000)
-//   --limit <n>       only run the first n sites from the list
-//   --out <file>      CSV output path (default batch-results-<timestamp>.csv)
-//   --verbose         stream pipeline console output
-//
-// Exit codes: 0 finished, 1 usage or fatal error, 3 stopped by --budget.
-
 const fs = require('fs');
 const {
   PRICING_AS_OF,
@@ -55,9 +8,6 @@ const {
 const { createPipelineHost, withTimeout, domainsFromInputs } = require('./pipeline-host');
 const Episode = require('../episode');
 
-// ---------------------------------------------------------------------------
-// CLI parsing
-// ---------------------------------------------------------------------------
 const args = process.argv.slice(2);
 const opts = {
   proxy: null,
@@ -135,9 +85,6 @@ if (proxyTarget.error) {
 const domains = domainsFromInputs(inputs, msg => console.warn(msg)).slice(0, opts.limit);
 if (domains.length === 0) { console.error('No valid domains to run.'); process.exit(1); }
 
-// ---------------------------------------------------------------------------
-// The extension, headless
-// ---------------------------------------------------------------------------
 const host = createPipelineHost({
   proxyUrl: proxyTarget.url,
   cache: opts.cache,
@@ -148,9 +95,6 @@ const host = createPipelineHost({
 });
 const context = host.context;
 
-// ---------------------------------------------------------------------------
-// Run
-// ---------------------------------------------------------------------------
 function csvEscape(value) {
   const s = value === null || value === undefined ? '' : String(value);
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -172,8 +116,7 @@ async function runSite(domain) {
     try {
       await withTimeout(
         (async () => {
-          // Prefetch the homepage so the fetcher's Step 0/0.5 link scanning
-          // works, mirroring what the content script provides from a live page.
+          // the fetcher scans homepage HTML that the content script would have supplied
           const home = await host.directFetch(pageUrl);
           const pageHtml = home ? home.html : '';
           const pageText = home ? context.stripHtml(home.html).slice(0, 20000) : '';
@@ -261,14 +204,12 @@ async function runSite(domain) {
     }
   }
 
-  // CSV
   const outPath = opts.out || `batch-results-${stamp}.csv`;
   const csv = [columns.join(',')]
     .concat(rows.map(r => columns.map(c => csvEscape(r[c])).join(',')))
     .join('\r\n') + '\r\n';
   fs.writeFileSync(outPath, csv, 'utf8');
 
-  // Summary
   const counts = {};
   for (const r of rows) counts[r.label] = (counts[r.label] || 0) + 1;
   const scored = rows.filter(r => r.score !== '');

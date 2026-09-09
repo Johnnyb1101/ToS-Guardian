@@ -1,9 +1,3 @@
-// TOS Guardian — reference set helper tests (tools/reference-lib.js)
-// Run: node tests/reference.test.js
-//
-// Pins the stable split, the frozen-source contract, and the text-free
-// manifest entry, using a temporary manifest path so the real one is untouched.
-
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -18,7 +12,6 @@ function ok(label, condition, detail = '') {
 
 console.log('Reference set helpers');
 
-// --- split ----------------------------------------------------------------------
 ok('split is deterministic', lib.splitFor('capitalone.com') === lib.splitFor('capitalone.com'));
 ok('split is case-insensitive', lib.splitFor('CapitalOne.com') === lib.splitFor('capitalone.com'));
 ok('split values are work or holdout', ['work', 'holdout'].includes(lib.splitFor('discord.com')));
@@ -30,7 +23,6 @@ ok('split values are work or holdout', ['work', 'holdout'].includes(lib.splitFor
   ok('holdout share follows the parameter', half > 0.46 && half < 0.54, `got ${half}`);
 }
 
-// --- frozen source -----------------------------------------------------------------
 const text = '=== TERMS OF SERVICE ===\nYou agree to binding arbitration.\n\n=== PRIVACY POLICY ===\nWe share with affiliates.\n\n=== SUPPLEMENTAL PRIVACY NOTICE: https://chase.com/glba ===\nReasons we can share.';
 function frozenFixture(overrides) {
   return Object.assign({
@@ -62,7 +54,6 @@ ok('non-https page URL is rejected', !lib.validateFrozenSource(frozenFixture({ p
 ok('bad document URL is rejected', !lib.validateFrozenSource(frozenFixture({ fetched: { ...frozenFixture().fetched, documentUrls: ['javascript:alert(1)'] } })).valid);
 ok('non-object input is rejected', !lib.validateFrozenSource(null).valid && !lib.validateFrozenSource('x').valid);
 
-// --- manifest entry ------------------------------------------------------------------
 {
   const entry = lib.manifestEntryFrom(frozenFixture());
   ok('manifest entry carries no document text', !JSON.stringify(entry).includes('binding arbitration') && !JSON.stringify(entry).includes('Reasons we can share'));
@@ -74,7 +65,6 @@ ok('non-object input is rejected', !lib.validateFrozenSource(null).valid && !lib
   ok('manifest entry carries the curated type slot', entry.curatedType === null && lib.manifestEntryFrom(frozenFixture({ curatedType: 'financial' })).curatedType === 'financial');
 }
 
-// --- effective type ---------------------------------------------------------------
 ok('classifier type is used when nothing else is set', lib.effectiveType({ docType: 'media' }) === 'media');
 ok('curated type beats the classifier', lib.effectiveType({ docType: 'media', curatedType: 'financial' }) === 'financial');
 ok('human override beats both', lib.effectiveType({ docType: 'media', curatedType: 'financial', docTypeOverride: 'commerce' }) === 'commerce');
@@ -90,7 +80,6 @@ ok('a non-string curated type is rejected', !lib.validateFrozenSource(frozenFixt
     summary.byType.financial === 1 && summary.byType.media === 1 && summary.byType.social === 1 && JSON.stringify(summary.typeDisagreements) === JSON.stringify(['a.com']), JSON.stringify(summary));
 }
 
-// --- manifest load/save -------------------------------------------------------------
 {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-ref-'));
   const manifestPath = path.join(dir, 'manifest.json');

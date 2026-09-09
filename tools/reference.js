@@ -1,23 +1,3 @@
-// TOS Guardian — reference set tool (learning loop, phase 1)
-//
-// freeze: fetch each site's legal documents once through the REAL fetcher and
-//         link follower (no model calls), classify the document type, assign the
-//         deterministic split, write the frozen source under reference/sources/
-//         (local, ignored by git) and its text-free entry to reference/manifest.json
-//         (committed). Sites whose documents could not be found are recorded in
-//         the manifest's `skipped` map with the reason, so discovery failures
-//         stay visible instead of silently thinning the set.
-// list:   print the manifest.
-//
-// Usage:
-//   node tools/reference.js freeze <sites.txt | domain ...> --proxy <url> [--delay ms] [--timeout ms] [--limit n] [--force] [--verbose]
-//   node tools/reference.js list
-//
-// The proxy is needed only for document fetching (PDF extraction, CORS and
-// Next.js pages); a local proxy started with placeholder database values and no
-// provider key is enough. Nothing here spends a model call. The default delay
-// between sites is generous because the proxy's fetch limiter is 10 a minute.
-
 const fs = require('fs');
 const path = require('path');
 const { resolveProxyTarget } = require('./batch-lib');
@@ -32,10 +12,16 @@ function usage(code) {
   console.log('Usage:');
   console.log('  node tools/reference.js freeze <sites.txt | domain ...> --proxy <url> [--delay ms] [--timeout ms] [--limit n] [--force] [--verbose]');
   console.log('  node tools/reference.js list');
+  console.log('  node tools/reference.js replay --proxy <url> [--split work|holdout|all] [--type t] [--sites a,b] [--limit n] [--samples n] [--include-shells] [--budget usd] [--delay ms] [--timeout ms] [--run id] [--escalate] [--force] [--verbose]');
   process.exit(code);
 }
 
 if (!command || command === '--help' || command === '-h') usage(0);
+
+if (command === 'replay') {
+  require('./replay').runReplay(args).catch(err => { console.error(err); process.exit(1); });
+  return;
+}
 
 if (command === 'list') {
   const manifest = lib.loadManifest();
@@ -80,8 +66,6 @@ for (let i = 0; i < args.length; i++) {
 }
 if (inputs.length === 0) usage(1);
 
-// Freezing never spends a model call, so the production proxy is acceptable
-// here, but a local proxy is still preferred to stay off its fetch rate limit.
 const target = resolveProxyTarget({ proxy: opts.proxy, env: process.env });
 if (target.error) { console.error(target.error); process.exit(1); }
 
@@ -105,9 +89,7 @@ function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
-// Mirrors the orchestrator's steps 1 through 3 (site lookup, fetcher with the
-// same retry wrapper, injection scan, link follower) so the frozen text is
-// exactly what the analyzer would have been handed on a live run.
+// mirrors runOrchestrator steps 1 to 3 so the frozen text is exactly what the analyzer would have received
 async function freezeSite(site, state) {
   return host.run(state, async () => {
     const hostname = site.domain;
@@ -115,8 +97,6 @@ async function freezeSite(site, state) {
     const registrable = ctx.registrableDomain(hostname) || hostname;
     const existing = manifest.sites[registrable];
     if (existing && !opts.force) {
-      // The frozen text stays as it is; only the curated type from the list is
-      // brought up to date, so re-running over an edited list is cheap.
       if (site.type && existing.curatedType !== site.type) {
         existing.curatedType = site.type;
         lib.saveManifest(manifest);
@@ -134,11 +114,8 @@ async function freezeSite(site, state) {
       const legalPage = ctx.looksLikeLegalDocument(pageText);
       const reason = home ? (legalPage ? 'no documents found; the homepage itself reads as legal text' : 'no documents found') : 'homepage unreachable and no documents found';
       if (existing && !existing.looksLegal) {
-        // A forced refreeze found nothing where an earlier pass had frozen a
-        // shell. Drop the shell so the set holds only real documents; the
-        // failure is recorded under `skipped` by the caller.
         delete manifest.sites[registrable];
-        try { fs.unlinkSync(path.join(lib.SOURCES_DIR, `${registrable}.json`)); } catch (e) { /* already gone */ }
+        try { fs.unlinkSync(path.join(lib.SOURCES_DIR, `${registrable}.json`)); } catch (e) {}
         lib.saveManifest(manifest);
         return { domain: registrable, skipped: true, reason: `${reason}; removed the earlier non-legal source` };
       }

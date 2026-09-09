@@ -1,6 +1,3 @@
-// TOS Guardian — document type classifier tests (tools/doctype.js)
-// Run: node tests/doctype.test.js
-
 const { DOCUMENT_TYPES, classifyDocumentType } = require('../tools/doctype');
 
 let passed = 0;
@@ -49,7 +46,6 @@ ok('a generic document with no signals is other', classifyDocumentType('We respe
 ok('empty input is other, not an error', classifyDocumentType('', '').type === 'other' && classifyDocumentType(null, null).type === 'other');
 
 {
-  // A single phrase repeated hundreds of times cannot dominate by itself.
   const spam = 'game '.repeat(500) + glba;
   ok('repetition is capped so one word cannot outvote a regulatory notice', classifyDocumentType(spam, 'x.com').type === 'financial');
 }

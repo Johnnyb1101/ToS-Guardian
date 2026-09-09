@@ -719,6 +719,14 @@ ${strongSummary('clean source')}`
     mustEqual('observer', 'disabled observer never calls the sink', 0, spies.observerSink.calls.length);
   });
 
+  await runTest(async () => {
+    storageData.tosGuardianObserver = { enabled: true, port: 3123 };
+    await context.runOrchestrator('https://chase.com/signup', 'page text', '<html></html>', { episodeId: '0123456789abcdef', mode: 'replay', sample: 3 });
+    const episode = context.assembleEpisode(spies.observerSink.calls.map(c => c[0]));
+    mustEqual('observer', 'replay mode and sample index are recorded on the relay stage', 'replay/3', `${episode.stages.relay.mode}/${episode.stages.relay.sample}`);
+    mustTrue('observer', 'replay episode validates as uploadable', true, context.validateEpisode(context.stripLocal(episode), { uploadable: true }).valid);
+  });
+
   // On: every stage records a valid event, in pipeline order, and the assembled
   // episode validates both locally and after stripLocal() as uploadable.
   await runTest(async () => {
