@@ -119,21 +119,34 @@
     return m.sections[key];
   }
 
+  function backupKey() { return `spotcheck:${state.model.runId}`; }
+  function backup() {
+    try { localStorage.setItem(backupKey(), JSON.stringify({ savedAt: new Date().toISOString(), marks: state.marks })); } catch (e) { /* storage unavailable */ }
+  }
+  function readBackup() {
+    try { const raw = localStorage.getItem(backupKey()); return raw ? JSON.parse(raw) : null; } catch (e) { return null; }
+  }
+
   function save() {
     state.dirty = true;
+    backup();
     $('saved').textContent = 'saving…';
     clearTimeout(state.saveTimer);
-    state.saveTimer = setTimeout(async () => {
-      try {
-        const res = await fetch('/api/marks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(state.marks) });
-        const body = await res.json();
-        if (!res.ok) throw new Error(body.reason || body.error);
-        state.dirty = false;
-        $('saved').textContent = 'saved ' + new Date(body.updatedAt).toLocaleTimeString();
-      } catch (e) {
-        $('saved').textContent = 'not saved: ' + e.message;
-      }
-    }, 300);
+    state.saveTimer = setTimeout(pushMarks, 300);
+  }
+
+  async function pushMarks() {
+    try {
+      const res = await fetch('/api/marks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(state.marks) });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.reason || body.error);
+      state.dirty = false;
+      $('saved').textContent = 'saved ' + new Date(body.updatedAt).toLocaleTimeString();
+    } catch (e) {
+      $('saved').textContent = 'not saved (kept in this browser, retrying): ' + e.message;
+      clearTimeout(state.saveTimer);
+      state.saveTimer = setTimeout(pushMarks, 10000);
+    }
   }
 
   function siteDone(s) {
@@ -326,6 +339,12 @@
     state.model = model;
     state.marks = marks;
     if (!state.marks.sites) state.marks.sites = {};
+    const local = readBackup();
+    if (local && local.marks && local.marks.sites && (!marks.updatedAt || local.savedAt > marks.updatedAt)) {
+      state.marks = local.marks;
+      $('saved').textContent = 'restored unsaved marks from this browser';
+      save();
+    }
     const firstOpen = model.sites.findIndex(s => !siteDone(s));
     state.index = firstOpen === -1 ? 0 : firstOpen;
     renderHeader(); renderSource(); renderSummary();

@@ -312,3 +312,37 @@ jury's notes, and the agreement report from the saved file. The test marks were 
 removed so the run starts clean. Full suite green (thirteen test files). The marks are the
 owner's judgments about model output on public documents; nothing about the owner is
 recorded and nothing leaves the machine.
+
+## Spot-check results: five-site dry run (2026-09-09)
+
+The owner marked all five dry-run sites in one sitting: 94 lines, 7 marked not supported,
+every site High risk, every bottom line fair. Agreement from `spotcheck/agreement.anthropic.md`:
+
+| measure | compared | agreement |
+|---|---|---|
+| section acceptable, owner vs jury | 30 | 83% |
+| section acceptable, owner vs critic | 30 | 70% |
+| section complete, owner vs jury | 25 | 32% |
+| risk level, owner vs jury | 5 | 80% (chase.com: owner High, jury Moderate) |
+| bottom line fair, owner vs jury | 5 | 100% |
+
+Two readings. The jury is closer to the owner than the critic is on whether a section is
+acceptable, which is the reason the jury exists. And on completeness the owner and the jury
+disagree most of the time: the owner accepted sections the jury called partial, with
+opt-out rights at zero agreement, so the jury's completeness bar is stricter than a careful
+reader's. Completeness weight in the score (0.4) should be read with that in mind until a
+second juror or a larger sample settles whether the jury over-reports omissions.
+
+The one site where the owner marked nothing unsupported and the jury scored lowest is
+apus.edu, where the jury reported two fabricated opt-out specifics. A string search of the
+analysis source settles it: neither "optout.aboutads.info" nor "Settings → Privacy →
+Location Services" appears anywhere in the text the analyzer saw. The jury caught what the
+critic, the evaluator (Strong 100), and a careful human reader all let through. Invented
+URLs and menu paths are plausible precisely because they are the kind of thing such
+documents usually contain; they are the first entry in the phase 5 critic calibration set.
+
+**Follow-up fix.** The first sitting hit "not saved: Failed to fetch" because the page's
+server had been stopped after verification. The page now keeps a copy of the marks in the
+browser's local storage on every change, retries the save every ten seconds while it fails,
+and restores the local copy on load when it is newer than the server's file, so a stopped
+server can no longer lose a sitting.
