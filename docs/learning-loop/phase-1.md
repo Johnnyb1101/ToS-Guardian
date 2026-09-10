@@ -1,6 +1,6 @@
 # Learning loop — Phase 1: reference set and jury
 
-Status: checkpoints C, D, and E complete; E awaiting review (2026-09-09). The full 50-site baseline run is next. Follows phase 0 (`phase-0.md`).
+Status: complete (2026-09-10). Reference set frozen, jury built, spot-check built, and the 50-site three-sample baseline recorded in `baseline-1.md`. Follows phase 0 (`phase-0.md`).
 
 ## Goal
 
@@ -346,3 +346,70 @@ server had been stopped after verification. The page now keeps a copy of the mar
 browser's local storage on every change, retries the save every ten seconds while it fails,
 and restores the local copy on load when it is newer than the server's file, so a stopped
 server can no longer lose a sitting.
+
+## Phase 1 baseline: 50 sites, 3 samples (2026-09-10)
+
+The full reference set replayed three times and graded by `claude-opus-5`. Run directory
+`reference/runs/baseline-1/` (local); the text-free report is committed as
+`docs/learning-loop/baseline-1.md` and is the number every later change is measured against.
+
+| | |
+|---|---|
+| Replays | 150 of 150, no problems, $13.80 |
+| Verdicts | 150 of 150, $24.29 (16 needed a parser repair for a trailing comma; none re-bought) |
+| Total | $38.09 against the $50 cap; about 5.5 hours including a pause at the trainer workspace's monthly cap |
+| Jury score | mean 70.5, median 74, min 22, max 100 (147 scored; reddit.com's three samples had no applicable section) |
+| By split | work 70.2 (90), holdout 70.9 (57): the split is fair |
+| By type | gaming 79.6, education 75.4, financial 74.9, health 74.7, commerce 69.3, technology 69.1, media 65.5, social 63.7 |
+| Evaluator label against the jury | Strong 71, Adequate 69, Failed 59: the label barely separates good from bad |
+| Sample spread | same source, three runs: median 14 points, mean 16.5, max 66 (discover.com); 16 of 49 sites spread 20 or more |
+| Section accuracy | major or fabricated in 4 of 764 applicable section verdicts, all in data deletion |
+| Section completeness | partial or missing on 81 to 95 percent of applicable sections, except how-to-opt-out at 41 percent |
+| Fabrications | 107 across 71 of 150 verdicts and 35 of 50 sites; worst snapchat (10 across three samples), discord (9), netflix (6), linkedin (6) |
+| Critic against jury | agree on whether a section is acceptable 93 percent of 888 verdicts |
+| Risk level | displayed risk matched the jury on 92 of 127 comparable verdicts, one step off on 35, never two; 23 not comparable (Unknown shown) |
+| Bottom line | judged fair on 134 of 150 |
+
+Lowest sites by mean score: snapchat 44, netflix 46, discord 52, nytimes 55, microsoft 55,
+discover 56, linkedin 58, walmart 58. Highest: wellsfargo 89, capitalone 87, tumblr 87,
+steampowered 85, mozilla 84. Eighteen verdicts the evaluator called Strong scored under 60
+with the jury; eight it called Failed scored 75 or more.
+
+**What the baseline says.**
+
+1. **The analyzer is accurate at the section level and incomplete almost everywhere.** With
+   accuracy errors near zero and incompleteness above eighty percent in five of six
+   sections, the loop's first analyzer lesson is about coverage, not truth.
+2. **Fabricated specifics are the real accuracy problem, and they hide inside otherwise
+   correct sections.** Nearly half the verdicts carry at least one invented detail, usually a
+   URL, a menu path, or a named recipient, concentrated on consumer platforms. The critic
+   agrees with the jury 93 percent of the time on section acceptability precisely because
+   both mostly say acceptable; the critic is not catching these.
+3. **The evaluator's label is not a quality signal.** Strong, Adequate, and Failed average
+   71, 69, and 59 with the jury, and Strong-but-under-60 happens eighteen times. The
+   evaluator measures structure and retrieval, which is useful, but it should not be read
+   as accuracy.
+4. **Run-to-run variance is large.** A third of the sites move twenty or more points between
+   samples of identical input. Any phase 5 proof needs three samples on both arms and a
+   paired comparison per site, which the replay and jury already support.
+5. **The split is fair.** Work and holdout score within a point of each other, so gains on
+   the work set that fail to appear on the holdout set will be real overfitting, not a
+   harder holdout.
+6. **The jury has its own habits.** It hits the five-omission cap on nearly every verdict
+   and, in the dry-run spot-check, called complete sections partial more often than the
+   owner did. Its completeness verdicts are a strict reading; its accuracy and fabrication
+   verdicts held up against a source search.
+
+**Fetcher lesson from the run.** reddit.com's frozen source is the policy index page in
+many languages, not a policy: the site database URL resolves to the index, and the
+legal-document check accepted 109,435 characters of policy titles and dates as a document.
+The analyzer said so honestly in all three samples and the jury marked every section not
+applicable. The site database entry needs the actual document URLs, and the legal-text check
+needs to distrust a document that is mostly headings.
+
+**Operational notes.** The trainer workspace's monthly cap was reached forty verdicts into
+the jury stage (the provider returned "You have reached your specified API usage limits");
+the owner raised it and the grader resumed on the remaining 110 without repeating any. The
+run was driven from a second dev proxy instance started with the trainer key read from the
+Windows user environment in-process, the jury enabled, and a 2,000-unit daily fuse, because
+the owner's instance was not answering when the run began.
