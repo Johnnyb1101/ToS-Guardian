@@ -82,14 +82,16 @@ async function lookupSite(pageUrl) {
         const data = await response.json();
         if (data && data.tos && data.privacy) {
           if (!data.is_static) {
-            const ageInDays = (Date.now() - new Date(data.updated_at).getTime()) / (1000 * 60 * 60 * 24);
-            if (ageInDays > 15) {
-              console.log(`[SiteDB] ⏰ Supabase entry expired for ${hostname}`);
+            const expired = data.expires_at
+              ? new Date(data.expires_at).getTime() <= Date.now()
+              : (Date.now() - new Date(data.updated_at).getTime()) / (1000 * 60 * 60 * 24) > 15;
+            if (expired) {
+              console.log(`[SiteDB] ⏰ Learned entry expired for ${hostname}`);
               return null;
             }
           }
           console.log(`[SiteDB] ✅ Supabase match: ${hostname}`);
-          return { tos: data.tos, privacy: data.privacy, supplemental: data.supplemental || [], source: 'learned' };
+          return { tos: data.tos, privacy: data.privacy, supplemental: Array.isArray(data.supplemental) ? data.supplemental : [], path: data.path || null, source: 'learned' };
         }
       }
     } catch (e) {
@@ -106,24 +108,46 @@ async function lookupSite(pageUrl) {
 }
 
 // ---------------------------------------------------------------------------
-// learnSite(pageUrl, tosUrl, privacyUrl)
-// Saves to Supabase via proxy POST /site. Never overwrites static entries.
+// learnSite(pageUrl, tosUrl, privacyUrl, supplemental, path)
+// Proposes the url set to the proxy, which verifies it and promotes it once the
+// evidence floor is met (learning loop, phase 3). Never overwrites static entries.
 // ---------------------------------------------------------------------------
-async function learnSite(pageUrl, tosUrl, privacyUrl) {
-  try {
-    // Store under the registrable domain so every subdomain shares one entry. (FIXPLAN #1b)
-    const hostname = registrableDomain(new URL(pageUrl).hostname);
-    if (!hostname) return;
+function buildSiteProposal(pageUrl, tosUrl, privacyUrl, supplemental = [], path = null) {
+  const hostname = registrableDomain(new URL(pageUrl).hostname);
+  if (!hostname || STATIC_SITES[hostname]) return null;
+  if (typeof tosUrl !== 'string' || typeof privacyUrl !== 'string') return null;
+  const supplementalUrls = (Array.isArray(supplemental) ? supplemental : []).filter(u => typeof u === 'string').slice(0, 5);
+  const proposal = { domain: hostname, tos_url: tosUrl, privacy_url: privacyUrl, supplemental_urls: supplementalUrls };
+  if (typeof path === 'string') proposal.path = path;
+  return proposal;
+}
 
-    if (STATIC_SITES[hostname]) return;
+function describeSiteProposalOutcome(hostname, d) {
+  if (!d || typeof d !== 'object') return `[SiteDB] ☁️ No answer for ${hostname}`;
+  switch (d.status) {
+    case 'promoted': return `[SiteDB] ☁️ Learned: ${hostname} verified and promoted until ${d.expiresAt}`;
+    case 'refreshed': return `[SiteDB] ☁️ Learned: ${hostname} re-verified, expiry extended`;
+    case 'recorded': return `[SiteDB] ☁️ Proposed: ${hostname} recorded (${d.needed} more day(s) of agreement needed)`;
+    case 'current': return `[SiteDB] ☁️ ${hostname} already learned`;
+    case 'halted': return `[SiteDB] ☁️ Proposed: ${hostname} recorded, learning is halted`;
+    case 'rejected': return `[SiteDB] ☁️ Proposal for ${hostname} failed verification: ${d.reason}`;
+    case 'static': return `[SiteDB] ☁️ ${hostname} is a static entry`;
+    default: return `[SiteDB] ☁️ Proposal for ${hostname}: ${d.error || d.status || 'unknown outcome'}`;
+  }
+}
+
+async function learnSite(pageUrl, tosUrl, privacyUrl, supplemental = [], path = null) {
+  try {
+    const proposal = buildSiteProposal(pageUrl, tosUrl, privacyUrl, supplemental, path);
+    if (!proposal) return;
 
     proxyFetch(`${PROXY_URL}/site`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ domain: hostname, tos_url: tosUrl, privacy_url: privacyUrl })
+      body: JSON.stringify(proposal)
     }).then(r => r.json())
-      .then(d => { if (d.success) console.log(`[SiteDB] ☁️ Learned and saved: ${hostname}`); })
-      .catch(e => console.warn(`[SiteDB] Supabase write failed for ${hostname}:`, e.message));
+      .then(d => console.log(describeSiteProposalOutcome(proposal.domain, d)))
+      .catch(e => console.warn(`[SiteDB] Proposal failed for ${proposal.domain}:`, e.message));
 
   } catch (e) {
     console.warn("[SiteDB] learnSite error:", e);

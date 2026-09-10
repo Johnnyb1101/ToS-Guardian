@@ -355,6 +355,10 @@ function showGuardianOverlay(event, sourceButton = null) {
       #tg-leave:hover { background:#6b7280; }
       .tg-retry-btn { flex:1 1 100%; height:40px; padding:0 10px; background:#1a1aff; color:#fff; border:none; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; }
       .tg-retry-btn:hover { background:#1414cc; }
+      .tg-community { flex:1 1 100%; padding:10px 12px; margin-bottom:6px; background:#f4f6fb; border:1px solid #d9deea; border-radius:8px; font-size:12px; line-height:1.4; color:#333; }
+      .tg-community-actions { display:flex; gap:8px; margin-top:8px; }
+      .tg-community-btn { height:30px; padding:0 12px; border:1px solid #c9cfdd; border-radius:6px; background:#fff; color:#333; font-size:12px; cursor:pointer; }
+      .tg-community-on { background:#1a1aff; color:#fff; border-color:#1a1aff; }
     </style>
 
     <div id="tg-card">
@@ -540,6 +544,7 @@ function showGuardianOverlay(event, sourceButton = null) {
           });
         });
         reportRender(overlayRoot, null, false);
+        offerCommunityPrompt(overlayRoot);
         revealActions();
       },
       { attempts: 2 }
@@ -614,6 +619,41 @@ function beginObservedTrigger(source, branch, control) {
 }
 
 // Read what the overlay actually shows, from the closed shadow root.
+function offerCommunityPrompt(overlayRoot) {
+  if (!overlayRoot || typeof readCommunityConfig !== 'function') return;
+  readCommunityConfig(browser.storage.local).then((config) => {
+    if (!shouldOfferCommunityPrompt(config, true)) return;
+    const footer = overlayRoot.getElementById("tg-card-footer");
+    if (!footer || overlayRoot.querySelector(".tg-community")) return;
+    const card = document.createElement("div");
+    card.className = "tg-community";
+    const text = document.createElement("div");
+    text.className = "tg-community-text";
+    text.textContent = "Help improve TOS Guardian? Send anonymous site reports: which documents were found and how the analysis went. Never the page you were on, what you clicked, or anything about you. Off unless you turn it on; change it anytime in Options.";
+    const actions = document.createElement("div");
+    actions.className = "tg-community-actions";
+    const decide = (enabled) => {
+      try {
+        browser.runtime.sendMessage({ action: "communityDecision", enabled }, () => { void browser.runtime.lastError; });
+      } catch (e) { /* the decision is best-effort */ }
+      card.remove();
+    };
+    const on = document.createElement("button");
+    on.className = "tg-community-btn tg-community-on";
+    on.textContent = "Turn on";
+    on.addEventListener("click", () => decide(true));
+    const off = document.createElement("button");
+    off.className = "tg-community-btn";
+    off.textContent = "No thanks";
+    off.addEventListener("click", () => decide(false));
+    actions.appendChild(on);
+    actions.appendChild(off);
+    card.appendChild(text);
+    card.appendChild(actions);
+    footer.insertBefore(card, footer.firstChild);
+  }).catch(() => {});
+}
+
 function reportRender(overlayRoot, errorKind, retry) {
   if (!observerEnabled || !currentTrigger || !overlayRoot) return;
   const count = (selector) => { try { return overlayRoot.querySelectorAll(selector).length; } catch (e) { return 0; } };

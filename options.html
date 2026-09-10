@@ -158,6 +158,24 @@
   </div>
 
   <div class="section">
+    <div class="section-title">Community reports</div>
+
+    <label for="communityEnabled" style="display:flex; align-items:center; gap:10px; cursor:pointer;">
+      <input type="checkbox" id="communityEnabled" style="width:16px; height:16px; margin:0;" />
+      Send anonymous site reports
+    </label>
+    <p class="ollama-note" style="margin-top:8px;">
+      Off by default. When on, each analysis sends the proxy a report of site and document
+      facts: which documents were found and where, whether they read as legal text, what
+      the analysis and its checks concluded, and the day. Never the page you were on, what
+      you clicked, any text from the page, or anything that identifies you or this browser.
+      Reports help the shared site database learn where each site keeps its documents.
+      This setting saves as soon as you change it.
+    </p>
+    <div class="status" id="communityStatus"></div>
+  </div>
+
+  <div class="section">
     <div class="section-title">Developer</div>
 
     <label for="observerEnabled" style="display:flex; align-items:center; gap:10px; cursor:pointer;">

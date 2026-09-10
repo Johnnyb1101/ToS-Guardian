@@ -15,6 +15,7 @@ importScripts("critic.js");
 importScripts("siteDatabase.js");
 importScripts("tosUtils.js");
 importScripts("episode.js");
+importScripts("community.js");
 importScripts("orchestrator.js");
 const browser = globalThis.browser || chrome;
 const PROXY_URL = "https://tos-guardian-proxy-production.up.railway.app";
@@ -32,6 +33,20 @@ function proxyFetch(url, options = {}) {
 // default (tosGuardianObserver.enabled), localhost only, fire-and-forget: it
 // can never block or fail the relay. The batch runner replaces this function
 // with an in-process capture, so nothing here runs headlessly.
+function sendCommunityReport(report) {
+  try {
+    fetch(`${PROXY_URL}/report`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(report)
+    }).then(r => r.json().catch(() => ({ accepted: false, reason: `http ${r.status}` })))
+      .then(d => console.log(describeCommunityOutcome(d)))
+      .catch(e => console.warn('[Community] Report could not be sent:', e.message));
+  } catch (e) {
+    console.warn('[Community] Report could not be sent:', e.message);
+  }
+}
+
 function observerSink(event, observer) {
   const port = observer && Number.isInteger(observer.port) && observer.port > 0 ? observer.port : OBSERVER_DEFAULT_PORT;
   try {
@@ -223,7 +238,7 @@ async function fetcherAgentInner(pageUrl, pageHtml = "", knownUrls = null, noteU
           ...supplementalResults.map(result => `=== SUPPLEMENTAL PRIVACY NOTICE: ${result.sourceUrl} ===\n${result.text}`)
         ].filter(Boolean).join("\n\n");
         const sourceUrl = tosResult?.sourceUrl || privacyResult?.sourceUrl;
-        await learnSite(pageUrl, knownUrls.tos, knownUrls.privacy);
+        await learnSite(pageUrl, knownUrls.tos, knownUrls.privacy, knownUrls.supplemental || [], 'known-urls');
         return {
           path: 'known-urls',
           text: combined,
@@ -276,7 +291,7 @@ async function fetcherAgentInner(pageUrl, pageHtml = "", knownUrls = null, noteU
         ].filter(Boolean).join("\n\n");
         const sourceUrl = tosFromPage?.sourceUrl || privacyFromPage?.sourceUrl;
         console.log(`[Fetcher] Got documents from page HTML links`);
-        await learnSite(pageUrl, tosFromPage?.sourceUrl || null, privacyFromPage?.sourceUrl || null);
+        await learnSite(pageUrl, tosFromPage?.sourceUrl || null, privacyFromPage?.sourceUrl || null, [], 'page-links');
         return {
           path: 'page-links',
           text: combined,
@@ -322,7 +337,7 @@ async function fetcherAgentInner(pageUrl, pageHtml = "", knownUrls = null, noteU
           ].filter(Boolean).join("\n\n");
           const sourceUrl = tosFromText?.sourceUrl || privacyFromText?.sourceUrl;
           console.log(`[Fetcher] Got documents from link text extraction`);
-          await learnSite(pageUrl, tosFromText?.sourceUrl || null, privacyFromText?.sourceUrl || null);
+          await learnSite(pageUrl, tosFromText?.sourceUrl || null, privacyFromText?.sourceUrl || null, [], 'link-text');
           return {
             path: 'link-text',
             text: combined,
@@ -376,7 +391,7 @@ async function fetcherAgentInner(pageUrl, pageHtml = "", knownUrls = null, noteU
                 ].filter(Boolean).join("\n\n");
                 const sourceUrl = tosFromHome?.sourceUrl || privacyFromHome?.sourceUrl;
                 console.log(`[Fetcher] Got documents from homepage footer scan`);
-                await learnSite(pageUrl, tosFromHome?.sourceUrl || null, privacyFromHome?.sourceUrl || null);
+                await learnSite(pageUrl, tosFromHome?.sourceUrl || null, privacyFromHome?.sourceUrl || null, [], 'homepage-footer');
                 return {
                   path: 'homepage-footer',
                   text: combined,
@@ -956,6 +971,23 @@ function handleBackgroundMessage(request, sender, sendResponse) {
   // two stages, data and local layers validated by episode.js allowlists.
   // Accepted-but-ignored when observer mode is off, so a stale content script
   // never gets an error for a setting that changed underneath it.
+  if (request.action === "communityDecision") {
+    if (!hasOnlyFields(request, new Set(['action', 'enabled'])) || typeof request.enabled !== 'boolean') {
+      sendResponse({ ...invalidMessage('communityDecision needs a boolean enabled and nothing else'), ok: false });
+      return false;
+    }
+    const decision = communityDecision(request.enabled);
+    browser.storage.local.set({ [COMMUNITY_STORAGE_KEY]: decision }, () => {
+      if (browser.runtime.lastError) {
+        sendResponse({ ok: false, error: 'storage', reason: browser.runtime.lastError.message });
+        return;
+      }
+      console.log(`[Community] Reports ${decision.enabled ? 'turned on' : 'declined'} by the user`);
+      sendResponse({ ok: true, ...decision });
+    });
+    return true;
+  }
+
   if (request.action === "observerEvent") {
     if (!hasOnlyFields(request, new Set(['action', 'episodeId', 'stage', 'data', 'local']))) {
       sendResponse({ ...invalidMessage('observerEvent contains unsupported fields'), ok: false });

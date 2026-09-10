@@ -9,6 +9,8 @@ const statusMsg = document.getElementById('statusMsg');
 const observerEnabled = document.getElementById('observerEnabled');
 const observerPort = document.getElementById('observerPort');
 const observerStatus = document.getElementById('observerStatus');
+const communityEnabled = document.getElementById('communityEnabled');
+const communityStatus = document.getElementById('communityStatus');
 
 // API keys are deliberately NOT handled here anymore (audit refactor #5): they
 // live in the proxy's Railway environment (ANTHROPIC_API_KEY / OPENAI_API_KEY)
@@ -61,11 +63,32 @@ function saveObserver() {
   });
 }
 
+function describeCommunity(enabled) {
+  return enabled ? 'Community reports are on.' : 'Community reports are off.';
+}
+
+function saveCommunity() {
+  const setting = { enabled: communityEnabled.checked === true, decided: true };
+  browser.storage.local.set({ tosGuardianCommunity: setting }, () => {
+    if (browser.runtime.lastError) {
+      communityStatus.textContent = `Could not save: ${browser.runtime.lastError.message}`;
+      communityStatus.className = 'status error';
+      return;
+    }
+    communityStatus.textContent = `✓ Saved. ${describeCommunity(setting.enabled)}`;
+    communityStatus.className = 'status';
+  });
+}
+
 // Load saved settings into the form on page open
 function loadSettings() {
-  browser.storage.local.get(['selectedProvider', 'ollamaBaseUrl', 'tosGuardianObserver'], (result) => {
+  browser.storage.local.get(['selectedProvider', 'ollamaBaseUrl', 'tosGuardianObserver', 'tosGuardianCommunity'], (result) => {
     providerSelect.value = result.selectedProvider || 'anthropic';
     ollamaUrl.value      = result.ollamaBaseUrl    || 'http://localhost:11434';
+    const community = result.tosGuardianCommunity || {};
+    communityEnabled.checked = community.enabled === true;
+    communityStatus.textContent = describeCommunity(communityEnabled.checked);
+    communityStatus.className = 'status';
     const observer = result.tosGuardianObserver || {};
     observerEnabled.checked = observer.enabled === true;
     observerPort.value = String(parsePort(observer.port) || OBSERVER_DEFAULT_PORT);
@@ -103,6 +126,7 @@ function saveSettings() {
 providerSelect.addEventListener('change', updateFields);
 saveBtn.addEventListener('click', saveSettings);
 observerEnabled.addEventListener('change', saveObserver);
+communityEnabled.addEventListener('change', saveCommunity);
 observerPort.addEventListener('change', saveObserver);
 
 loadSettings();

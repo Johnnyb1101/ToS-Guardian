@@ -112,3 +112,43 @@ node tools/spotcheck.js agreement reference/runs/<run id>
 
 The page is served on 127.0.0.1 only and nothing leaves the machine. Keyboard: 1, 2, 3
 mark the focused line, arrows or j and k move, Alt with an arrow changes site.
+
+## Reflect and dream
+
+Reflect reads a graded run and writes the findings the loop learns from: score by split and
+type, per-section error and incompleteness rates by document type, fabricated specifics
+classified by pattern (menu path, URL, phone, invented right, and so on), omissions grouped
+by theme and mapped to the section that should have carried them, evaluator and critic
+disagreements with the jury, risk-level direction, run-to-run variance, sites analysed from
+a fraction of their text, and the spot-check agreement when marks exist. Pure computation
+over local files; no model calls.
+
+Dream turns findings into lesson candidates: prompt lessons for the analyzer or critic
+(tier 2), site facts (tier 1), code changes and critic calibration seeds (tier 3), and
+notes for the proof design. Each carries the text that would be recalled, the evidence
+count, examples, and a priority. Everything is a proposal until proven and promoted.
+
+```bash
+node tools/reflect.js reference/runs/<run id>
+node tools/dream.js reference/runs/<run id>
+```
+
+Output lands in `runs/<run id>/reflect/findings.{json,md}` and `runs/<run id>/dream/lessons.{json,md}`.
+
+## Site learning (tier 1)
+
+The proxy owns learned site facts. A learned url set is a proposal until the proxy has
+verified the documents itself and either the trainer proposed it or the same set was
+proposed on three different days; promoted sets expire after thirty days unless
+re-verified. `tools/sites.js` drives the loop from this machine:
+
+```bash
+node tools/sites.js propose --proxy http://localhost:3000 --sites acorns.com,chase.com
+node tools/sites.js status --proxy http://localhost:3000
+node tools/sites.js ledger --proxy http://localhost:3000
+node tools/sites.js halt --proxy http://localhost:3000 --reason "owner review"
+```
+
+`propose` needs `TRAINER_OPERATIONS=1` on the proxy to count as the trainer; anywhere
+else it is one more anonymous report. `ledger` verifies the hash chain locally and exits
+non-zero if it is broken.
