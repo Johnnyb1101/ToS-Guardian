@@ -223,7 +223,7 @@ async function fetcherAgentInner(pageUrl, pageHtml = "", knownUrls = null, noteU
           ...supplementalResults.map(result => `=== SUPPLEMENTAL PRIVACY NOTICE: ${result.sourceUrl} ===\n${result.text}`)
         ].filter(Boolean).join("\n\n");
         const sourceUrl = tosResult?.sourceUrl || privacyResult?.sourceUrl;
-        await learnSite(pageUrl, knownUrls.tos, knownUrls.privacy);
+        await learnSite(pageUrl, knownUrls.tos, knownUrls.privacy, knownUrls.supplemental || [], 'known-urls');
         return {
           path: 'known-urls',
           text: combined,
@@ -276,7 +276,7 @@ async function fetcherAgentInner(pageUrl, pageHtml = "", knownUrls = null, noteU
         ].filter(Boolean).join("\n\n");
         const sourceUrl = tosFromPage?.sourceUrl || privacyFromPage?.sourceUrl;
         console.log(`[Fetcher] Got documents from page HTML links`);
-        await learnSite(pageUrl, tosFromPage?.sourceUrl || null, privacyFromPage?.sourceUrl || null);
+        await learnSite(pageUrl, tosFromPage?.sourceUrl || null, privacyFromPage?.sourceUrl || null, [], 'page-links');
         return {
           path: 'page-links',
           text: combined,
@@ -322,7 +322,7 @@ async function fetcherAgentInner(pageUrl, pageHtml = "", knownUrls = null, noteU
           ].filter(Boolean).join("\n\n");
           const sourceUrl = tosFromText?.sourceUrl || privacyFromText?.sourceUrl;
           console.log(`[Fetcher] Got documents from link text extraction`);
-          await learnSite(pageUrl, tosFromText?.sourceUrl || null, privacyFromText?.sourceUrl || null);
+          await learnSite(pageUrl, tosFromText?.sourceUrl || null, privacyFromText?.sourceUrl || null, [], 'link-text');
           return {
             path: 'link-text',
             text: combined,
@@ -376,7 +376,7 @@ async function fetcherAgentInner(pageUrl, pageHtml = "", knownUrls = null, noteU
                 ].filter(Boolean).join("\n\n");
                 const sourceUrl = tosFromHome?.sourceUrl || privacyFromHome?.sourceUrl;
                 console.log(`[Fetcher] Got documents from homepage footer scan`);
-                await learnSite(pageUrl, tosFromHome?.sourceUrl || null, privacyFromHome?.sourceUrl || null);
+                await learnSite(pageUrl, tosFromHome?.sourceUrl || null, privacyFromHome?.sourceUrl || null, [], 'homepage-footer');
                 return {
                   path: 'homepage-footer',
                   text: combined,

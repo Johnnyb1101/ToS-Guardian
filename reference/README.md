@@ -134,3 +134,21 @@ node tools/dream.js reference/runs/<run id>
 ```
 
 Output lands in `runs/<run id>/reflect/findings.{json,md}` and `runs/<run id>/dream/lessons.{json,md}`.
+
+## Site learning (tier 1)
+
+The proxy owns learned site facts. A learned url set is a proposal until the proxy has
+verified the documents itself and either the trainer proposed it or the same set was
+proposed on three different days; promoted sets expire after thirty days unless
+re-verified. `tools/sites.js` drives the loop from this machine:
+
+```bash
+node tools/sites.js propose --proxy http://localhost:3000 --sites acorns.com,chase.com
+node tools/sites.js status --proxy http://localhost:3000
+node tools/sites.js ledger --proxy http://localhost:3000
+node tools/sites.js halt --proxy http://localhost:3000 --reason "owner review"
+```
+
+`propose` needs `TRAINER_OPERATIONS=1` on the proxy to count as the trainer; anywhere
+else it is one more anonymous report. `ledger` verifies the hash chain locally and exits
+non-zero if it is broken.
