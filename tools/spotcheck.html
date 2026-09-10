@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spot-check</title>
+<style>
+  :root {
+    --bg: #f6f5f1; --panel: #ffffff; --ink: #1f2320; --muted: #6b7068; --line: #d9d7cf;
+    --accent: #2f5d50; --accent-ink: #ffffff; --ok: #2e7d4f; --bad: #b3372c; --warn: #9a6b00; --soft: #eef1ec;
+    --mark-bg: #e8f0ec; --hl: #fff3b0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161816; --panel: #1f221f; --ink: #e8e6df; --muted: #9aa097; --line: #343833;
+      --accent: #6fb39a; --accent-ink: #10231c; --ok: #6cc08b; --bad: #e0705f; --warn: #d9a93a; --soft: #262a26;
+      --mark-bg: #24302a; --hl: #5a4d12;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 2; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: 0.01em; }
+  header .run { color: var(--muted); font-size: 12px; }
+  header select { font: inherit; padding: 4px 8px; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; }
+  header .spacer { flex: 1; }
+  header .status { font-size: 12px; color: var(--muted); }
+  button { font: inherit; cursor: pointer; border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 4px 10px; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0; height: calc(100vh - 49px); }
+  .pane { overflow: auto; padding: 16px 20px 80px; }
+  .pane.source { border-right: 1px solid var(--line); background: var(--panel); }
+  .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; position: sticky; top: 0; background: var(--panel); padding: 6px 0; z-index: 1; }
+  .toolbar input { font: inherit; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); min-width: 220px; }
+  .toolbar .count { color: var(--muted); font-size: 12px; }
+  pre.doc { white-space: pre-wrap; word-wrap: break-word; font: 12.5px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace; margin: 0; }
+  pre.doc mark { background: var(--hl); color: inherit; padding: 0 1px; }
+  pre.doc mark.current { outline: 2px solid var(--accent); }
+  pre.doc .doc-head { display: block; font-weight: 700; color: var(--accent); margin-top: 1.2em; }
+  .site-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+  .site-head h2 { margin: 0; font-size: 20px; font-weight: 650; }
+  .site-head .meta { color: var(--muted); font-size: 12px; }
+  .pill { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  section.block { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin: 12px 0; }
+  section.block h3 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  section.block h3 .done { color: var(--ok); font-weight: 600; text-transform: none; letter-spacing: 0; }
+  .item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 6px 0; border-top: 1px dashed var(--line); }
+  .item:first-of-type { border-top: 0; }
+  .item .text { min-width: 0; }
+  .item.focused .text { background: var(--mark-bg); border-radius: 4px; padding: 2px 4px; margin: -2px -4px; }
+  .marks { display: inline-flex; gap: 4px; }
+  .marks button { padding: 2px 8px; font-size: 12px; min-width: 34px; }
+  .marks button.on-supported { background: var(--ok); color: #fff; border-color: var(--ok); }
+  .marks button.on-not-supported { background: var(--bad); color: #fff; border-color: var(--bad); }
+  .marks button.on-unsure { background: var(--warn); color: #fff; border-color: var(--warn); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+  .row .label { color: var(--muted); font-size: 12px; }
+  .row input[type=text] { font: inherit; padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); flex: 1; min-width: 160px; }
+  button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .reveal { margin-top: 10px; padding: 8px 10px; background: var(--soft); border-radius: 8px; font-size: 12.5px; }
+  .reveal .k { color: var(--muted); }
+  .reveal .v-correct, .reveal .v-complete, .reveal .v-grounded, .reveal .v-skipped, .reveal .v-not-applicable { color: var(--ok); font-weight: 600; }
+  .reveal .v-minor, .reveal .v-partial, .reveal .v-vague { color: var(--warn); font-weight: 600; }
+  .reveal .v-major, .reveal .v-fabricated, .reveal .v-missing, .reveal .v-unsupported { color: var(--bad); font-weight: 600; }
+  .hint { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
+  .empty { color: var(--muted); font-style: italic; }
+  footer.site-foot { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 16px 0; }
+  .kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; color: var(--muted); }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; height: auto; } .pane.source { border-right: 0; border-bottom: 1px solid var(--line); max-height: 50vh; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Spot-check</h1>
+  <span class="run" id="run"></span>
+  <button id="prev" title="Previous site (Alt+←)">←</button>
+  <select id="picker" aria-label="Site"></select>
+  <button id="next" title="Next site (Alt+→)">→</button>
+  <span class="spacer"></span>
+  <span class="status" id="progress"></span>
+  <span class="status" id="saved"></span>
+  <button id="agreement">Agreement</button>
+</header>
+<main>
+  <div class="pane source">
+    <div class="toolbar">
+      <input id="find" type="search" placeholder="Find in document (Enter: next, Shift+Enter: previous)">
+      <span class="count" id="findCount"></span>
+      <span id="jumps"></span>
+    </div>
+    <pre class="doc" id="doc"></pre>
+  </div>
+  <div class="pane summary" id="summary"></div>
+</main>
+<script>
+(() => {
+  const SECTIONS = ['dataCollection', 'dataSelling', 'optOutRights', 'howToOptOut', 'autoRenewal', 'dataDeletion'];
+  const MARKS = [['supported', '✓', 'Supported by the document (1)'], ['not-supported', '✗', 'Not supported by the document (2)'], ['unsure', '?', 'Unsure (3)']];
+  const state = { model: null, marks: null, index: 0, focus: null, revealed: {}, saveTimer: null, dirty: false };
+  const $ = (id) => document.getElementById(id);
+
+  function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+  function inline(s) { return esc(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/`([^`]+)`/g, '<code>$1</code>'); }
+
+  function site() { return state.model.sites[state.index]; }
+  function siteMarks(id) {
+    if (!state.marks.sites[id]) state.marks.sites[id] = { sections: {}, risk: null, bottomLineFair: null };
+    const m = state.marks.sites[id];
+    if (!m.sections) m.sections = {};
+    return m;
+  }
+  function sectionMarks(id, key) {
+    const m = siteMarks(id);
+    if (!m.sections[key]) m.sections[key] = { items: {}, completeness: null, note: '' };
+    if (!m.sections[key].items) m.sections[key].items = {};
+    return m.sections[key];
+  }
+
+  function backupKey() { return `spotcheck:${state.model.runId}`; }
+  function backup() {
+    try { localStorage.setItem(backupKey(), JSON.stringify({ savedAt: new Date().toISOString(), marks: state.marks })); } catch (e) { /* storage unavailable */ }
+  }
+  function readBackup() {
+    try { const raw = localStorage.getItem(backupKey()); return raw ? JSON.parse(raw) : null; } catch (e) { return null; }
+  }
+
+  function save() {
+    state.dirty = true;
+    backup();
+    $('saved').textContent = 'saving…';
+    clearTimeout(state.saveTimer);
+    state.saveTimer = setTimeout(pushMarks, 300);
+  }
+
+  async function pushMarks() {
+    try {
+      const res = await fetch('/api/marks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(state.marks) });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.reason || body.error);
+      state.dirty = false;
+      $('saved').textContent = 'saved ' + new Date(body.updatedAt).toLocaleTimeString();
+    } catch (e) {
+      $('saved').textContent = 'not saved (kept in this browser, retrying): ' + e.message;
+      clearTimeout(state.saveTimer);
+      state.saveTimer = setTimeout(pushMarks, 10000);
+    }
+  }
+
+  function siteDone(s) {
+    const m = state.marks.sites[s.id];
+    if (!m) return false;
+    return SECTIONS.every(key => {
+      const items = s.summary.sections[key].items;
+      if (items.length === 0) return true;
+      const sm = m.sections[key];
+      return sm && items.every((_, i) => sm.items[i]);
+    }) && !!m.risk && typeof m.bottomLineFair === 'boolean';
+  }
+
+  function renderHeader() {
+    const picker = $('picker');
+    picker.innerHTML = state.model.sites.map((s, i) => `<option value="${i}" ${i === state.index ? 'selected' : ''}>${siteDone(s) ? '✓ ' : ''}${esc(s.domain)} #${s.sample} · ${esc(s.split)} · ${esc(s.docType)}</option>`).join('');
+    const done = state.model.sites.filter(siteDone).length;
+    $('progress').textContent = `${done} of ${state.model.sites.length} sites done`;
+    $('run').textContent = state.model.runId;
+  }
+
+  function renderSource() {
+    const s = site();
+    const doc = $('doc');
+    const text = s.source || '';
+    const query = $('find').value.trim();
+    let html = esc(text).replace(/^(=== .+? ===)$/gm, '<span class="doc-head" id="h-$1">$1</span>');
+    if (query.length >= 2) {
+      const re = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+      let n = 0;
+      html = html.replace(re, m => `<mark data-n="${n++}">${m}</mark>`);
+      $('findCount').textContent = n ? `${n} match${n === 1 ? '' : 'es'}` : 'no matches';
+    } else {
+      $('findCount').textContent = '';
+    }
+    doc.innerHTML = html;
+    const heads = [...doc.querySelectorAll('.doc-head')];
+    $('jumps').innerHTML = heads.map((h, i) => `<button data-jump="${i}" style="font-size:11px;padding:2px 6px">${esc(h.textContent.replace(/=== |: .*| ===/g, '').slice(0, 26))}</button>`).join(' ');
+    $('jumps').querySelectorAll('button').forEach(b => b.addEventListener('click', () => heads[Number(b.dataset.jump)].scrollIntoView({ block: 'start' })));
+  }
+
+  let currentMatch = -1;
+  function stepMatch(dir) {
+    const marks = [...$('doc').querySelectorAll('mark')];
+    if (!marks.length) return;
+    marks.forEach(m => m.classList.remove('current'));
+    currentMatch = (currentMatch + dir + marks.length) % marks.length;
+    marks[currentMatch].classList.add('current');
+    marks[currentMatch].scrollIntoView({ block: 'center' });
+    $('findCount').textContent = `${currentMatch + 1} of ${marks.length}`;
+  }
+
+  function verdictSpan(v) { return `<span class="v-${esc(v)}">${esc(v)}</span>`; }
+
+  function revealHtml(s, key) {
+    const parts = [];
+    if (s.jury && s.jury.sections[key]) {
+      const j = s.jury.sections[key];
+      parts.push(`<div><span class="k">Jury:</span> accuracy ${verdictSpan(j.accuracy)}, completeness ${verdictSpan(j.completeness)}${j.notes ? ` — ${esc(j.notes)}` : ''}</div>`);
+    } else {
+      parts.push('<div><span class="k">Jury:</span> not graded</div>');
+    }
+    if (s.critic && s.critic[key]) parts.push(`<div><span class="k">Critic:</span> ${verdictSpan(s.critic[key])}</div>`);
+    return `<div class="reveal">${parts.join('')}</div>`;
+  }
+
+  function renderSummary() {
+    const s = site();
+    const m = siteMarks(s.id);
+    const sum = s.summary;
+    const parts = [];
+    parts.push(`<div class="site-head"><h2>${esc(s.domain)}</h2><span class="meta">sample ${s.sample} · ${esc(s.split)} · ${esc(s.docType)}${s.evaluator ? ` · evaluator ${esc(s.evaluator.label)} ${s.evaluator.score}` : ''}</span></div>`);
+    parts.push(`<p class="hint">Mark each line against the document on the left. <span class="kbd">1</span> supported, <span class="kbd">2</span> not supported, <span class="kbd">3</span> unsure, <span class="kbd">↑</span><span class="kbd">↓</span> move. The jury's verdict appears once a section is fully marked.</p>`);
+
+    parts.push(`<section class="block"><h3>Bottom line</h3><div class="text">${sum.bottomLine ? inline(sum.bottomLine) : '<span class="empty">none</span>'}</div>
+      <div class="row"><span class="label">Fair and the most important thing?</span>
+      <button data-bl="true" class="${m.bottomLineFair === true ? 'on' : ''}">Yes</button><button data-bl="false" class="${m.bottomLineFair === false ? 'on' : ''}">No</button></div>
+      ${typeof m.bottomLineFair === 'boolean' && s.jury ? `<div class="reveal"><span class="k">Jury:</span> ${s.jury.bottomLine.fair ? '<span class="v-correct">fair</span>' : '<span class="v-major">unfair</span>'}${s.jury.bottomLine.notes ? ` — ${esc(s.jury.bottomLine.notes)}` : ''}</div>` : ''}</section>`);
+
+    parts.push(`<section class="block"><h3>Risk level</h3><div class="text">Summary says: <strong>${esc(sum.riskLevel)}</strong>${s.evaluator && s.evaluator.risk ? ` · overlay shows: <strong>${esc(s.evaluator.risk)}</strong>` : ''}</div>
+      <div class="row"><span class="label">Your call from the document:</span>${['Low', 'Moderate', 'High'].map(l => `<button data-risk="${l}" class="${m.risk === l ? 'on' : ''}">${l}</button>`).join('')}</div>
+      ${m.risk && s.jury ? `<div class="reveal"><span class="k">Jury:</span> <strong>${esc(s.jury.riskLevel.jury)}</strong>${s.jury.riskLevel.notes ? ` — ${esc(s.jury.riskLevel.notes)}` : ''}</div>` : ''}</section>`);
+
+    for (const key of SECTIONS) {
+      const sec = sum.sections[key];
+      const sm = sectionMarks(s.id, key);
+      const allMarked = sec.items.length > 0 && sec.items.every((_, i) => sm.items[i]);
+      const revealed = allMarked || state.revealed[`${s.id}.${key}`];
+      const items = sec.items.length ? sec.items.map((t, i) => `<div class="item ${state.focus === `${key}:${i}` ? 'focused' : ''}" data-key="${key}" data-i="${i}"><div class="text">${inline(t)}</div><div class="marks">${MARKS.map(([v, glyph, title]) => `<button data-mark="${v}" title="${title}" class="${sm.items[i] === v ? 'on-' + v : ''}">${glyph}</button>`).join('')}</div></div>`).join('') : '<div class="empty">Section absent from the summary.</div>';
+      parts.push(`<section class="block" data-section="${key}"><h3>${esc(sec.title)} ${allMarked ? '<span class="done">marked</span>' : ''}</h3>${items}
+        <div class="row"><span class="label">Does it cover what the document says?</span>
+        <button data-comp="complete" class="${sm.completeness === 'complete' ? 'on' : ''}">Complete</button><button data-comp="missing" class="${sm.completeness === 'missing' ? 'on' : ''}">Missing something</button>
+        <input type="text" data-note="${key}" placeholder="what is wrong or missing (optional)" value="${esc(sm.note || '')}"></div>
+        ${revealed ? revealHtml(s, key) : `<div class="row"><button data-reveal="${key}" style="font-size:12px">Show jury and critic</button></div>`}</section>`);
+    }
+    if (s.jury && siteDone(s)) {
+      parts.push(`<section class="block"><h3>Jury on this site</h3><div>Score <strong>${s.jury.score}</strong>${s.jury.fabrications.length ? ` · fabrications: ${s.jury.fabrications.map(esc).join('; ')}` : ' · no fabrications'}</div>${s.jury.omissions.length ? `<div class="hint">Omissions: ${s.jury.omissions.map(esc).join('; ')}</div>` : ''}</section>`);
+    }
+    parts.push(`<footer class="site-foot"><button class="primary" id="nextSite">Next site →</button><span class="hint">${siteDone(s) ? 'This site is fully marked.' : 'Mark every line, the completeness of each section, the risk level, and the bottom line.'}</span></footer>`);
+    $('summary').innerHTML = parts.join('');
+
+    $('summary').querySelectorAll('[data-mark]').forEach(b => b.addEventListener('click', () => {
+      const item = b.closest('.item');
+      setMark(item.dataset.key, Number(item.dataset.i), b.dataset.mark, true);
+    }));
+    $('summary').querySelectorAll('.item').forEach(el => el.addEventListener('click', (e) => { if (!e.target.closest('button')) { state.focus = `${el.dataset.key}:${el.dataset.i}`; renderSummary(); } }));
+    $('summary').querySelectorAll('[data-comp]').forEach(b => b.addEventListener('click', () => {
+      const key = b.closest('section').dataset.section;
+      const sm = sectionMarks(s.id, key);
+      sm.completeness = sm.completeness === b.dataset.comp ? null : b.dataset.comp;
+      save(); renderSummary();
+    }));
+    $('summary').querySelectorAll('[data-note]').forEach(input => input.addEventListener('change', () => {
+      sectionMarks(s.id, input.dataset.note).note = input.value.slice(0, 500);
+      save();
+    }));
+    $('summary').querySelectorAll('[data-reveal]').forEach(b => b.addEventListener('click', () => { state.revealed[`${s.id}.${b.dataset.reveal}`] = true; renderSummary(); }));
+    $('summary').querySelectorAll('[data-bl]').forEach(b => b.addEventListener('click', () => { const v = b.dataset.bl === 'true'; m.bottomLineFair = m.bottomLineFair === v ? null : v; save(); renderSummary(); renderHeader(); }));
+    $('summary').querySelectorAll('[data-risk]').forEach(b => b.addEventListener('click', () => { m.risk = m.risk === b.dataset.risk ? null : b.dataset.risk; save(); renderSummary(); renderHeader(); }));
+    $('nextSite').addEventListener('click', () => go(state.index + 1));
+  }
+
+  function setMark(key, i, value, toggle) {
+    const s = site();
+    const sm = sectionMarks(s.id, key);
+    if (toggle && sm.items[i] === value) delete sm.items[i];
+    else sm.items[i] = value;
+    state.focus = `${key}:${i}`;
+    save(); renderSummary(); renderHeader();
+  }
+
+  function focusList() {
+    const s = site();
+    const list = [];
+    for (const key of SECTIONS) s.summary.sections[key].items.forEach((_, i) => list.push(`${key}:${i}`));
+    return list;
+  }
+
+  function moveFocus(dir) {
+    const list = focusList();
+    if (!list.length) return;
+    const at = list.indexOf(state.focus);
+    const next = at === -1 ? (dir > 0 ? 0 : list.length - 1) : Math.min(list.length - 1, Math.max(0, at + dir));
+    state.focus = list[next];
+    renderSummary();
+    const el = $('summary').querySelector('.item.focused');
+    if (el) el.scrollIntoView({ block: 'nearest' });
+  }
+
+  function go(index) {
+    if (index < 0 || index >= state.model.sites.length) return;
+    state.index = index;
+    state.focus = null;
+    currentMatch = -1;
+    renderHeader(); renderSource(); renderSummary();
+    document.querySelector('.pane.summary').scrollTop = 0;
+    document.querySelector('.pane.source').scrollTop = 0;
+  }
+
+  document.addEventListener('keydown', (e) => {
+    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+    if (e.altKey && e.key === 'ArrowRight') { go(state.index + 1); e.preventDefault(); return; }
+    if (e.altKey && e.key === 'ArrowLeft') { go(state.index - 1); e.preventDefault(); return; }
+    if (typing) return;
+    if (e.key === 'ArrowDown' || e.key === 'j') { moveFocus(1); e.preventDefault(); }
+    else if (e.key === 'ArrowUp' || e.key === 'k') { moveFocus(-1); e.preventDefault(); }
+    else if (['1', '2', '3'].includes(e.key) && state.focus) {
+      const [key, i] = state.focus.split(':');
+      setMark(key, Number(i), MARKS[Number(e.key) - 1][0]);
+      moveFocus(1);
+    }
+  });
+
+  $('picker').addEventListener('change', (e) => go(Number(e.target.value)));
+  $('prev').addEventListener('click', () => go(state.index - 1));
+  $('next').addEventListener('click', () => go(state.index + 1));
+  $('find').addEventListener('input', () => { currentMatch = -1; renderSource(); });
+  $('find').addEventListener('keydown', (e) => { if (e.key === 'Enter') { stepMatch(e.shiftKey ? -1 : 1); e.preventDefault(); } });
+  $('agreement').addEventListener('click', async () => {
+    const res = await fetch('/api/agreement');
+    const body = await res.json();
+    const w = window.open('', '_blank');
+    w.document.write(`<pre style="font: 13px/1.5 ui-monospace, monospace; padding: 16px; white-space: pre-wrap">${esc(body.markdown)}</pre>`);
+    w.document.title = 'Spot-check agreement';
+  });
+  window.addEventListener('beforeunload', (e) => { if (state.dirty) { e.preventDefault(); e.returnValue = ''; } });
+
+  (async () => {
+    const [model, marks] = await Promise.all([fetch('/api/model').then(r => r.json()), fetch('/api/marks').then(r => r.json())]);
+    state.model = model;
+    state.marks = marks;
+    if (!state.marks.sites) state.marks.sites = {};
+    const local = readBackup();
+    if (local && local.marks && local.marks.sites && (!marks.updatedAt || local.savedAt > marks.updatedAt)) {
+      state.marks = local.marks;
+      $('saved').textContent = 'restored unsaved marks from this browser';
+      save();
+    }
+    const firstOpen = model.sites.findIndex(s => !siteDone(s));
+    state.index = firstOpen === -1 ? 0 : firstOpen;
+    renderHeader(); renderSource(); renderSummary();
+  })();
+})();
+</script>
+</body>
+</html>

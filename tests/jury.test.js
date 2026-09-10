@@ -42,6 +42,10 @@ ok('rejects malformed JSON', J.parseJuryJson('{"sections": ') === null);
   const slipped = full.replace('}},"bottomLine"', '},"bottomLine"');
   const repaired = J.normalizeVerdict(J.parseJuryJson(slipped));
   ok('a brace dropped after the last section still yields a valid verdict', repaired.valid && repaired.riskLevel.jury === 'High' && repaired.bottomLine.fair === true, repaired.errors.join('; '));
+  const trailingComma = full.replace('}},"bottomLine"', '},\n  },\n  "bottomLine"').replace('"omissions":[]}', '"omissions":[],\n}');
+  const commaFixed = J.normalizeVerdict(J.parseJuryJson(trailingComma));
+  ok('trailing commas before a closing brace are repaired', commaFixed.valid && commaFixed.riskLevel.jury === 'High', commaFixed.errors.join('; '));
+  ok('a comma inside a string is left alone', J.parseJuryJson('{"a": "x, }", "b": 1}').a === 'x, }');
 }
 
 {

@@ -19,12 +19,15 @@ function parseJuryJson(text) {
   const end = candidate.lastIndexOf('}');
   if (start === -1 || end <= start) return null;
   const body = candidate.slice(start, end + 1);
-  // models routinely drop one closing brace at the end; repair rather than discard
-  for (let missing = 0; missing <= 3; missing++) {
-    try {
-      return JSON.parse(body + '}'.repeat(missing));
-    } catch (e) {
-      if (missing === 3) return null;
+  // models routinely drop a closing brace or leave a trailing comma; repair rather than discard
+  const variants = [body, body.replace(/,\s*([}\]])/g, '$1')];
+  for (const text of variants) {
+    for (let missing = 0; missing <= 3; missing++) {
+      try {
+        return JSON.parse(text + '}'.repeat(missing));
+      } catch (e) {
+        continue;
+      }
     }
   }
   return null;
