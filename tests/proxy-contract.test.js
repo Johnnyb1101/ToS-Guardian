@@ -75,7 +75,7 @@ const context = {
 };
 
 vm.createContext(context);
-for (const file of ['vendor/tldts-7.4.8.umd.min.js', 'tosUtils.js', 'critic.js', 'episode.js', 'background.js']) {
+for (const file of ['vendor/tldts-7.4.8.umd.min.js', 'tosUtils.js', 'critic.js', 'episode.js', 'community.js', 'background.js']) {
   vm.runInContext(fs.readFileSync(path.join(repoRoot, file), 'utf8'), context, { filename: file });
 }
 
@@ -362,6 +362,17 @@ const popupSender = {
   check('Extension source contains no PROXY_KEY declaration', !/\bPROXY_KEY\b/.test(backgroundSource));
   check('Extension source contains no proxy-key header', !/x-tg-proxy-key/i.test(backgroundSource));
   check('No requests remain queued', requests.length === 0);
+
+  const decisionOn = await sendBackground({ action: 'communityDecision', enabled: true }, contentSender);
+  const storedOn = await context.readCommunityConfig(context.browser.storage.local);
+  check('communityDecision turns reports on and records the decision', decisionOn && decisionOn.ok === true && storedOn.enabled === true && storedOn.decided === true, JSON.stringify([decisionOn, storedOn]));
+  const decisionOff = await sendBackground({ action: 'communityDecision', enabled: false }, contentSender);
+  const storedOff = await context.readCommunityConfig(context.browser.storage.local);
+  check('communityDecision can decline and stays decided', decisionOff && decisionOff.ok === true && storedOff.enabled === false && storedOff.decided === true, JSON.stringify([decisionOff, storedOff]));
+  const decisionBad = await sendBackground({ action: 'communityDecision', enabled: 'yes' }, contentSender);
+  check('communityDecision rejects a non-boolean', decisionBad && decisionBad.ok === false, JSON.stringify(decisionBad));
+  const decisionExtra = await sendBackground({ action: 'communityDecision', enabled: true, pageUrl: 'https://x' }, contentSender);
+  check('communityDecision rejects extra fields', decisionExtra && decisionExtra.ok === false, JSON.stringify(decisionExtra));
 
   console.log(`\nSummary: ${passed} passed, ${failed} failed`);
   if (failed > 0) process.exit(1);

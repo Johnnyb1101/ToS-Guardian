@@ -126,7 +126,8 @@ const spies = {
   saveAnalysis: makeSpy('saveAnalysis', async () => null),
   fetchWithHiddenTab: makeSpy('fetchWithHiddenTab', async () => ({ text: 'Fetched opt-out page '.repeat(30), html: '<p>ok</p>' })),
   validateLinkFollowerUrl: makeSyncSpy('validateLinkFollowerUrl', () => true),
-  observerSink: makeSyncSpy('observerSink', () => true)
+  observerSink: makeSyncSpy('observerSink', () => true),
+  sendCommunityReport: makeSyncSpy('sendCommunityReport', () => true)
 };
 
 const context = {
@@ -146,7 +147,7 @@ const context = {
 };
 
 vm.createContext(context);
-for (const file of ['vendor/tldts-7.4.8.umd.min.js', 'tosUtils.js', 'evaluator.js', 'episode.js', 'orchestrator.js']) {
+for (const file of ['vendor/tldts-7.4.8.umd.min.js', 'tosUtils.js', 'evaluator.js', 'episode.js', 'community.js', 'orchestrator.js']) {
   vm.runInContext(fs.readFileSync(path.join(repoRoot, file), 'utf8'), context, { filename: file });
 }
 originalEvaluateAnalysis = context.evaluateAnalysis;
@@ -710,6 +711,37 @@ ${strongSummary('clean source')}`
     spies.fetcherAgent.impl = async () => { throw new Error('permanent'); };
     await context.runOrchestrator('https://chase.com/terms', DEFAULT_FETCHED_TEXT, '<html></html>');
     mustEqual('analyzeWithModel', 'analyzes page text when the page itself is a legal document', 1, spies.analyzeWithModel.calls.filter(args => args[2] !== true).length);
+  });
+
+  await runTest(async () => {
+    storageData.tosGuardianCommunity = { enabled: true, decided: true };
+    spies.analyzeWithModel.impl = async () => ({ summary: strongSummary('Community'), analysisReceipt: 'analysis-token', model: 'claude-sonnet-4-6', status: 'ok' });
+    await context.runOrchestrator('https://chase.com/signup?session=secret', 'page text', '<html></html>');
+    mustEqual('community', 'a live run with reports on sends one report', 1, spies.sendCommunityReport.calls.length);
+    mustEqual('community', 'observer stays off while reports are on', 0, spies.observerSink.calls.length);
+    const report = spies.sendCommunityReport.calls[0] && spies.sendCommunityReport.calls[0][0];
+    mustTrue('community', 'the report is an uploadable live episode', true, !!report && report.v === 1 && report.episode.mode === 'live' && context.validateEpisode(report.episode, { uploadable: true }).valid);
+    mustEqual('community', 'the report carries the analysis receipt', 'analysis-token', report && report.analysisReceipt);
+    mustFalse('community', 'the report never carries the page url', false, JSON.stringify(report).includes('session=secret'));
+  });
+
+  await runTest(async () => {
+    storageData.tosGuardianCommunity = { enabled: true, decided: true };
+    await context.runOrchestrator('https://chase.com/signup', 'page text', '<html></html>', { mode: 'batch' });
+    mustEqual('community', 'batch runs never report', 0, spies.sendCommunityReport.calls.length);
+  });
+
+  await runTest(async () => {
+    await context.runOrchestrator('https://chase.com/signup', 'page text', '<html></html>');
+    mustEqual('community', 'reports are off by default', 0, spies.sendCommunityReport.calls.length);
+  });
+
+  await runTest(async () => {
+    storageData.tosGuardianCommunity = { enabled: true, decided: true };
+    spies.fetcherAgent.impl = async () => { throw new Error('permanent'); };
+    await context.runOrchestrator('https://chase.com/signup', 'page text', '<html></html>');
+    mustEqual('community', 'a failed discovery is still reported, without a receipt', 1, spies.sendCommunityReport.calls.length);
+    mustEqual('community', 'no receipt on a run that never analyzed', undefined, spies.sendCommunityReport.calls[0][0].analysisReceipt);
   });
 
   // --- Observer mode (learning loop, phase 0) ---------------------------------

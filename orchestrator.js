@@ -104,14 +104,22 @@ async function runOrchestrator(pageUrl, pageText, pageHtml, options = {}) {
   if (observer.enabled) {
     console.log(`[Observer] Observer mode is on — posting episode events to 127.0.0.1:${observer.port}`);
   }
+  const community = typeof readCommunityConfig === 'function' ? await readCommunityConfig(browser.storage.local) : { enabled: false };
+  const liveRun = !(options && (options.mode === 'batch' || options.mode === 'replay'));
   const rec = createEpisodeRecorder({
-    enabled: observer.enabled,
+    enabled: observer.enabled || (community.enabled && liveRun),
     episodeId: options && options.episodeId,
-    sink: (event) => { if (typeof observerSink === 'function') observerSink(event, observer); },
+    sink: observer.enabled ? (event) => { if (typeof observerSink === 'function') observerSink(event, observer); } : null,
     onInvalid: (stage, errors) => console.warn(`[Observer] Dropped invalid ${stage} event: ${errors.join('; ')}`)
   });
+  let communityReceipt = null;
   const finishEpisode = (label) => {
     rec.record('end', { durationMs: Date.now() - relayStartedAt, ok: label !== 'Error' && label !== 'Configuration' });
+    if (community.enabled && liveRun && typeof buildCommunityReport === 'function' && typeof sendCommunityReport === 'function') {
+      const built = buildCommunityReport(rec.events, { analysisReceipt: communityReceipt });
+      if (built.ok) sendCommunityReport(built.report);
+      else console.warn(`[Community] Report not sent: ${built.errors[0]}`);
+    }
   };
 
   // Cache key is the REGISTRABLE domain (eTLD+1), not the hostname, so sibling
@@ -320,6 +328,7 @@ const unreadableDocs = [
 
   if (result && result.summary) {
     result.providerAnalysis = result.providerAnalysis || result.summary;
+    if (typeof result.analysisReceipt === 'string') communityReceipt = result.analysisReceipt;
     console.log(`[Orchestrator] Raw Analyzer output (${result.summary.length} chars):`, result.summary.slice(0, 300));
     result.summary = stripInjectionWarning(normalizeAnalysisHeaders(result.summary));
     if (isConfigurationMessage(result.summary)) {

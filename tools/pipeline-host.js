@@ -8,7 +8,7 @@ const { usageRecordFromProxyResponse, applyProxyOverride } = require('./batch-li
 
 const EXTENSION_FILES = Object.freeze([
   'vendor/tldts-7.4.8.umd.min.js', 'tosUtils.js', 'evaluator.js', 'critic.js',
-  'siteDatabase.js', 'episode.js', 'orchestrator.js', 'background.js'
+  'siteDatabase.js', 'episode.js', 'community.js', 'orchestrator.js', 'background.js'
 ]);
 
 const DIRECT_FETCH_HEADERS = Object.freeze({
@@ -18,7 +18,7 @@ const DIRECT_FETCH_HEADERS = Object.freeze({
 });
 
 function newRunState() {
-  return { controller: new AbortController(), usage: [], llmCalls: 0, logs: [], lastResult: null, events: [], analyses: [], critics: [] };
+  return { controller: new AbortController(), usage: [], llmCalls: 0, logs: [], lastResult: null, events: [], analyses: [], critics: [], communityReports: [] };
 }
 
 function createPipelineHost(options) {
@@ -174,6 +174,11 @@ function createPipelineHost(options) {
   context.observerSink = (event) => {
     const state = runState.getStore();
     if (state) state.events.push(event);
+  };
+
+  context.sendCommunityReport = (report) => {
+    const state = runState.getStore();
+    if (state) state.communityReports.push(report);
   };
 
   // the orchestrator rewrites the returned objects in place, so capture copies
