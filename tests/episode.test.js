@@ -51,6 +51,8 @@ ok('usage object accepts only token counters',
   E.validateEventData('analyze', { usage: { inputTokens: 10, outputTokens: 2 } }).valid &&
   !E.validateEventData('analyze', { usage: { inputTokens: 10, apiKey: 'x' } }).valid);
 ok('overlong short string fails', !E.validateEventData('analyze', { model: 'x'.repeat(201) }).valid);
+ok('analyze carries the lessons hash, arm, and document type', E.validateEventData('analyze', { lessonsHash: 'a'.repeat(64), lessonsArm: 'pinned', docType: 'financial' }).valid && !E.validateEventData('analyze', { lessonsArm: 'experimental' }).valid);
+ok('critic carries the lessons hash', E.validateEventData('critic', { lessonsHash: 'b'.repeat(64) }).valid);
 ok('domain must be lowercase registrable', E.validateEventData('relay', { domain: 'chase.com' }).valid && !E.validateEventData('relay', { domain: 'https://chase.com' }).valid);
 ok('local layer accepts free text but only known keys',
   E.validateLocal({ pageUrl: 'https://x.com/a?token=1', controlLabel: 'Sign up', userAction: 'back' }).valid &&

@@ -33,6 +33,15 @@ function proxyFetch(url, options = {}) {
 // default (tosGuardianObserver.enabled), localhost only, fire-and-forget: it
 // can never block or fail the relay. The batch runner replaces this function
 // with an in-process capture, so nothing here runs headlessly.
+function documentDomainOf(source) {
+  try {
+    const match = String(source || '').match(/https?:\/\/[^\s]+/);
+    return match ? (registrableDomain(new URL(match[0]).hostname) || null) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 function sendCommunityReport(report) {
   try {
     fetch(`${PROXY_URL}/report`, {
@@ -1150,7 +1159,8 @@ ${trimmedText}`;
         operation: "analyzer",
         provider,
         documentText: trimmedText,
-        escalate
+        escalate,
+        ...(documentDomainOf(source) ? { domain: documentDomainOf(source) } : {})
       })
     });
     const data = await response.json().catch(() => ({}));
@@ -1186,6 +1196,9 @@ ${trimmedText}`;
       model: typeof data.model === 'string' ? data.model : '',
       stopReason: typeof data.stopReason === 'string' ? data.stopReason : '',
       usage: data.usage && typeof data.usage === 'object' ? data.usage : undefined,
+      lessonsHash: typeof data.lessonsHash === 'string' ? data.lessonsHash : '',
+      lessonsArm: ['none', 'promoted', 'canary', 'pinned'].includes(data.lessonsArm) ? data.lessonsArm : 'none',
+      docType: typeof data.docType === 'string' ? data.docType : '',
       status: 'ok'
     };
   }

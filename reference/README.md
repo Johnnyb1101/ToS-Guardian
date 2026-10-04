@@ -152,3 +152,22 @@ node tools/sites.js halt --proxy http://localhost:3000 --reason "owner review"
 `propose` needs `TRAINER_OPERATIONS=1` on the proxy to count as the trainer; anywhere
 else it is one more anonymous report. `ledger` verifies the hash chain locally and exits
 non-zero if it is broken.
+
+## Lessons and proofs (tier 2)
+
+A dream candidate becomes a lesson on the dev proxy, is proven by replaying the frozen set
+with it pinned, and is promoted only by the owner with the proof attached:
+
+```bash
+node tools/lessons.js create reference/runs/baseline-1 --proxy http://localhost:3000 --ids L013,L015
+node tools/reference.js replay --proxy http://localhost:3000 --split all --samples 3 --run treat-1 --lessons lsn_...,lsn_... --budget 45
+node tools/jury.js grade reference/runs/treat-1 --proxy http://localhost:3000 --budget 45
+node tools/prove.js reference/runs/treat-1 --control reference/runs/baseline-1
+node tools/lessons.js status lsn_... promoted --proxy http://localhost:3000 --proof reference/runs/treat-1
+```
+
+`prove` pairs the two runs per site and reports the bootstrapped mean jury-score delta on
+the work split and the holdout. Proven means at least five paired work sites, a work gain
+of three or more points with the interval above zero, no holdout fall below minus five,
+and one lesson set across the whole treatment. `--lessons none` replays without any
+lessons; `promoted` and `canary` replay the proxy's current sets.

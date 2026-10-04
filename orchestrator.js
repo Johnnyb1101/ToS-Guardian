@@ -62,7 +62,10 @@ function analyzeFactsFor(result, sourceText, escalated, retried) {
     status: analyzeStatusFor(result),
     receipt: !!(result && result.analysisReceipt),
     summaryHash: result && typeof result.summary === 'string' && result.summary ? contentFingerprint(result.summary) : undefined,
-    retried
+    retried,
+    lessonsHash: result && typeof result.lessonsHash === 'string' && result.lessonsHash ? result.lessonsHash : undefined,
+    lessonsArm: result && ['none', 'promoted', 'canary', 'pinned'].includes(result.lessonsArm) ? result.lessonsArm : undefined,
+    docType: result && typeof result.docType === 'string' && result.docType ? result.docType : undefined
   };
 }
 
@@ -84,7 +87,8 @@ function criticFactsFor(criticResult) {
       receipt: !!criticResult._writeReceipt,
       model: typeof criticResult._model === 'string' ? criticResult._model : '',
       stopReason: typeof criticResult._stopReason === 'string' ? criticResult._stopReason : '',
-      usage: usageForEpisode(criticResult._usage)
+      usage: usageForEpisode(criticResult._usage),
+      lessonsHash: typeof criticResult._lessonsHash === 'string' && criticResult._lessonsHash ? criticResult._lessonsHash : undefined
     },
     local: flags.length ? { flagsText: flags.slice(0, 20).map(f => String(f).slice(0, 400)) } : undefined
   };

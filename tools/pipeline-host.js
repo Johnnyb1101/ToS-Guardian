@@ -30,6 +30,7 @@ function createPipelineHost(options) {
     escalate: false,
     storage: {},
     onLog: null,
+    lessonSet: null,
     repoRoot: path.resolve(__dirname, '..')
   }, options || {});
   if (typeof opts.proxyUrl !== 'string' || !/^https?:\/\//.test(opts.proxyUrl)) {
@@ -47,6 +48,15 @@ function createPipelineHost(options) {
     if (state && state.controller && !finalOptions.signal) finalOptions.signal = state.controller.signal;
     if (target !== analyzeUrl) return realFetch(url, finalOptions);
     if (state) state.llmCalls++;
+    if (opts.lessonSet !== null && typeof finalOptions.body === 'string') {
+      try {
+        const body = JSON.parse(finalOptions.body);
+        if (body && (body.operation === 'analyzer' || body.operation === 'critic')) {
+          body.lessonSet = opts.lessonSet;
+          finalOptions.body = JSON.stringify(body);
+        }
+      } catch (e) { /* not a json body */ }
+    }
     const response = await realFetch(url, finalOptions);
     const data = await response.json().catch(() => ({}));
     if (state && response.ok) {

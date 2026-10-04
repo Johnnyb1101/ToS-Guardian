@@ -18,7 +18,8 @@ function ok(label, condition, detail = '') {
   const defaults = parseArgs([]);
   ok('defaults replay the work split once with no escalation', defaults.split === 'work' && defaults.samples === 1 && defaults.escalate === false && defaults.includeShells === false);
   const parsed = parseArgs(['--proxy', 'http://localhost:3000', '--sites', 'a.com, b.com', '--samples', '2', '--split', 'all', '--run', 'r1']);
-  ok('options parse', parsed.proxy === 'http://localhost:3000' && JSON.stringify(parsed.sites) === JSON.stringify(['a.com', 'b.com']) && parsed.samples === 2 && parsed.split === 'all' && parsed.run === 'r1');
+  ok('options parse', parsed.proxy === 'http://localhost:3000' && JSON.stringify(parsed.sites) === JSON.stringify(['a.com', 'b.com']) && parsed.samples === 2 && parsed.split === 'all' && parsed.run === 'r1' && parsed.lessons === null);
+  ok('the lessons option takes an arm or a list of ids', parseArgs(['--lessons', 'none']).lessons === 'none' && JSON.stringify(parseArgs(['--lessons', 'lsn_0123456789abcdef,lsn_fedcba9876543210']).lessons) === JSON.stringify({ ids: ['lsn_0123456789abcdef', 'lsn_fedcba9876543210'] }));
 
   const entry = (domain, split, looksLegal, docType, curatedType) => ({ domain, split, looksLegal, docType, curatedType: curatedType || null, docTypeOverride: null, textHash: 'h', sourceFile: `sources/${domain}.json` });
   const manifest = {

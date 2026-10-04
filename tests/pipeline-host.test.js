@@ -81,6 +81,18 @@ function ok(label, condition, detail = '') {
       ok('captured results are snapshots, untouched by later rewrites', state.analyses[0].result.summary === 'SUMMARY FROM FAKE PROXY' && state.critics[0].dataSelling === 'unsupported');
       ok('critic verdicts are captured on the run', state.critics.length === 1 && state.critics[0] && state.critics[0].dataSelling === 'unsupported', JSON.stringify(state.critics));
       ok('proxy usage is recorded for both calls', state.llmCalls === 2 && state.usage.length === 2 && state.usage.every(u => u.model === 'claude-sonnet-4-6' && u.input === 900), JSON.stringify(state.usage));
+      const seen = [];
+      const realFetchForPin = globalThis.fetch;
+      globalThis.fetch = async (url, options) => { seen.push(JSON.parse(options.body)); return realFetchForPin(url, options); };
+      const pinned = createPipelineHost({ proxyUrl: 'http://127.0.0.1:9', critic: true, lessonSet: { ids: ['lsn_0123456789abcdef'] } });
+      const pinState = pinned.newRunState();
+      await pinned.run(pinState, async () => {
+        await pinned.context.analyzeWithModel('=== PRIVACY POLICY ===\nWe share data with affiliates.', 'https://x.example/privacy', false);
+        await pinned.context.runCritic('SUMMARY FROM FAKE PROXY', '=== PRIVACY POLICY ===\nWe share data with affiliates.');
+      });
+      globalThis.fetch = realFetchForPin;
+      ok('a host lesson set is pinned onto analyzer and critic requests', seen.length === 2 && seen.every(b => b.lessonSet && b.lessonSet.ids[0] === 'lsn_0123456789abcdef'), JSON.stringify(seen.map(b => b.lessonSet)));
+      ok('without a lesson set no lessonSet field is sent', (() => { const bodies = []; const f = globalThis.fetch; globalThis.fetch = async (u, o) => { bodies.push(JSON.parse(o.body)); return f(u, o); }; const plain = createPipelineHost({ proxyUrl: 'http://127.0.0.1:9' }); const s = plain.newRunState(); return plain.run(s, () => plain.context.analyzeWithModel('x', 'https://x.example/p', false)).then(() => { globalThis.fetch = f; return bodies.length === 1 && !('lessonSet' in bodies[0]); }); })());
       const criticOff = createPipelineHost({ proxyUrl: 'http://127.0.0.1:9', critic: false });
       const quiet = criticOff.newRunState();
       await criticOff.run(quiet, async () => { await criticOff.context.runCritic('s', 't'); });

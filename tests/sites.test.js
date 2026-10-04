@@ -22,6 +22,7 @@ function chain(kinds) {
 }
 
 const good = chain(['site-promoted', 'halt-set', 'halt-cleared', 'site-refreshed']);
+ok('lesson events are valid ledger kinds', lib.verifyLedger(chain(['lesson-created', 'lesson-canary', 'lesson-promoted', 'lesson-retired'])).valid);
 ok('a well-formed chain verifies with its head', lib.verifyLedger(good).valid && lib.verifyLedger(good).head === good[3].hash);
 ok('an empty ledger verifies', lib.verifyLedger([]).valid && lib.verifyLedger([]).head === null);
 {

@@ -8,10 +8,19 @@ const { SECTIONS } = require('./jury-lib');
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+function parseLessonsOption(value) {
+  const raw = String(value || '').trim();
+  if (['none', 'promoted', 'canary'].includes(raw)) return raw;
+  const ids = raw.split(',').map(s => s.trim()).filter(Boolean);
+  if (ids.length && ids.every(id => /^lsn_[0-9a-f]{16}$/.test(id))) return { ids };
+  console.error('--lessons must be none, promoted, canary, or a comma-separated list of lesson ids');
+  process.exit(1);
+}
+
 function parseArgs(args) {
   const opts = {
     proxy: null, split: 'work', type: null, sites: null, limit: Infinity, samples: 1, includeShells: false,
-    budget: null, delay: 12000, timeout: 180000, run: null, escalate: false, force: false, verbose: false
+    budget: null, delay: 12000, timeout: 180000, run: null, escalate: false, force: false, verbose: false, lessons: null
   };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -27,6 +36,7 @@ function parseArgs(args) {
     else if (a === '--timeout') opts.timeout = Number(args[++i]);
     else if (a === '--run') opts.run = args[++i];
     else if (a === '--escalate') opts.escalate = true;
+    else if (a === '--lessons') opts.lessons = parseLessonsOption(args[++i]);
     else if (a === '--force') opts.force = true;
     else if (a === '--verbose') opts.verbose = true;
     else { console.error(`Unknown option: ${a}`); process.exit(1); }
@@ -142,7 +152,10 @@ async function replayOne(host, entry, frozen, sample, opts, runId) {
       escalated: !!analysis.escalated,
       usage: result.usage || null,
       analysisChars: typeof result.analysisSource === 'string' ? result.analysisSource.length : 0,
-      attempts: state.analyses.length
+      attempts: state.analyses.length,
+      lessonsHash: typeof result.lessonsHash === 'string' ? result.lessonsHash : '',
+      lessonsArm: typeof result.lessonsArm === 'string' ? result.lessonsArm : 'none',
+      docType: typeof result.docType === 'string' ? result.docType : ''
     } : null,
     analysisSource: result && typeof result.analysisSource === 'string' ? result.analysisSource : null,
     summary: result && typeof result.summary === 'string' ? result.summary : null,
@@ -183,13 +196,13 @@ async function runReplay(args) {
   const metaPath = path.join(runDir, 'run.json');
   const meta = fs.existsSync(metaPath) ? JSON.parse(fs.readFileSync(metaPath, 'utf8')) : {
     v: 1, runId, startedAt: new Date().toISOString(), proxy: target.url, manifestUpdatedAt: manifest.updatedAt,
-    options: { split: opts.split, type: opts.type, sites: opts.sites, limit: Number.isFinite(opts.limit) ? opts.limit : null, samples: opts.samples, includeShells: opts.includeShells, escalate: opts.escalate },
+    options: { split: opts.split, type: opts.type, sites: opts.sites, limit: Number.isFinite(opts.limit) ? opts.limit : null, samples: opts.samples, includeShells: opts.includeShells, escalate: opts.escalate, lessons: opts.lessons },
     sites: entries.map(e => e.domain)
   };
   fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + '\n', 'utf8');
 
   const host = createPipelineHost({
-    proxyUrl: target.url, cache: false, write: false, critic: true, escalate: opts.escalate,
+    proxyUrl: target.url, cache: false, write: false, critic: true, escalate: opts.escalate, lessonSet: opts.lessons,
     onLog: opts.verbose ? (line) => console.log('  ' + line) : null
   });
   stubPipeline(host);
@@ -199,7 +212,7 @@ async function runReplay(args) {
 
   console.log(`TOS Guardian replay — ${entries.length} site(s) x ${opts.samples} sample(s), proxy ${target.url}`);
   console.log(`  run: ${runDir}`);
-  console.log(`  escalation: ${opts.escalate ? 'ON' : 'off'} | budget: ${opts.budget === null ? 'none' : `$${opts.budget.toFixed(2)}`} | delay ${opts.delay}ms`);
+  console.log(`  escalation: ${opts.escalate ? 'ON' : 'off'} | lessons: ${opts.lessons === null ? 'proxy default' : typeof opts.lessons === 'string' ? opts.lessons : opts.lessons.ids.join(',')} | budget: ${opts.budget === null ? 'none' : `$${opts.budget.toFixed(2)}`} | delay ${opts.delay}ms`);
   console.log('');
 
   let totalCost = 0;

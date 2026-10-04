@@ -78,12 +78,13 @@ const STAGE_FIELDS = Object.freeze({
   analyze: {
     provider: 'enum:anthropic|openai|ollama|unknown', model: 'str', escalated: 'bool',
     inputChars: 'int', stopReason: 'str', usage: 'usage', status: ANALYZE_STATUS,
-    receipt: 'bool', summaryHash: 'hex8', retried: 'bool'
+    receipt: 'bool', summaryHash: 'hex8', retried: 'bool',
+    lessonsHash: 'str', lessonsArm: 'enum:none|promoted|canary|pinned', docType: 'str'
   },
   critic: {
     ran: 'bool', failed: 'bool', reason: 'str', verdicts: 'verdicts',
     flagCount: 'int', adjustmentCount: 'int', receipt: 'bool',
-    model: 'str', stopReason: 'str', usage: 'usage'
+    model: 'str', stopReason: 'str', usage: 'usage', lessonsHash: 'str'
   },
   evaluate: {
     score: 'int', label: LABELS, issues: 'strs', contradictions: 'int',

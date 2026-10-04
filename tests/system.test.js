@@ -744,6 +744,20 @@ ${strongSummary('clean source')}`
     mustEqual('community', 'no receipt on a run that never analyzed', undefined, spies.sendCommunityReport.calls[0][0].analysisReceipt);
   });
 
+  await runTest(async () => {
+    storageData.tosGuardianObserver = { enabled: true, port: 3123 };
+    spies.analyzeWithModel.impl = async () => ({ summary: strongSummary('Lessons'), analysisReceipt: 'analysis-token', provider: 'anthropic', model: 'claude-sonnet-4-6', status: 'ok', lessonsHash: 'c'.repeat(64), lessonsArm: 'promoted', docType: 'financial' });
+    spies.runCritic.impl = async () => ({
+      dataCollection: 'grounded', dataSelling: 'grounded', optOutRights: 'grounded', howToOptOut: 'grounded', autoRenewal: 'skipped', dataDeletion: 'grounded',
+      flags: [], adjustments: [], _model: 'claude-sonnet-4-6', _stopReason: 'end_turn', _usage: { inputTokens: 10, outputTokens: 2 }, _lessonsHash: 'd'.repeat(64)
+    });
+    await context.runOrchestrator('https://chase.com/signup', 'page text', '<html></html>');
+    const episode = context.assembleEpisode(spies.observerSink.calls.map(c => c[0]));
+    mustEqual('lessons', 'the analyze stage records the lessons hash, arm, and document type', `${'c'.repeat(64)}/promoted/financial`, `${episode.stages.analyze.lessonsHash}/${episode.stages.analyze.lessonsArm}/${episode.stages.analyze.docType}`);
+    mustEqual('lessons', 'the critic stage records its lessons hash', 'd'.repeat(64), episode.stages.critic.lessonsHash);
+    mustTrue('lessons', 'the episode still validates as uploadable', true, context.validateEpisode(context.stripLocal(episode), { uploadable: true }).valid);
+  });
+
   // --- Observer mode (learning loop, phase 0) ---------------------------------
   // Off by default: a full relay records nothing and never touches the sink.
   await runTest(async () => {

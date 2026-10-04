@@ -62,6 +62,7 @@ ${trimmedSource}`;
     let writeReceipt = null;
     let criticModel = '';
     let criticUsage = null;
+    let criticLessonsHash = '';
 
     if (provider === 'anthropic' || provider === 'openai') {
       // Relay through the proxy — no API key in the browser (audit refactor #5).
@@ -105,6 +106,7 @@ ${trimmedSource}`;
       stopReason = data.stopReason; // "end_turn" | "max_tokens" | "stop" | "length" | ...
       writeReceipt = data.writeReceipt || null;
       criticModel = typeof data.model === 'string' ? data.model : '';
+      criticLessonsHash = typeof data.lessonsHash === 'string' ? data.lessonsHash : '';
       criticUsage = data.usage && typeof data.usage === 'object' ? data.usage : null;
     }
 
@@ -192,6 +194,7 @@ ${trimmedSource}`;
     // _writeReceipt so the verdict fields stay the six section names.
     verdict._model = criticModel;
     verdict._usage = criticUsage;
+    verdict._lessonsHash = criticLessonsHash;
     verdict._stopReason = typeof stopReason === 'string' ? stopReason : '';
 
     const unsupported = fields.filter(f => verdict[f] === 'unsupported').length;

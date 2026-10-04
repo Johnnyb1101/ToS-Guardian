@@ -2,7 +2,7 @@
 
 const crypto = require('crypto');
 
-const LEDGER_KINDS = Object.freeze(['site-promoted', 'site-refreshed', 'site-rejected', 'halt-set', 'halt-cleared']);
+const LEDGER_KINDS = Object.freeze(['site-promoted', 'site-refreshed', 'site-rejected', 'halt-set', 'halt-cleared', 'lesson-created', 'lesson-canary', 'lesson-promoted', 'lesson-retired', 'lesson-candidate']);
 
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
@@ -50,8 +50,10 @@ function renderLedger(entries, verification) {
     const p = e.payload || {};
     const detail = e.kind === 'site-promoted' || e.kind === 'site-refreshed'
       ? `${p.urls ? p.urls.tos : ''} + ${p.urls ? p.urls.privacy : ''}${p.evidence ? ` (${p.evidence.trainer ? 'trainer' : `${p.evidence.days} days`})` : ''} until ${p.expiresAt || '?'}`
-      : e.kind === 'site-rejected' ? (p.verification && p.verification.reason) || 'rejected' : (p.reason || '');
-    lines.push(`  ${String(e.seq).padStart(4)}  ${e.createdAt.slice(0, 10)}  ${e.kind.padEnd(14)} ${(e.domain || '-').padEnd(22)} ${detail}`);
+      : e.kind === 'site-rejected' ? (p.verification && p.verification.reason) || 'rejected'
+      : e.kind.startsWith('lesson-') ? `${p.id || '?'}${p.target ? ` ${p.target}` : ''}${p.scope && p.scope !== 'all' ? ` ${p.scope}` : ''}${p.from ? ` from ${p.from}` : ''}${p.proof ? ` (proof ${p.proof.proven ? 'proven' : 'not proven'}${p.proof.runId ? `, ${p.proof.runId}` : ''})` : ''}`
+      : (p.reason || '');
+    lines.push(`  ${String(e.seq).padStart(4)}  ${e.createdAt.slice(0, 10)}  ${e.kind.padEnd(15)} ${(e.domain || '-').padEnd(22)} ${detail}`);
   }
   return lines.join('\n');
 }
