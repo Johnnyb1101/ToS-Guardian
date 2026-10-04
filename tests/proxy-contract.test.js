@@ -170,6 +170,21 @@ const popupSender = {
   check('Critic response still parses', criticResult && criticResult.dataCollection === 'grounded');
   check('Critic preserves the proxy write receipt', criticResult?._writeReceipt === 'write-token');
 
+  const verdictJson = '{"dataCollection":"grounded","dataSelling":"unsupported","optOutRights":"grounded","howToOptOut":"vague","autoRenewal":"skipped","dataDeletion":"grounded","flags":["dataSelling: overstated {braces inside a string}"]}';
+  check('Critic JSON inside a markdown fence is extracted', context.extractCriticJson('```json\n' + verdictJson + '\n```') === verdictJson);
+  check('Critic JSON followed by prose with braces is extracted whole', context.extractCriticJson(verdictJson + '\n\nNote: {this} is commentary.') === verdictJson);
+  check('Critic JSON preceded by prose is extracted', context.extractCriticJson('Here is my verdict:\n' + verdictJson) === verdictJson);
+  check('A trailing comma before the closing brace is repaired', JSON.parse(context.extractCriticJson('{"dataCollection":"grounded",}')).dataCollection === 'grounded');
+  check('Text without an object yields null', context.extractCriticJson('no verdict') === null);
+  responses.push({ status: 200, body: { text: '```json\n' + verdictJson + '\n```', model: 'server-model', stopReason: 'end_turn' } });
+  const fenced = await context.runCritic('Structured privacy analysis.', 'Original legal source text describing privacy practices.');
+  requests.shift();
+  check('A fenced critic answer is a verdict, not a failure', fenced && !fenced.failed && fenced.dataSelling === 'unsupported', JSON.stringify(fenced));
+  responses.push({ status: 200, body: { text: '{"dataCollection": "grounded", "dataSelling": ', model: 'server-model', stopReason: 'max_tokens' } });
+  const truncated = await context.runCritic('Structured privacy analysis.', 'Original legal source text describing privacy practices.');
+  requests.shift();
+  check('A truncated critic answer fails as unparseable, not as an exception', truncated && truncated.failed && truncated._reason === 'unparseable', JSON.stringify(truncated));
+
   responses.push({
     status: 200,
     body: {

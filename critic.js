@@ -30,6 +30,38 @@ Respond in ONLY this JSON format, no other text:
 // (nothing to check, or no model/key configured); or `{ failed: true }` when it WAS
 // attempted but couldn't produce a verdict (no response / unparseable / error). The
 // orchestrator treats the last case as fail-safe — confidence is capped, never Strong.
+// the model sometimes fences its JSON or follows it with prose, so take the
+// first balanced object (fence contents preferred) instead of first-to-last brace
+function extractCriticJson(text) {
+  const source = String(text || '');
+  const fence = source.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidates = fence ? [fence[1], source] : [source];
+  for (const candidate of candidates) {
+    const start = candidate.indexOf('{');
+    if (start === -1) continue;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < candidate.length; i++) {
+      const ch = candidate[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') inString = true;
+      else if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) return candidate.slice(start, i + 1).replace(/,\s*([}\]])/g, '$1');
+      }
+    }
+  }
+  const greedy = source.match(/\{[\s\S]*\}/);
+  return greedy ? greedy[0] : null;
+}
+
 async function runCritic(analysisSummary, sourceText, provenance = null) {
   if (!analysisSummary || !sourceText) return null;
 
@@ -137,7 +169,8 @@ ${trimmedSource}`;
       return { failed: true, _reason: 'no-response' };
     }
 
-    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    const extracted = extractCriticJson(responseText);
+    const jsonMatch = extracted ? [extracted] : null;
     if (!jsonMatch) {
       // Diagnostic (observability only): capture WHY extraction failed so the next
       // occurrence tells us truncation ("max_tokens"/"length" + no closing brace) vs a
@@ -155,7 +188,13 @@ ${trimmedSource}`;
       return { failed: true, _reason: 'unparseable' };
     }
 
-    const verdict = JSON.parse(jsonMatch[0]);
+    let verdict;
+    try {
+      verdict = JSON.parse(jsonMatch[0]);
+    } catch (parseError) {
+      console.warn(`[Critic] JSON did not parse (${parseError.message}) — stop_reason: ${stopReason || 'unknown'}, len: ${String(responseText).length}`);
+      return { failed: true, _reason: 'unparseable' };
+    }
 
     const validVerdicts = ['grounded', 'unsupported', 'vague', 'skipped'];
     const fields = ['dataCollection', 'dataSelling', 'optOutRights', 'howToOptOut', 'autoRenewal', 'dataDeletion'];

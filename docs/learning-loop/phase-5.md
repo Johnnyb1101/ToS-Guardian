@@ -1,6 +1,6 @@
 # Learning loop — Phase 5: the analyzer loop
 
-Status: built and verified, awaiting review; no proof run yet (2026-10-03). Follows
+Status: built, verified, and bundle 1 proven (2026-10-04); bundles 2 and 3 pending. Follows
 phase 4 (`phase-4.md`).
 
 ## Goal
@@ -125,3 +125,63 @@ and the proof runs have not been started.
 - Prompts stay server-owned. Clients cannot choose lessons; the trainer can only pin
   lessons that exist on the server.
 - Nothing is promoted without a proof on the frozen set and the owner's hand on the route.
+
+## Bundle 1 proof: no invented specifics (2026-10-04)
+
+Run `treat-bundle1`: the full reference set, three samples, the six analyzer lessons
+(L013 menu paths, L015 URLs, L017 data categories, L019 generic advice, L021 email
+addresses, L023 recipient scope) and the two critic lessons (L014, L016) pinned; graded by
+`claude-opus-5`; compared with `baseline-1` by `tools/prove.js`. The text-free proof is
+committed as `proof-bundle1.md`.
+
+**Proven.** Jury score +5.2 on the 30 paired work sites (95% interval 0.6 to 10.0) and
++7.3 on the 19 holdout sites (3.1 to 11.4); 36 of 49 sites improved. Fabricated specifics
+fell from 107 to 38 across the run (0.73 to 0.26 per verdict), with every holdout site
+improving or holding on that measure. Section accuracy stayed clean. Cost $38.65 of the
+$45 stop.
+
+| | baseline-1 | treat-bundle1 |
+|---|---|---|
+| Jury score, mean / median | 70.5 / 74 | 76.5 / 80 |
+| Fabrications, total / verdicts with any / sites | 107 / 71 / 35 | 38 / 28 / 17 |
+| Menu-path fabrications | 35 | 3 |
+| URL fabrications | 16 | 4 |
+| Generic-advice fabrications | 12 | 1 |
+| Incomplete sections (all) | 68% | 72% |
+| Bottom line judged fair | 134 of 150 | 128 of 150 |
+| Displayed risk matched the jury | 92 | 98 |
+
+**What it cost elsewhere.** Completeness did not improve and may have slipped a little
+(holdout +9 points incomplete, interval touching zero), which is the expected shape: the
+lessons tell the analyzer to say less when the document says less. Bundle 2 is about
+completeness and is the right place to win that back. Five work sites fell by 11 points or
+more (steampowered, harvard, airbnb, webmd, paypal); the biggest gains were the sites the
+baseline found worst (snapchat +36, discord +25, spotify +23, microsoft +22).
+
+**Decision.** The six analyzer lessons were promoted with the proof attached (ledger seq
+9 to 14). The two critic lessons were retired with the same proof attached (seq 15 and
+16): with them in the prompt the critic wrapped its JSON in a markdown code fence on 34 of
+150 calls, which the extension's parser does not accept, so the critic failed and the
+evaluator capped those runs to Adequate. That is a parser robustness gap, not a bad rule;
+once the parser tolerates fences the critic lessons can be re-tried as their own bundle.
+Critic-versus-jury agreement was unchanged (93%) on the calls that parsed.
+
+**Where the promotion lives.** The lessons store on the proof proxy was in memory, so the
+promotion exists in this write-up, in `proof-bundle1.md`, and in the run directory; it is
+re-applied with two commands (`lessons.js create` and `lessons.js status --proof`) on the
+persistent dev proxy once the dev database exists, and rolled to production in phase 6.
+
+**Operational note.** The proxy instance behind the run was first started through the
+session's background facility, which has a one-hour limit; it stopped at replay 63 and the
+next eleven replays failed without a model call. The proxy was restarted as a detached
+process, the failed artifacts removed, and the run resumed under the same lesson set. The
+proof's single-set check confirms every treatment verdict ran under hash `d93555f3f157`.
+
+**Follow-up fix, same day.** The critic failures traced to the model wrapping its JSON in
+a markdown code fence once the learned rules were present; both parsers took the text
+from the first brace to the last, so prose or a second brace after the fence broke them.
+`critic.js` and the proxy's `parseCriticVerdict` now take the first balanced object,
+preferring fence contents, and repair a trailing comma; a truncated answer is reported as
+unparseable rather than as an exception. Tests on both sides cover fenced, prose-wrapped,
+trailing-comma, truncated, and invented-label answers. With this in place the two critic
+lessons can be re-tried as a small bundle of their own.
