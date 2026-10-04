@@ -1,6 +1,6 @@
 # Learning loop — Phase 5: the analyzer loop
 
-Status: built, verified, and bundle 1 proven (2026-10-04); bundles 2 and 3 pending. Follows
+Status: bundle 1 proven, bundle 2 not proven and retired (2026-10-04); 2b and the critic re-try pending. Follows
 phase 4 (`phase-4.md`).
 
 ## Goal
@@ -185,3 +185,43 @@ preferring fence contents, and repair a trailing comma; a truncated answer is re
 unparseable rather than as an exception. Tests on both sides cover fenced, prose-wrapped,
 trailing-comma, truncated, and invented-label answers. With this in place the two critic
 lessons can be re-tried as a small bundle of their own.
+
+## Bundle 2 proof: completeness (2026-10-04)
+
+Run `treat-bundle2`: the full set, three samples, the five completeness lessons (L001
+collection, L003 sharing, L004 opt-out rights, L005 billing, L008 deletion) pinned
+together with the six proven lessons; control `treat-bundle1`, so the proof measures what
+the five add to the current best. Cost $39.37. Text-free proof committed as
+`proof-bundle2.md`. The run paused once at replay 119 when the trainer workspace reached
+its monthly cap; the owner raised it and the run resumed under the same lesson set.
+
+**Not proven.** Jury score -4.1 on the 30 paired work sites (95% interval -7.8 to -0.4)
+and -4.6 on the holdout (-10.1 to 0.6); 28 of 49 sites fell. The lessons did what they
+said: incompleteness fell from 72% to 59% of applicable sections, improving on 40 of 49
+sites, with billing (85% to 54%) and deletion (75% to 58%) moving most. But fabricated
+specifics came back in the same breath: 38 to 107 across the run, 28 to 74 verdicts with
+at least one, concentrated in recipient scope (32) and jurisdiction (11), the exact things
+the completeness lessons ask the analyzer to say more about. Section accuracy stayed near
+zero errors; the jury scored the invented scope claims as fabrications, and ten points
+each outweighed the completeness gain.
+
+| | baseline-1 | bundle 1 | bundle 1 + 2 |
+|---|---|---|---|
+| Jury score, mean | 70.5 | 76.5 | 72.3 |
+| Fabrications, total | 107 | 38 | 107 |
+| Incomplete sections (all) | 68% | 72% | 59% |
+| Billing incomplete | 81% | 85% | 54% |
+| Deletion incomplete | 85% | 75% | 58% |
+
+**Decision.** The five completeness lessons are retired with the proof attached; the six
+bundle-1 lessons stay promoted. The result is informative rather than a dead end: asking
+for more coverage without restating the grounding rule in the same breath trades
+fabrications for completeness one for one. A revised bundle (2b) should carry the guard
+inside each completeness lesson ("list every recipient category the document names, and
+only those; say the document does not specify a scope when it does not") and be proven one
+section at a time, starting with billing and deletion where the completeness gain was
+largest and the fabrication cost smallest.
+
+**Next after 2b.** The two critic lessons retired in bundle 1 for the parser's sake are
+owed a re-try now that both parsers accept fenced JSON; a twelve-site pass (about $10)
+before a full proof.
