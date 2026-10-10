@@ -1,0 +1,24 @@
+{
+  "name": "critic-3b",
+  "proxy": "http://127.0.0.1:3001",
+  "control": "baseline-1",
+  "lessons": {
+    "revise": [
+      {
+        "run": "baseline-1",
+        "candidateId": "L014",
+        "id": "L014b",
+        "after": "proof-bundle3-critic",
+        "text": "When a menu path, screen name, or button sequence in the analysis does not appear in the source, label that section unsupported rather than grounded, and name the invented path in one flag of at most twenty words."
+      },
+      {
+        "run": "baseline-1",
+        "candidateId": "L016",
+        "id": "L016b",
+        "after": "proof-bundle3-critic",
+        "text": "When a web address or domain in the analysis does not appear verbatim in the source, label that section unsupported rather than grounded, and name the address in one flag of at most twenty words."
+      }
+    ]
+  },
+  "proof": { "kind": "critic", "source": "baseline-1", "budget": 8 }
+}

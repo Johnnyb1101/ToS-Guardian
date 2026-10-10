@@ -1,7 +1,8 @@
 # Learning loop — Phase 5: the analyzer loop
 
-Status: bundle 1 proven, bundle 2 not proven and retired (2026-10-04); 2b and the critic re-try pending. Follows
-phase 4 (`phase-4.md`).
+Status: bundle 1 proven; bundle 2 not proven and retired (2026-10-04); bundle 3, the critic
+re-try, not proven and retired (2026-10-10) with a follow-up queued; bundle 2b runs as the
+first campaign of phase 6 (`phase-6.md`). Follows phase 4 (`phase-4.md`).
 
 ## Goal
 
@@ -67,6 +68,25 @@ promoted lessons is byte-for-byte the run it was before.
   and critic agreement deltas, writes `proof.json` and `proof.md` into the treatment run,
   and exits non-zero when not proven. `baseline-1` (no lessons) is the control for
   first-round proofs.
+- `tools/critic-replay.js <graded run> --run <id> --lessons none|<ids>` re-runs only the
+  critic over the analyses stored in a graded run, through the same proxy route and the
+  same parser the extension uses. The new run's artifacts keep the analysis and the jury
+  verdict and replace the critic verdict; the earlier critic's labels and evaluator label
+  are kept under `criticOf`. Critic lessons change no analyzer text, so a jury score
+  cannot measure them; this pairs each new critic verdict with the jury verdict the run
+  already paid for, at the price of the critic calls alone.
+- `tools/prove-critic.js <treatment> --control <control> [--out <dir>]` pairs two critic
+  runs per site on identical analyses. **Proven** means: the work-split catch rate (a
+  section labelled unsupported or vague on a verdict where the jury found a fabrication)
+  gains at least ten points with the 95% interval above zero; false alarms (a concern on
+  a verdict the jury found clean) rise by no more than ten points; parse failures rise by
+  no more than two points; the holdout catch rate does not fall by more than ten; the
+  analyses are identical in both arms; and the treatment critic ran under one lesson set.
+  It also reports a notice rate (a flag raised with no section label changed, which the
+  evaluator ignores) and how many evaluator labels would change.
+- `tools/lessons.js revise <run> <candidateId> --text "..." [--id L005b] [--after
+  proof-bundle2]` registers a reworded candidate whose provenance names the parent and
+  the proof that retired it.
 
 ## Proof plan (agreed, not yet run)
 
@@ -223,5 +243,42 @@ section at a time, starting with billing and deletion where the completeness gai
 largest and the fabrication cost smallest.
 
 **Next after 2b.** The two critic lessons retired in bundle 1 for the parser's sake are
-owed a re-try now that both parsers accept fenced JSON; a twelve-site pass (about $10)
-before a full proof.
+owed a re-try now that both parsers accept fenced JSON.
+
+## Bundle 3 proof: critic lessons (2026-10-10)
+
+Run `critic-b3-baseline`: the critic alone, re-run by `tools/critic-replay.js` over the 150
+graded `baseline-1` analyses with the two critic lessons (L014 menu paths, L016 URLs)
+pinned, and compared by `tools/prove-critic.js` with the critic verdicts `baseline-1`
+already holds, against the jury verdicts it already paid for. The baseline analyses were
+chosen because they carry 107 jury fabrications, 51 of them menu paths and URLs, so the
+critic has something to catch. Cost $6.79, critic calls only. Text-free proof committed
+as `proof-bundle3-critic.md`.
+
+**Not proven.** The critic now sees the invented specifics: on verdicts where the jury
+found a fabrication it raised a concern or a flag on 86% instead of 47% (95% interval
++22 to +54 points). But it mostly says so in `flags`, which the evaluator ignores; the
+section label moved to unsupported or vague on 51% instead of 34%, a gain inside the
+noise (−10 to +38 on the work split). False alarms on verdicts the jury found clean may
+have risen by up to 24 points. And the longer answers hit the critic's 600-token
+completion ceiling on 14 of 150 calls, every one of them cut off mid-JSON, against 2 in
+the control; the fence fix from bundle 1 held, no fenced answer failed.
+
+| | baseline critic | with critic lessons |
+|---|---|---|
+| Noticed a jury fabrication (label or flag) | 47% | 86% |
+| Caught it in the section label | 34% | 51% |
+| False alarms on clean verdicts | 31% | 39% |
+| Agreement with the jury on acceptability | 93% | 92% |
+| Unparseable answers | 2 of 150 | 14 of 150, all at the token ceiling |
+| Evaluator label would change | | 62 of 150 (38 Strong to Adequate, 12 Adequate to Strong) |
+
+**Decision.** Both critic lessons are retired with the proof attached (ledger seq 3 and 4
+on the proof proxy). Two follow-ups come out of it, one free and one cheap. The proxy's
+critic ceiling is raised from 600 to 1,000 tokens (`CRITIC_MAX_TOKENS` in
+`analysisOperations.js`), since the ceiling, not the rule, caused every parse failure. And
+the rule is reworded to say where the verdict belongs: label the section unsupported, not
+only a flag, and keep the flag to twenty words. That re-try is queued as the campaign
+spec `reference/campaigns/critic-3b.json` (critic kind, about $7) for the next budget
+round. The notice-rate result says the lesson is understood; the label result says the
+wording has to point at the field the evaluator reads.

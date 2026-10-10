@@ -176,4 +176,4 @@ function renderProof(proof) {
   return lines.join('\n');
 }
 
-module.exports = { DEFAULT_MIN_GAIN, DEFAULT_MAX_HOLDOUT_LOSS, DEFAULT_RESAMPLES, mean, mulberry32, bootstrapMeanInterval, perSite, pairedDeltas, prove, renderProof };
+module.exports = { DEFAULT_MIN_GAIN, DEFAULT_MAX_HOLDOUT_LOSS, DEFAULT_RESAMPLES, mean, mulberry32, bootstrapMeanInterval, perSite, pairedDeltas, prove, renderProof, num, signed, pct };

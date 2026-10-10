@@ -1,5 +1,5 @@
 const P = require('../tools/prove-lib');
-const { candidatesToLessons, renderLessonList } = require('../tools/lessons-lib');
+const { candidatesToLessons, reviseCandidate, renderLessonList } = require('../tools/lessons-lib');
 const { SECTIONS } = require('../tools/jury-lib');
 
 let passed = 0;
@@ -101,6 +101,9 @@ const candidates = [
 const picked = candidatesToLessons(candidates, { ids: ['L013', 'L014', 'L027', 'L034'], runId: 'baseline-1' });
 ok('only lesson candidates become lessons, with provenance', picked.length === 2 && picked[0].target === 'analyzer' && picked[1].target === 'critic' && picked[0].provenance.candidateId === 'L013' && picked[0].provenance.runId === 'baseline-1' && picked[0].scope === 'all' && picked[0].section === null);
 ok('scope and section carry over and a target filter applies', candidatesToLessons(candidates, { target: 'analyzer' }).length === 3 && candidatesToLessons(candidates, { ids: ['L011'] })[0].scope === 'technology' && candidatesToLessons(candidates, { ids: ['L011'] })[0].section === 'dataDeletion');
+const revised = reviseCandidate(candidates, 'L011', 'State retention only in the words the document uses; when it is silent, say so.', { id: 'L011b', runId: 'baseline-1', after: 'proof-bundle2' });
+ok('a revised candidate keeps target, scope and section, takes the new text and names its parent', revised.target === 'analyzer' && revised.scope === 'technology' && revised.section === 'dataDeletion' && revised.text.startsWith('State retention only') && revised.provenance.candidateId === 'L011b' && revised.provenance.runId === 'baseline-1' && /^Revised L011 after proof-bundle2: 100%/.test(revised.provenance.why));
+ok('revising an unknown or non-lesson candidate, or with empty text, yields nothing', reviseCandidate(candidates, 'L999', 'x') === null && reviseCandidate(candidates, 'L027', 'x') === null && reviseCandidate(candidates, 'L013', '  ') === null && reviseCandidate(candidates, 'L013', 'x').provenance.candidateId === 'L013r');
 ok('the lesson list renders status, target, scope, and provenance', renderLessonList([{ id: 'lsn_0123456789abcdef', status: 'promoted', target: 'analyzer', scope: 'financial', section: null, text: 'Never add a menu path.', provenance: { runId: 'baseline-1', candidateId: 'L013' }, proof: { proven: true, runId: 'treat-1' } }]).includes('proof proven (treat-1)') && renderLessonList([]) === 'No lessons.');
 
 console.log(`\nSummary: ${passed} passed, ${failed} failed`);

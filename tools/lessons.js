@@ -1,12 +1,13 @@
 const fs = require('fs');
 const path = require('path');
 const { resolveProxyTarget } = require('./batch-lib');
-const { candidatesToLessons, renderLessonList } = require('./lessons-lib');
+const { candidatesToLessons, reviseCandidate, renderLessonList } = require('./lessons-lib');
 
 function usage(code) {
   console.log('Usage:');
   console.log('  node tools/lessons.js list --proxy <url>');
   console.log('  node tools/lessons.js create <runDir> --proxy <url> --ids L013,L015 [--target analyzer|critic]   register dream candidates as lessons');
+  console.log('  node tools/lessons.js revise <runDir> <candidateId> --text "<rule>" --proxy <url> [--id L005b] [--after proof-bundle2]   register a reworded candidate with its parent in the provenance');
   console.log('  node tools/lessons.js status <lessonId> <canary|promoted|retired|candidate> --proxy <url> [--proof <runDir>]');
   process.exit(code);
 }
@@ -14,9 +15,9 @@ function usage(code) {
 const argv = process.argv.slice(2);
 const command = argv.shift();
 if (!command || command === '--help' || command === '-h') usage(0);
-if (!['list', 'create', 'status'].includes(command)) usage(1);
+if (!['list', 'create', 'revise', 'status'].includes(command)) usage(1);
 
-const opts = { proxy: null, ids: null, target: null, proof: null };
+const opts = { proxy: null, ids: null, target: null, proof: null, text: null, id: null, after: null };
 const positional = [];
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
@@ -24,6 +25,9 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--ids') opts.ids = String(argv[++i]).split(',').map(s => s.trim()).filter(Boolean);
   else if (a === '--target') opts.target = argv[++i];
   else if (a === '--proof') opts.proof = argv[++i];
+  else if (a === '--text') opts.text = argv[++i];
+  else if (a === '--id') opts.id = argv[++i];
+  else if (a === '--after') opts.after = argv[++i];
   else if (a.startsWith('--')) { console.error(`Unknown option: ${a}`); process.exit(1); }
   else positional.push(a);
 }
@@ -61,6 +65,19 @@ async function create() {
   }
 }
 
+async function revise() {
+  const [runDir, candidateId] = positional;
+  if (!runDir || !candidateId || !opts.text) usage(1);
+  const file = path.join(path.resolve(runDir), 'dream', 'lessons.json');
+  if (!fs.existsSync(file)) { console.error(`No dream output at ${file}; run tools/dream.js first.`); process.exit(1); }
+  const record = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const lesson = reviseCandidate(record.candidates, candidateId, opts.text, { id: opts.id, runId: record.runId, after: opts.after });
+  if (!lesson) { console.error(`No lesson candidate ${candidateId} in ${file}.`); process.exit(1); }
+  const { status, data } = await json('POST', '/lessons', lesson);
+  const id = data.lesson ? data.lesson.id : '?';
+  console.log(`${lesson.provenance.candidateId.padEnd(6)} -> ${status === 200 ? `${data.status} ${id}` : `http ${status} ${data.reason || data.error || ''}`}`);
+}
+
 async function setStatus() {
   const [id, status] = positional;
   if (!id || !status) usage(1);
@@ -76,4 +93,4 @@ async function setStatus() {
   console.log(`${id}: ${data.lesson.status} (ledger seq ${data.ledgerSeq})`);
 }
 
-({ list, create, status: setStatus })[command]().catch(err => { console.error(err); process.exit(1); });
+({ list, create, revise, status: setStatus })[command]().catch(err => { console.error(err); process.exit(1); });

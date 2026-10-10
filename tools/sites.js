@@ -1,3 +1,4 @@
+const fs = require('fs');
 const { resolveProxyTarget } = require('./batch-lib');
 const lib = require('./sites-lib');
 const refLib = require('./reference-lib');
@@ -6,7 +7,7 @@ function usage(code) {
   console.log('Usage:');
   console.log('  node tools/sites.js propose --proxy <url> [--sites a,b] [--limit n] [--delay ms]   propose frozen sites as the trainer');
   console.log('  node tools/sites.js status --proxy <url>');
-  console.log('  node tools/sites.js ledger --proxy <url> [--after seq]                           fetch and verify the learning ledger');
+  console.log('  node tools/sites.js ledger --proxy <url> [--after seq] [--public-key <pem file>]   fetch and verify the learning ledger and its signatures');
   console.log('  node tools/sites.js halt --proxy <url> --reason "..." | node tools/sites.js resume --proxy <url>');
   process.exit(code);
 }
@@ -16,7 +17,7 @@ const command = argv.shift();
 if (!command || command === '--help' || command === '-h') usage(0);
 if (!['propose', 'status', 'ledger', 'halt', 'resume'].includes(command)) usage(1);
 
-const opts = { proxy: null, sites: null, limit: Infinity, delay: 2000, after: 0, reason: '' };
+const opts = { proxy: null, sites: null, limit: Infinity, delay: 2000, after: 0, reason: '', publicKey: null };
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   if (a === '--proxy') opts.proxy = argv[++i];
@@ -25,6 +26,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--delay') opts.delay = Number(argv[++i]);
   else if (a === '--after') opts.after = Number(argv[++i]);
   else if (a === '--reason') opts.reason = argv[++i];
+  else if (a === '--public-key') opts.publicKey = fs.readFileSync(argv[++i], 'utf8');
   else { console.error(`Unknown option: ${a}`); process.exit(1); }
 }
 
@@ -74,6 +76,8 @@ async function status() {
   if (status !== 200) { console.error(`status ${status}: ${JSON.stringify(data)}`); process.exit(1); }
   console.log(`Learning ${data.halted ? `HALTED (${data.reasons.join(', ')})` : 'active'} on ${target.url}`);
   console.log(`  evidence floor ${data.agreementDays} day(s), expiry ${data.ttlDays} day(s), proposals ${data.proposals}, learned sites ${data.learnedSites}, ledger ${data.ledger.length} entr${data.ledger.length === 1 ? 'y' : 'ies'}${data.ledger.head ? ` (head ${data.ledger.head.slice(0, 12)})` : ''}`);
+  if (data.lessons) console.log(`  lessons: ${Object.entries(data.lessons).map(([k, n]) => `${n} ${k}`).join(', ')}; canary share ${data.canaryShare}`);
+  console.log(`  ledger signing ${data.signing && data.signing.enabled ? `on (key ${lib.fingerprint(data.signing.publicKey)})` : 'off'}`);
 }
 
 async function ledger() {
@@ -86,8 +90,14 @@ async function ledger() {
     if (data.entries.length < 200) break;
     after = data.entries[data.entries.length - 1].seq;
   }
-  const verification = lib.verifyLedger(entries);
+  let publicKey = opts.publicKey;
+  if (!publicKey) {
+    const { status, data } = await json('GET', '/learning/status');
+    if (status === 200 && data.signing && data.signing.publicKey) publicKey = data.signing.publicKey;
+  }
+  const verification = lib.verifyLedger(entries, { publicKey });
   console.log(lib.renderLedger(entries, verification));
+  if (publicKey) console.log(`Signatures checked against key ${lib.fingerprint(publicKey)}${opts.publicKey ? ' (from file)' : ' (published by the proxy)'}`);
   if (!verification.valid) process.exit(2);
 }
 

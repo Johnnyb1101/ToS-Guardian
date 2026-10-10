@@ -202,7 +202,7 @@ async function runReplay(args) {
   fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + '\n', 'utf8');
 
   const host = createPipelineHost({
-    proxyUrl: target.url, cache: false, write: false, critic: true, escalate: opts.escalate, lessonSet: opts.lessons,
+    proxyUrl: target.url, cache: false, write: false, critic: true, escalate: opts.escalate, lessonSet: opts.lessons, runTag: runId,
     onLog: opts.verbose ? (line) => console.log('  ' + line) : null
   });
   stubPipeline(host);

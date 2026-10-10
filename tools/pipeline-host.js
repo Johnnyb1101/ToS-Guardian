@@ -48,6 +48,7 @@ function createPipelineHost(options) {
     if (state && state.controller && !finalOptions.signal) finalOptions.signal = state.controller.signal;
     if (target !== analyzeUrl) return realFetch(url, finalOptions);
     if (state) state.llmCalls++;
+    if (opts.runTag) finalOptions.headers = { ...(finalOptions.headers || {}), 'X-Trainer-Run': String(opts.runTag) };
     if (opts.lessonSet !== null && typeof finalOptions.body === 'string') {
       try {
         const body = JSON.parse(finalOptions.body);

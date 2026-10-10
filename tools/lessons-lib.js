@@ -19,6 +19,20 @@ function candidatesToLessons(candidates, filter = {}) {
   return out;
 }
 
+function reviseCandidate(candidates, candidateId, text, options = {}) {
+  const parent = (candidates || []).find(c => c.id === candidateId && c.kind === 'lesson');
+  if (!parent || typeof text !== 'string' || !text.trim()) return null;
+  const id = options.id || `${candidateId}r`;
+  const why = `Revised ${candidateId}${options.after ? ` after ${options.after}` : ''}${parent.why ? `: ${parent.why}` : ''}`;
+  return {
+    target: parent.target,
+    scope: parent.scope && parent.scope !== 'all' ? parent.scope : 'all',
+    section: parent.section || null,
+    text: text.trim(),
+    provenance: { runId: options.runId || null, candidateId: id, why: why.slice(0, 400) }
+  };
+}
+
 function renderLessonList(lessons) {
   if (!lessons.length) return 'No lessons.';
   const lines = [];
@@ -29,4 +43,4 @@ function renderLessonList(lessons) {
   return lines.join('\n');
 }
 
-module.exports = { candidatesToLessons, renderLessonList };
+module.exports = { candidatesToLessons, reviseCandidate, renderLessonList };

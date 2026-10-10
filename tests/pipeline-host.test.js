@@ -93,6 +93,14 @@ function ok(label, condition, detail = '') {
       globalThis.fetch = realFetchForPin;
       ok('a host lesson set is pinned onto analyzer and critic requests', seen.length === 2 && seen.every(b => b.lessonSet && b.lessonSet.ids[0] === 'lsn_0123456789abcdef'), JSON.stringify(seen.map(b => b.lessonSet)));
       ok('without a lesson set no lessonSet field is sent', (() => { const bodies = []; const f = globalThis.fetch; globalThis.fetch = async (u, o) => { bodies.push(JSON.parse(o.body)); return f(u, o); }; const plain = createPipelineHost({ proxyUrl: 'http://127.0.0.1:9' }); const s = plain.newRunState(); return plain.run(s, () => plain.context.analyzeWithModel('x', 'https://x.example/p', false)).then(() => { globalThis.fetch = f; return bodies.length === 1 && !('lessonSet' in bodies[0]); }); })());
+      const headersSeen = [];
+      const realFetchForTag = globalThis.fetch;
+      globalThis.fetch = async (url, options) => { headersSeen.push(options.headers || {}); return realFetchForTag(url, options); };
+      const tagged = createPipelineHost({ proxyUrl: 'http://127.0.0.1:9', critic: false, runTag: 'treat-x' });
+      const tagState = tagged.newRunState();
+      await tagged.run(tagState, async () => { await tagged.context.analyzeWithModel('=== PRIVACY POLICY ===\nWe share data with affiliates.', 'https://x.example/privacy', false); });
+      globalThis.fetch = realFetchForTag;
+      ok('a run tag travels as the X-Trainer-Run header', headersSeen.length === 1 && headersSeen[0]['X-Trainer-Run'] === 'treat-x', JSON.stringify(headersSeen));
       const criticOff = createPipelineHost({ proxyUrl: 'http://127.0.0.1:9', critic: false });
       const quiet = criticOff.newRunState();
       await criticOff.run(quiet, async () => { await criticOff.context.runCritic('s', 't'); });
