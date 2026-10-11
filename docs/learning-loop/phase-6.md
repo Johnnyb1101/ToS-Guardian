@@ -137,10 +137,15 @@ trainer flag off, its own ledger key, and `ROLLOUT_PUBLIC_KEY` set to the dev ke
   re-signed by a stranger's key was self-consistent to `rollout.js show` and refused by the
   production-like proxy because that key is not the trusted one. Its ledger stayed at
   seven rows.
-- `tools/campaign.js go reference/campaigns/bundle-2b-billing-deletion.json` ran health,
-  registered the six carried lessons and the two revised ones (eight pinned, each replay
-  carrying its run id in `X-Trainer-Run`), and started the ten-site screen. Its outcome is
-  recorded in `phase-5.md` under bundle 2b.
+- `tools/campaign.js go reference/campaigns/bundle-2b-billing-deletion.json` ran end to
+  end: health, registration of the six carried lessons and the two revised ones (eight
+  pinned, each replay carrying its run id in `X-Trainer-Run`, 60 of 60 calls tagged in
+  the proxy log), the ten-site screen (passed), the full proof, `prove.js`, the report
+  with its proposal, and the notification step (skipped, no url). It stopped once on a
+  transient local fetch failure before the proof and resumed from `campaign.json` with
+  the same command; proxy calls in the driver now retry. The workspace's monthly API cap
+  closed during the proof jury, which the jury recorded per verdict and the proof reported
+  as 128 of 150 graded. Outcome in `phase-5.md` under bundle 2b. Total $43.57.
 
 ## Operational notes
 

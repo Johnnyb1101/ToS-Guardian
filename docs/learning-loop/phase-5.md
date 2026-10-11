@@ -1,8 +1,9 @@
 # Learning loop — Phase 5: the analyzer loop
 
 Status: bundle 1 proven; bundle 2 not proven and retired (2026-10-04); bundle 3, the critic
-re-try, not proven and retired (2026-10-10) with a follow-up queued; bundle 2b runs as the
-first campaign of phase 6 (`phase-6.md`). Follows phase 4 (`phase-4.md`).
+re-try, not proven and retired (2026-10-10) with a follow-up queued; bundle 2b, the first
+campaign of phase 6 (`phase-6.md`), not proven and retired (2026-10-11). Follows phase 4
+(`phase-4.md`).
 
 ## Goal
 
@@ -282,3 +283,50 @@ only a flag, and keep the flag to twenty words. That re-try is queued as the cam
 spec `reference/campaigns/critic-3b.json` (critic kind, about $7) for the next budget
 round. The notice-rate result says the lesson is understood; the label result says the
 wording has to point at the field the evaluator reads.
+
+## Bundle 2b proof: guarded billing and deletion lessons (2026-10-10)
+
+The first campaign run by `tools/campaign.js` (`reference/campaigns/bundle-2b-billing-deletion.json`):
+the six proven lessons carried, L005 and L008 reworded with the grounding guard in the
+same sentence (L005b billing, L008b deletion), a ten-site screen, then the full proof
+against `treat-bundle1`. Text-free proof committed as `proof-bundle2b.md`, the campaign
+report as `campaign-bundle2b.md`.
+
+**Screen passed.** On the ten most sensitive sites fabrications per verdict went from 0.10
+to 0.27 (stop at +0.25) and the jury mean from 80.1 to 78.2 (stop at 5 points), so the
+proof ran. Cost $8.81.
+
+**Not proven.** Jury score +0.9 on 26 paired work sites (95% interval −1.8 to 3.7), −2.2
+on 16 holdout sites (−7.7 to 2.9); 22 sites better, 19 worse. The lessons did their job on
+completeness: incomplete sections fell from 73% to 65% across the set (−14 to −3) and from
+73% to 59% on the holdout. Fabrications held on the work split (0.29 to 0.23 per verdict)
+but rose on the holdout from 0.10 to 0.38 (0.06 to 0.52): coinbase −28, github −21, slack
+−13. Cost $34.76; the trainer workspace's monthly cap closed during the jury, so 22 of 150
+verdicts are ungraded until November and 42 of 49 sites are paired.
+
+| | bundle 1 (control) | bundle 1 + 2b |
+|---|---|---|
+| Jury score, work / holdout | 76.5 / 78.4 | 77.4 / 76.1 |
+| Incomplete sections, all / holdout | 73% / 73% | 65% / 59% |
+| Fabrications per verdict, work / holdout | 0.29 / 0.10 | 0.23 / 0.38 |
+| Fabrications that assert an absence | 14 of 38 | 23 of 36 |
+
+**What the fabrications were.** Of the 36 jury fabrications under 2b, 23 are claims of
+absence that the document contradicts: "the document does not limit this right to certain
+residents" (7, from L008b), "gives no web address for these pages" (10, the promoted L015
+and L019 habit amplified), "does not name data that survives deletion" (2). On the
+holdout 12 of 18 fabrications are of this kind, against 1 of 7 in the control. The guard
+"where the document is silent, say it does not say" turned silence into a factual claim,
+and the model made that claim where the document was not silent. Ten points each.
+
+**Decision.** L005b and L008b are retired with the proof attached. The lesson for 2c is
+about wording, not about completeness: instruct omission, never asserted absence ("leave
+it out" instead of "say the document does not say"). The same flaw sits in the promoted
+L015 and L019, which also tell the analyzer to "say so" when an address or step is
+missing; they earned their proof on fabricated specifics, but a revision that drops the
+asserted-absence clause is a candidate for a later round, proven against `treat-bundle1`
+like any other change.
+
+**Operational.** The campaign stopped once between the screen and the proof on a transient
+local fetch failure and resumed from its state file with one command; the driver's proxy
+calls now retry. Replays carried the run id into the proxy log on every call.
