@@ -3,20 +3,22 @@ const path = require('path');
 const { resolveProxyTarget } = require('./batch-lib');
 const { candidatesToLessons, reviseCandidate, renderLessonList } = require('./lessons-lib');
 const { dream } = require('./dream');
+const { trainerHeaders } = require('./sites-lib');
 
 function usage(code) {
   console.log('Usage:');
   console.log('  node tools/lessons.js list --proxy <url>');
   console.log('  node tools/lessons.js create <runDir> --proxy <url> --ids L013,L015 [--target analyzer|critic]   register dream candidates as lessons');
   console.log('  node tools/lessons.js revise <runDir> <candidateId> --text "<rule>" --proxy <url> [--id L005b] [--after proof-bundle2]   register a reworded candidate with its parent in the provenance');
-  console.log('  node tools/lessons.js status <lessonId> <canary|promoted|retired|candidate> --proxy <url> [--proof <runDir>]');
+  console.log('  node tools/lessons.js release <configHash> --proxy <url>                          inspect a complete immutable release');
+  console.log('  Per-lesson status changes are retired; releases are activated as a whole with owner authorization.');
   process.exit(code);
 }
 
 const argv = process.argv.slice(2);
 const command = argv.shift();
 if (!command || command === '--help' || command === '-h') usage(0);
-if (!['list', 'create', 'revise', 'status'].includes(command)) usage(1);
+if (!['list', 'create', 'revise', 'status', 'release'].includes(command)) usage(1);
 
 const opts = { proxy: null, ids: null, target: null, proof: null, text: null, id: null, after: null };
 const positional = [];
@@ -38,7 +40,7 @@ if (target.error) { console.error(target.error); process.exit(1); }
 if (target.isProduction) { console.error('Lessons are managed on the dev proxy only.'); process.exit(1); }
 
 async function json(method, route, body) {
-  const response = await fetch(`${target.url}${route}`, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  const response = await fetch(`${target.url}${route}`, { method, headers: trainerHeaders({ 'Content-Type': 'application/json' }), body: body ? JSON.stringify(body) : undefined });
   const text = await response.text();
   let data;
   try { data = JSON.parse(text); } catch { data = { raw: text }; }
@@ -82,21 +84,14 @@ async function revise() {
 }
 
 async function setStatus() {
-  const [id, status] = positional;
-  if (!id || !status) usage(1);
-  let proof;
-  if (opts.proof) {
-    const runDir = path.resolve(opts.proof);
-    if (['evaluation', 'critic-evaluation'].some(name => fs.existsSync(path.join(runDir, 'step1a', name, 'evaluation.json')))) throw new Error('This run has a diagnostic evaluation; its historical proof cannot authorize a new lesson status change. Step 1B is pending.');
-    const file = path.join(runDir, 'proof.json');
-    if (!fs.existsSync(file)) { console.error(`No proof at ${file}; run tools/prove.js first.`); process.exit(1); }
-    const p = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (p.diagnosticOnly || p.promotionEligible === false) throw new Error('Diagnostic evaluation cannot authorize a lesson status change; Step 1B is pending.');
-    proof = { runId: p.runId, controlRunId: p.controlRunId, proven: p.proven === true, summary: p.summary };
-  }
-  const { status: http, data } = await json('POST', `/lessons/${encodeURIComponent(id)}/status`, { status, proof });
-  if (http !== 200) { console.error(`status ${http}: ${JSON.stringify(data)}`); process.exit(1); }
-  console.log(`${id}: ${data.lesson.status} (ledger seq ${data.ledgerSeq})`);
+  throw new Error('Per-lesson status changes cannot authorize canary or promotion; submit a complete signed release with owner authorization. Diagnostic and historical proofs cannot authorize activation.');
 }
 
-({ list, create, revise, status: setStatus })[command]().catch(err => { console.error(err); process.exit(1); });
+async function showRelease() {
+  const configHash = positional[0];
+  if (!/^[a-f0-9]{64}$/.test(configHash || '')) usage(1);
+  const release = await require('./sites-lib').fetchRelease(target.url, configHash);
+  console.log(JSON.stringify({ configHash: release.configHash, lessons: release.config.lessons.length, sites: release.config.sites.length, policy: release.config.policy }, null, 2));
+}
+
+({ list, create, revise, status: setStatus, release: showRelease })[command]().catch(err => { console.error(err); process.exit(1); });

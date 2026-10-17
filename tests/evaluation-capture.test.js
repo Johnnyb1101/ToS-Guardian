@@ -68,9 +68,9 @@ function verdictRaw() {
     context: {
       runOrchestrator: async () => {
         const state = stateStore.getStore();
-        state.analyses.push({ escalated: false, result: { status: 'ok', model: 'analyzer-model', promptHash: analyzerPromptHash, lessonsHash: hash('no analyzer lessons'), analysisSource, summary } });
-        state.evidence.push({ operation: 'analyzer', model: 'analyzer-model', promptHash: analyzerPromptHash, lessonsHash: hash('no analyzer lessons') });
-        state.evidence.push({ operation: 'critic', model: 'critic-model', promptHash: criticPromptHash, lessonsHash: criticLessonsHash });
+        state.analyses.push({ escalated: false, result: { status: 'ok', model: 'analyzer-model', providerTag: 'anthropic', promptHash: analyzerPromptHash, lessonsHash: hash('no analyzer lessons'), analysisSource, summary } });
+        state.evidence.push({ operation: 'analyzer', provider: 'anthropic', model: 'analyzer-model', promptHash: analyzerPromptHash, lessonsHash: hash('no analyzer lessons') });
+        state.evidence.push({ operation: 'critic', provider: 'anthropic', model: 'critic-model', promptHash: criticPromptHash, lessonsHash: criticLessonsHash });
         state.critics.push(Object.fromEntries(SECTIONS.map(name => [name, 'grounded'])));
       }
     }
@@ -78,7 +78,8 @@ function verdictRaw() {
   const { artifact } = await replayOne(fakeHost, { domain: 'acorns.com', split: 'work', docType: 'financial', textHash: hash('frozen legal text') }, { pageUrl: 'https://acorns.com/legal' }, 1, { timeout: 1000 }, 'capture-run');
   check('replayOne persists analyzer response identity and fixed critic evidence', () => {
     assert.equal(artifact.analyzer.promptHash, analyzerPromptHash);
-    assert.deepEqual(artifact.criticConfig, { model: 'critic-model', promptHash: criticPromptHash, lessonsHash: criticLessonsHash });
+    assert.deepEqual(artifact.criticConfig, { provider: 'anthropic', model: 'critic-model', promptHash: criticPromptHash, lessonsHash: criticLessonsHash });
+    assert.equal(artifact.analyzer.providerTag, 'anthropic');
     assert.equal(artifact.analysisSource, analysisSource);
     assert.equal(artifact.summary, summary);
   });
@@ -122,7 +123,7 @@ function verdictRaw() {
     const status = await runTool(path.resolve(__dirname, '..', 'tools', 'lessons.js'), ['status', 'lsn_0123456789abcdef', 'promoted', '--proxy', proxy, '--proof', tempRun]);
     check('diagnostic proof cannot emit a promotion request', () => {
       assert.notEqual(status.code, 0);
-      assert.match(status.stderr, /Diagnostic evaluation cannot authorize/);
+      assert.match(status.stderr, /Diagnostic and historical proofs cannot authorize/);
       assert.equal(requests.length, before);
     });
     const legacyProof = JSON.stringify({ runId: 'capture-run', proven: true, summary: 'Historical proof preserved' });
@@ -132,7 +133,7 @@ function verdictRaw() {
     const stale = await runTool(path.resolve(__dirname, '..', 'tools', 'lessons.js'), ['status', 'lsn_0123456789abcdef', 'promoted', '--proxy', proxy, '--proof', tempRun]);
     check('a new diagnostic report cannot fall back to a preserved historical passing proof', () => {
       assert.notEqual(stale.code, 0);
-      assert.match(stale.stderr, /historical proof cannot authorize/);
+      assert.match(stale.stderr, /Diagnostic and historical proofs cannot authorize/);
       assert.equal(requests.length, before);
     });
     const critic = await runTool(path.resolve(__dirname, '..', 'tools', 'prove-critic.js'), [tempRun, '--control', tempRun]);

@@ -47,7 +47,7 @@ function run(runId, criticFor, extra = {}) {
 const control = run('control', () => ({ critic: grounded, lessonsHash: 'c0' }));
 const sharp = run('sharp', (domain, sample) => ({ critic: fabricated(sample) ? { ...grounded, howToOptOut: 'unsupported' } : grounded, lessonsHash: 'c1' }));
 const proof = C.proveCritic({ controlArtifacts: control, treatmentArtifacts: sharp, meta: { runId: 'sharp', controlRunId: 'control' } });
-ok('A critic that starts catching fabrications without false alarms is proven', proof.proven === true, proof.summary);
+ok('a positive historical critic comparison stays diagnostic and cannot authorize a release', proof.legacyCriteriaPassed === true && proof.proven === false && proof.evaluationPassed === false && proof.diagnosticOnly === true && proof.promotionEligible === false, proof.summary);
 ok('Catch rate moved from 0 to 100 on the work split', proof.metrics.catchRate.work.n === 7 && proof.metrics.catchRate.work.mean === 1, JSON.stringify(proof.metrics.catchRate.work));
 ok('False alarms stayed at zero', proof.metrics.falseAlarmRate.all.mean === 0);
 ok('Proof names the single treatment lesson set', proof.lessonsHash === 'c1' && proof.controlLessonsHashes.join() === 'c0');
@@ -77,7 +77,7 @@ const unchangedProof = C.proveCritic({ controlArtifacts: control, treatmentArtif
 ok('No movement is inside the noise', unchangedProof.proven === false && unchangedProof.reasons.some(r => /inside the noise/.test(r)));
 
 const markdown = C.renderCriticProof(proof);
-ok('Rendered proof has the header, the rule and the site table', /^# Critic proof — sharp against control/.test(markdown) && /Rule: proven when/.test(markdown) && /\| a\.com \| work \|/.test(markdown));
+ok('Rendered critic comparison is diagnostic with the legacy criteria and site table', /^# Diagnostic critic comparison — sharp against control/.test(markdown) && /Legacy statistical criteria:/.test(markdown) && /\| a\.com \| work \|/.test(markdown));
 
 const source = control[0];
 const composed = C.composeCriticArtifact(source, { runId: 'recheck', critic: { ...grounded, howToOptOut: 'unsupported', _lessonsHash: 'c1' }, evaluation: { label: 'Adequate', score: 80, issues: ['critic: howToOptOut unsupported by source'], warning: null }, usage: [{ model: 'claude-sonnet-4-6', input: 10, output: 2, cacheRead: 0, cacheWrite: 0 }], cost: 0.03, unpriced: 0, error: '', durationMs: 1200, startedAt: '2026-10-10T00:00:00.000Z' });

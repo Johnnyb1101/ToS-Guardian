@@ -2,7 +2,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const vm = require('vm');
-const { EXTENSION_FILES, createPipelineHost, withTimeout, sitesFromInputs, domainsFromInputs } = require('../tools/pipeline-host');
+const { EXTENSION_FILES, POLICY_SOURCE_FILES, createPipelineHost, withTimeout, sitesFromInputs, domainsFromInputs } = require('../tools/pipeline-host');
 
 let passed = 0;
 let failed = 0;
@@ -16,6 +16,9 @@ function ok(label, condition, detail = '') {
 
   const repoRoot = path.resolve(__dirname, '..');
   ok('every extension file the host loads exists', EXTENSION_FILES.every(f => fs.existsSync(path.join(repoRoot, f))));
+  ok('content and manifest are fingerprinted without executing them in the VM',
+    POLICY_SOURCE_FILES.includes('content.js') && POLICY_SOURCE_FILES.includes('manifest.json') &&
+    !EXTENSION_FILES.includes('content.js') && !EXTENSION_FILES.includes('manifest.json'));
   ok('episode.js is loaded before the orchestrator', EXTENSION_FILES.indexOf('episode.js') < EXTENSION_FILES.indexOf('orchestrator.js'));
 
   let threw = null;
@@ -30,6 +33,37 @@ function ok(label, condition, detail = '') {
   const ctx = host.context;
   ok('the real pipeline entry points are loaded', typeof ctx.runOrchestrator === 'function' && typeof ctx.fetcherAgent === 'function' && typeof ctx.linkFollowerStub === 'function');
   ok('the proxy URL override landed in background.js', vm.runInContext('PROXY_URL', ctx) === 'http://127.0.0.1:9');
+  ok('policy fingerprint input contains every original extension source in order before URL rewriting',
+    JSON.stringify(Object.keys(ctx.__TG_POLICY_SOURCES)) === JSON.stringify(POLICY_SOURCE_FILES) &&
+    ctx.__TG_POLICY_SOURCES['background.js'] === fs.readFileSync(path.join(repoRoot, 'background.js'), 'utf8') &&
+    ctx.__TG_POLICY_SOURCES['background.js'].includes('PROXY_URL'));
+  {
+    const policyRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-policy-sources-'));
+    try {
+      for (const file of POLICY_SOURCE_FILES) {
+        const destination = path.join(policyRoot, file);
+        fs.mkdirSync(path.dirname(destination), { recursive: true });
+        fs.copyFileSync(path.join(repoRoot, file), destination);
+      }
+      const evaluatorPath = path.join(policyRoot, 'evaluator.js');
+      fs.writeFileSync(evaluatorPath, fs.readFileSync(evaluatorPath, 'utf8').replace(/\r?\n/g, '\r\n'));
+      const normalizedHost = createPipelineHost({ proxyUrl: 'http://127.0.0.1:9', repoRoot: policyRoot });
+      ok('line ending differences do not change the packaged policy fingerprint', await normalizedHost.clientPolicyHash === await host.clientPolicyHash);
+      fs.appendFileSync(evaluatorPath, '\r\n// policy fingerprint regression fixture\r\n');
+      const changedHost = createPipelineHost({ proxyUrl: 'http://127.0.0.1:9', repoRoot: policyRoot });
+      ok('a source-only change outside the old function list changes the policy fingerprint', await changedHost.clientPolicyHash !== await host.clientPolicyHash);
+      fs.copyFileSync(path.join(repoRoot, 'evaluator.js'), evaluatorPath);
+      for (const file of ['content.js', 'manifest.json']) {
+        const target = path.join(policyRoot, file);
+        fs.appendFileSync(target, '\n');
+        const changed = createPipelineHost({ proxyUrl: 'http://127.0.0.1:9', repoRoot: policyRoot });
+        ok(`${file} source changes alter the policy fingerprint`, await changed.clientPolicyHash !== await host.clientPolicyHash);
+        fs.copyFileSync(path.join(repoRoot, file), target);
+      }
+    } finally {
+      fs.rmSync(policyRoot, { recursive: true, force: true });
+    }
+  }
   ok('cache reads are disabled when cache is off', (await ctx.readFromSupabase('example.com', '')) === null);
   ok('cache and learned-site writes are disabled when write is off', (await ctx.writeToSupabase('example.com', {}, 'anthropic')) === null && (await ctx.learnSite('https://example.com/', 'a', 'b')) === null);
   ok('the critic is disabled when critic is off', (await ctx.runCritic({}, '')) === null);
@@ -63,7 +97,8 @@ function ok(label, condition, detail = '') {
       const text = body.includes('"operation":"critic"')
         ? '{"dataCollection":"grounded","dataSelling":"unsupported","optOutRights":"grounded","howToOptOut":"vague","autoRenewal":"skipped","dataDeletion":"grounded","flags":["sharing overstated"]}'
         : 'SUMMARY FROM FAKE PROXY';
-      const data = { text, promptHash: 'a'.repeat(64), lessonsHash: 'b'.repeat(64), stopReason: 'end_turn', model: 'claude-sonnet-4-6', provider: 'anthropic', usage: { inputTokens: 900, outputTokens: 120, cacheReadTokens: 0, cacheWriteTokens: 0 } };
+      const request = body ? JSON.parse(body) : {};
+      const data = { text, promptHash: 'a'.repeat(64), lessonsHash: 'b'.repeat(64), docType: 'financial', configHash: request.configHash || 'c'.repeat(64), releaseToken: 'signed-test-token', stopReason: 'end_turn', model: 'claude-sonnet-4-6', provider: 'anthropic', usage: { inputTokens: 900, outputTokens: 120, cacheReadTokens: 0, cacheWriteTokens: 0 } };
       return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => data, text: async () => JSON.stringify(data) };
     };
     try {
@@ -81,19 +116,33 @@ function ok(label, condition, detail = '') {
       ok('captured results are snapshots, untouched by later rewrites', state.analyses[0].result.summary === 'SUMMARY FROM FAKE PROXY' && state.critics[0].dataSelling === 'unsupported');
       ok('critic verdicts are captured on the run', state.critics.length === 1 && state.critics[0] && state.critics[0].dataSelling === 'unsupported', JSON.stringify(state.critics));
       ok('proxy usage is recorded for both calls', state.llmCalls === 2 && state.usage.length === 2 && state.usage.every(u => u.model === 'claude-sonnet-4-6' && u.input === 900), JSON.stringify(state.usage));
-      ok('analyzer prompt and fixed critic identity come from actual proxy responses', state.analyses[0].result.promptHash === 'a'.repeat(64) && state.evidence.length === 2 && state.evidence[1].operation === 'critic' && state.evidence[1].promptHash === 'a'.repeat(64) && state.evidence[1].lessonsHash === 'b'.repeat(64));
+      ok('analyzer prompt and fixed critic identity come from actual proxy responses', state.analyses[0].result.promptHash === 'a'.repeat(64) && state.evidence.length === 2 && state.evidence[1].operation === 'critic' && state.evidence[1].provider === 'anthropic' && state.evidence[1].promptHash === 'a'.repeat(64) && state.evidence[1].lessonsHash === 'b'.repeat(64));
+      const capturedPolicyHash = await captured.clientPolicyHash;
+      ok('captured client policy hash is computed before host stubs replace runtime functions', /^[a-f0-9]{64}$/.test(capturedPolicyHash) && state.evidence.every(e => e.clientPolicyHash === capturedPolicyHash));
       const seen = [];
       const realFetchForPin = globalThis.fetch;
       globalThis.fetch = async (url, options) => { seen.push(JSON.parse(options.body)); return realFetchForPin(url, options); };
-      const pinned = createPipelineHost({ proxyUrl: 'http://127.0.0.1:9', critic: true, lessonSet: { ids: ['lsn_0123456789abcdef'] } });
+      const configHash = 'c'.repeat(64);
+      const pinned = createPipelineHost({ proxyUrl: 'http://127.0.0.1:9', critic: true, configHash });
       const pinState = pinned.newRunState();
       await pinned.run(pinState, async () => {
         await pinned.context.analyzeWithModel('=== PRIVACY POLICY ===\nWe share data with affiliates.', 'https://x.example/privacy', false);
         await pinned.context.runCritic('SUMMARY FROM FAKE PROXY', '=== PRIVACY POLICY ===\nWe share data with affiliates.');
       });
       globalThis.fetch = realFetchForPin;
-      ok('a host lesson set is pinned onto analyzer and critic requests', seen.length === 2 && seen.every(b => b.lessonSet && b.lessonSet.ids[0] === 'lsn_0123456789abcdef'), JSON.stringify(seen.map(b => b.lessonSet)));
-      ok('without a lesson set no lessonSet field is sent', (() => { const bodies = []; const f = globalThis.fetch; globalThis.fetch = async (u, o) => { bodies.push(JSON.parse(o.body)); return f(u, o); }; const plain = createPipelineHost({ proxyUrl: 'http://127.0.0.1:9' }); const s = plain.newRunState(); return plain.run(s, () => plain.context.analyzeWithModel('x', 'https://x.example/p', false)).then(() => { globalThis.fetch = f; return bodies.length === 1 && !('lessonSet' in bodies[0]); }); })());
+      ok('a complete configHash is pinned onto analyzer and critic requests', seen.length === 2 && seen.every(b => b.configHash === configHash) && pinState.evidence.every(e => e.configHash === configHash), JSON.stringify(seen.map(b => b.configHash)));
+      ok('legacy per-lesson host selection is refused', (() => { try { createPipelineHost({ proxyUrl: 'http://127.0.0.1:9', lessonSet: { ids: ['lsn_0123456789abcdef'] } }); return false; } catch (error) { return /Per-lesson host selection/.test(error.message); } })());
+      const wrongResponseFetch = globalThis.fetch;
+      globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ configHash: 'd'.repeat(64) }) });
+      const mismatchHost = createPipelineHost({ proxyUrl: 'http://127.0.0.1:9', configHash });
+      let mismatch = null;
+      try { await mismatchHost.run(mismatchHost.newRunState(), () => mismatchHost.context.fetch('http://127.0.0.1:9/v2/analyze', { method: 'POST', body: JSON.stringify({ operation: 'analyzer' }) })); } catch (error) { mismatch = error; }
+      globalThis.fetch = wrongResponseFetch;
+      ok('a successful proxy response with another configHash is refused before evidence capture', mismatch && /configHash mismatch/.test(mismatch.message));
+      const policyPinned = createPipelineHost({ proxyUrl: 'http://127.0.0.1:9', configHash, expectedClientPolicyHash: 'e'.repeat(64) });
+      let wrongPolicy = null;
+      try { await policyPinned.run(policyPinned.newRunState(), () => policyPinned.context.fetch('http://127.0.0.1:9/v2/analyze', { method: 'POST', body: JSON.stringify({ operation: 'critic', clientPolicyHash: 'f'.repeat(64) }) })); } catch (error) { wrongPolicy = error; }
+      ok('client pipeline policy mismatch is refused before a proxy call', wrongPolicy && /Client pipeline policy hash mismatch/.test(wrongPolicy.message));
       const headersSeen = [];
       const realFetchForTag = globalThis.fetch;
       globalThis.fetch = async (url, options) => { headersSeen.push(options.headers || {}); return realFetchForTag(url, options); };

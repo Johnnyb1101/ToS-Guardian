@@ -28,6 +28,60 @@ function proxyFetch(url, options = {}) {
   return fetch(url, options);
 }
 
+let clientPolicyHashPromise = null;
+const CLIENT_POLICY_FILES = Object.freeze([
+  'vendor/tldts-7.4.8.umd.min.js', 'tosUtils.js', 'evaluator.js', 'critic.js',
+  'siteDatabase.js', 'episode.js', 'community.js', 'orchestrator.js', 'background.js',
+  'content.js', 'manifest.json'
+]);
+function clientPolicyHash() {
+  if (!clientPolicyHashPromise) {
+    clientPolicyHashPromise = Promise.all(CLIENT_POLICY_FILES.map(async file => {
+      const sources = globalThis.__TG_POLICY_SOURCES;
+      let source;
+      if (sources) {
+        if (!Object.prototype.hasOwnProperty.call(sources, file)) throw new Error(`Missing policy source: ${file}`);
+        source = sources[file];
+      } else {
+        const response = await fetch(browser.runtime.getURL(file));
+        if (!response.ok) throw new Error(`Could not read policy source: ${file}`);
+        source = await response.text();
+      }
+      if (typeof source !== 'string') throw new Error(`Invalid policy source: ${file}`);
+      return [file, source.replace(/\r\n?/g, '\n')];
+    }))
+      .then(sources => crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(sources))))
+      .then(bytes => Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, '0')).join(''))
+      .catch(error => { clientPolicyHashPromise = null; throw error; });
+  }
+  return clientPolicyHashPromise;
+}
+
+function validReleasePin(value) {
+  return !!(value && /^[a-f0-9]{64}$/.test(value.configHash) &&
+    typeof value.releaseToken === 'string' && value.releaseToken.length > 0);
+}
+
+async function beginReleaseSession() {
+  const settings = await browser.storage.local.get(['selectedProvider']);
+  const provider = settings.selectedProvider || 'anthropic';
+  if (provider === 'ollama') return { local: true };
+  if (provider !== 'anthropic' && provider !== 'openai') return null;
+  try {
+    const response = await proxyFetch(`${PROXY_URL}/learning/session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, clientPolicyHash: await clientPolicyHash() })
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return validReleasePin(data) ? { configHash: data.configHash, releaseToken: data.releaseToken } : null;
+  } catch (error) {
+    console.warn('[Analyzer] Could not start a pinned analysis session:', error.message);
+    return null;
+  }
+}
+
 // --- Observer sink (learning loop, phase 0) ---
 // Posts one episode event to the local collector. Developer setting, off by
 // default (tosGuardianObserver.enabled), localhost only, fire-and-forget: it
@@ -153,7 +207,7 @@ function saveAnalysis(domain, summary, tosText, optOutLinks = [], aiProvider = '
   writeToSupabase(domain, summary, aiProvider, optOutLinks, tosText, provenance, onOutcome);
 }
 
-async function readFromSupabase(domain, privacyText = '') {
+async function readFromSupabase(domain, privacyText = '', release = null) {
   try {
     // POST the document text in the body (not a ?text= query param) so it can't be
     // written to proxy/platform access logs or trip URL-length limits. No-text reads
@@ -162,10 +216,12 @@ async function readFromSupabase(domain, privacyText = '') {
     const response = await proxyFetch(url, privacyText
       ? {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json',
+            ...(release?.releaseToken ? { 'X-Release-Token': release.releaseToken } : {}) },
           body: JSON.stringify({ text: privacyText })
         }
-      : { method: 'GET' });
+      : { method: 'GET',
+          headers: release?.releaseToken ? { 'X-Release-Token': release.releaseToken } : {} });
     if (response.status === 403) {
       console.warn('[Supabase] Read blocked by security scan for', domain);
       return null;
@@ -180,6 +236,10 @@ async function readFromSupabase(domain, privacyText = '') {
     }
     const data = await response.json();
     if (data.result) {
+      if (release?.configHash && data.configHash !== release.configHash) {
+        console.warn('[Supabase] Read returned an inconsistent release hash for', domain);
+        return null;
+      }
       console.log('[Supabase] Community cache hit for', domain);
       const validatedLinks = (data.opt_out_links || []).map(upgradeInsecureUrl).filter(url => {
         try { return validateLinkFollowerUrl(url); }
@@ -1061,7 +1121,7 @@ async function recordJoinedRelay(episodeId, domain, joinedEpisodeId) {
 
 browser.runtime.onMessage.addListener(handleBackgroundMessage);
 
-async function analyzeWithModel(text, source = "this page", escalate = false) {
+async function analyzeWithModel(text, source = "this page", escalate = false, release = null) {
   // Provider preference + local-Ollama URL only. API keys are deliberately NOT
   // read here anymore — they live in the proxy's Railway environment, and the
   // /v2/analyze attaches them server-side. The model map (default vs
@@ -1152,6 +1212,7 @@ ${trimmedText}`;
   // isConfigurationMessage — keep "No ... API key set" phrasing if edited.
   if (provider === 'anthropic' || provider === 'openai') {
     const providerName = provider === 'anthropic' ? 'Anthropic' : 'OpenAI';
+    if (release && !/^[a-f0-9]{64}$/.test(release.configHash)) return null;
     const response = await proxyFetch(`${PROXY_URL}/v2/analyze`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1160,6 +1221,9 @@ ${trimmedText}`;
         provider,
         documentText: trimmedText,
         escalate,
+        clientPolicyHash: await clientPolicyHash(),
+        ...(release?.configHash ? { configHash: release.configHash } : {}),
+        ...(release?.releaseToken ? { releaseToken: release.releaseToken } : {}),
         ...(documentDomainOf(source) ? { domain: documentDomainOf(source) } : {})
       })
     });
@@ -1185,12 +1249,19 @@ ${trimmedText}`;
       return { summary: "Error: " + (data.reason || data.error?.message || data.error || "Unknown error"), status: 'error', provider };
     }
 
+    if (!validReleasePin(data) || (release?.configHash && data.configHash !== release.configHash)) {
+      console.warn('[Analyzer] Relay returned an invalid or inconsistent release pin');
+      return null;
+    }
+
     console.log(`[Analyzer] Relay response — model: ${data.model}, length: ${data.text.length} chars, stop_reason: ${data.stopReason}`);
     return {
       summary: data.text,
       providerAnalysis: data.text,
       analysisSource: trimmedText,
       analysisReceipt: data.analysisReceipt || null,
+      configHash: data.configHash,
+      releaseToken: data.releaseToken,
       providerTag: `${provider}${escalate ? '-escalated' : ''}`,
       provider,
       model: typeof data.model === 'string' ? data.model : '',

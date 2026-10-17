@@ -1,7 +1,8 @@
 'use strict';
 
 const { SECTIONS, summarizeRun } = require('./jury-lib');
-const { validateEvidence } = require('./evaluation-lib');
+const { validateEvidence, EVALUATION_PROTOCOL_HASH } = require('./evaluation-lib');
+const { sha256 } = require('./sites-lib');
 
 const DEFAULT_MIN_GAIN = 3;
 const DEFAULT_MAX_HOLDOUT_LOSS = 5;
@@ -120,6 +121,10 @@ function prove({ controlArtifacts, treatmentArtifacts, controlMeta, treatmentMet
     controlRunId: controlMeta && controlMeta.runId || meta.controlRunId || null,
     runId: treatmentMeta && treatmentMeta.runId || meta.runId || null,
     juror,
+    configHash: treatmentMeta && treatmentMeta.configHash || null,
+    controlConfigHash: controlMeta && controlMeta.configHash || null,
+    evaluationProtocolHash: EVALUATION_PROTOCOL_HASH,
+    evidenceHash: sha256({ control: controlArtifacts.map(a => sha256(a)).sort(), treatment: treatmentArtifacts.map(a => sha256(a)).sort() }),
     thresholds: { minGain, maxHoldoutLoss, resamples },
     lessonsHash: treatmentHashes.size === 1 ? [...treatmentHashes][0] : null,
     controlLessonsHashes: [...controlHashes],
@@ -161,6 +166,7 @@ function renderProof(proof) {
   lines.push(`# DIAGNOSTIC evaluation — ${proof.runId || 'treatment'} against ${proof.controlRunId || 'control'}`);
   lines.push('');
   lines.push(proof.summary);
+  lines.push(`Complete configuration: treatment ${proof.configHash || 'missing'}, control ${proof.controlConfigHash || 'missing'}; protocol ${proof.evaluationProtocolHash}; evidence ${proof.evidenceHash}.`);
   if (!proof.evidence.completeAndCompatible) lines.push('Evidence is incomplete or incompatible. Metrics below describe accepted records only and cannot establish an evaluation pass.');
   lines.push('');
   lines.push(`Lesson set ${proof.lessonsHash ? proof.lessonsHash.slice(0, 12) : 'mixed or none'} against control set(s) ${proof.controlLessonsHashes.length ? proof.controlLessonsHashes.map(h => h.slice(0, 12)).join(', ') : 'none recorded'}. Juror ${proof.juror}. ${proof.samples.treatment} treatment verdicts, ${proof.samples.control} control verdicts; treatment cost $${num(proof.cost.treatment, 2)}.`);

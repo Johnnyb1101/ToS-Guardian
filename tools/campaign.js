@@ -3,12 +3,13 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const lib = require('./campaign-lib');
 const refLib = require('./reference-lib');
+const releases = require('./sites-lib');
 
 function usage(code) {
   console.log('Usage:');
   console.log('  node tools/campaign.js go <spec.json>      run a campaign end to end (resumes a stopped one)');
   console.log('  node tools/campaign.js status <name>       print the state and report of a campaign');
-  console.log('A spec names the proxy, the control run, the lessons to create, revise or pin, an optional screen, the proof, and an optional notification url. Nothing is promoted: the report proposes the decision.');
+  console.log('A spec names the proxy, control run, complete treatmentConfigHash, lessons to register, an optional screen, the diagnostic proof, and an optional notification url.');
   process.exit(code);
 }
 
@@ -57,7 +58,7 @@ function runTool(state, label, args, { stream = false } = {}) {
 async function json(baseUrl, method, route, body, attempts = 4) {
   for (let attempt = 1; ; attempt++) {
     try {
-      const response = await fetch(`${baseUrl}${route}`, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+      const response = await fetch(`${baseUrl}${route}`, { method, headers: releases.trainerHeaders({ 'Content-Type': 'application/json' }), body: body ? JSON.stringify(body) : undefined });
       const text = await response.text();
       let data;
       try { data = JSON.parse(text); } catch { data = { raw: text }; }
@@ -98,6 +99,12 @@ const steps = {
     const spec = state.spec;
     const data = await assertNotHalted(spec);
     if (!fs.existsSync(path.join(refLib.RUNS_DIR, spec.control, 'artifacts'))) throw new Error(`control run ${spec.control} has no artifacts`);
+    const controlMetaPath = path.join(refLib.RUNS_DIR, spec.control, 'run.json');
+    const controlMeta = fs.existsSync(controlMetaPath) ? JSON.parse(fs.readFileSync(controlMetaPath, 'utf8')) : null;
+    if (!controlMeta || !releases.checkRelease(controlMeta.release, controlMeta.configHash).valid) throw new Error('control run lacks a complete pinned release');
+    if (spec.controlConfigHash && spec.controlConfigHash !== controlMeta.configHash) throw new Error('controlConfigHash differs from the control run');
+    const treatmentRelease = await releases.fetchRelease(spec.proxy, spec.treatmentConfigHash);
+    if (releases.sha256(controlMeta.release.config.policy) !== releases.sha256(treatmentRelease.config.policy)) throw new Error('control and treatment semantic policy versions differ');
     if (spec.proof.kind === 'critic' && !fs.existsSync(path.join(refLib.RUNS_DIR, spec.proof.source, 'artifacts'))) throw new Error(`critic source run ${spec.proof.source} has no artifacts`);
     const lessonsRoute = await json(spec.proxy, 'GET', '/lessons');
     if (lessonsRoute.status !== 200) throw new Error('the proxy does not expose the lessons routes (TRAINER_OPERATIONS=1 needed)');
@@ -131,19 +138,20 @@ const steps = {
     }
     const { status, data } = await json(spec.proxy, 'GET', '/lessons');
     if (status !== 200) throw new Error('could not list lessons after registration');
-    const known = new Set(data.lessons.map(l => l.id));
-    for (const id of spec.lessons.pin) if (!known.has(id)) throw new Error(`pinned lesson ${id} is not on the proxy`);
-    for (const r of registered) if (data.lessons.find(l => l.id === r.id && l.status === 'retired')) throw new Error(`lesson ${r.id} (${r.candidateId}) is retired on this proxy; a retired lesson cannot be pinned`);
+    for (const r of registered) if (data.lessons.find(l => l.id === r.id && l.status === 'retired')) throw new Error(`lesson ${r.id} (${r.candidateId}) is retired on this proxy`);
+    const release = await releases.fetchRelease(spec.proxy, spec.treatmentConfigHash);
+    const included = new Set(release.config.lessons.map(lesson => lesson.id));
+    for (const r of registered) if (r.underTest && !included.has(r.id)) throw new Error(`registered candidate ${r.candidateId} is absent from the complete treatment release`);
     state.lessons.registered = registered;
-    state.lessons.pinned = [...new Set([...spec.lessons.pin, ...registered.map(r => r.id)])].sort();
-    return { status: 'done', note: `${registered.length} registered, ${state.lessons.pinned.length} pinned` };
+    state.lessons.pinned = [...included].sort();
+    return { status: 'done', note: `${registered.length} registered, ${state.lessons.pinned.length} in the complete release` };
   },
 
   async 'screen-replay'(state) {
     const spec = state.spec;
     await assertNotHalted(spec);
     const ids = lib.runIds(spec);
-    const out = runTool(state, 'screen replay', [path.join(TOOLS, 'reference.js'), 'replay', '--proxy', spec.proxy, '--sites', spec.screen.sites.join(','), '--samples', spec.screen.samples, '--run', ids.screen, '--lessons', state.lessons.pinned.join(','), '--budget', lib.budgetSplit(spec.screen.budget).replay, '--delay', spec.delayMs], { stream: true });
+    const out = runTool(state, 'screen replay', [path.join(TOOLS, 'reference.js'), 'replay', '--proxy', spec.proxy, '--sites', spec.screen.sites.join(','), '--samples', spec.screen.samples, '--run', ids.screen, '--config-hash', spec.treatmentConfigHash, '--budget', lib.budgetSplit(spec.screen.budget).replay, '--delay', spec.delayMs], { stream: true });
     if (out.code !== 0) throw new Error(`screen replay exited ${out.code}`);
     return { status: 'done' };
   },
@@ -177,7 +185,7 @@ const steps = {
     const spec = state.spec;
     await assertNotHalted(spec);
     const ids = lib.runIds(spec);
-    const out = runTool(state, 'proof replay', [path.join(TOOLS, 'reference.js'), 'replay', '--proxy', spec.proxy, '--split', 'all', '--samples', spec.proof.samples, '--run', ids.proof, '--lessons', state.lessons.pinned.join(','), '--budget', lib.budgetSplit(spec.proof.budget).replay, '--delay', spec.delayMs], { stream: true });
+    const out = runTool(state, 'proof replay', [path.join(TOOLS, 'reference.js'), 'replay', '--proxy', spec.proxy, '--split', 'all', '--samples', spec.proof.samples, '--run', ids.proof, '--config-hash', spec.treatmentConfigHash, '--budget', lib.budgetSplit(spec.proof.budget).replay, '--delay', spec.delayMs], { stream: true });
     if (out.code !== 0) throw new Error(`proof replay exited ${out.code}`);
     return { status: 'done' };
   },
@@ -198,7 +206,7 @@ const steps = {
     const out = runTool(state, 'prove', [path.join(TOOLS, 'prove.js'), runDir, '--control', path.join(refLib.RUNS_DIR, spec.control)]);
     if (out.code !== 0 && out.code !== 2) throw new Error(`prove exited ${out.code}`);
     const proof = JSON.parse(fs.readFileSync(path.join(runDir, 'step1a', 'evaluation', 'evaluation.json'), 'utf8'));
-    state.proof = { kind: 'jury', proven: false, diagnosticOnly: true, promotionEligible: false, evaluationPassed: proof.evaluationPassed === true, summary: proof.summary, lessonsHash: proof.lessonsHash, runDir: path.relative(path.join(TOOLS, '..'), runDir).replace(/\\/g, '/'), reportFile: 'step1a/evaluation/evaluation.md' };
+    state.proof = { kind: 'jury', proven: false, diagnosticOnly: true, promotionEligible: false, evaluationPassed: proof.evaluationPassed === true, summary: proof.summary, configHash: proof.configHash, controlConfigHash: proof.controlConfigHash, evaluationProtocolHash: proof.evaluationProtocolHash, evidenceHash: proof.evidenceHash, lessonsHash: proof.lessonsHash, runDir: path.relative(path.join(TOOLS, '..'), runDir).replace(/\\/g, '/'), reportFile: 'step1a/evaluation/evaluation.md' };
     state.decision = proof.evaluationPassed ? 'evaluation-passed' : 'evaluation-failed';
     return { status: 'done', note: state.decision };
   },
@@ -207,7 +215,7 @@ const steps = {
     const spec = state.spec;
     await assertNotHalted(spec);
     const ids = lib.runIds(spec);
-    const out = runTool(state, 'critic replay', [path.join(TOOLS, 'critic-replay.js'), path.join(refLib.RUNS_DIR, spec.proof.source), '--proxy', spec.proxy, '--run', ids.critic, '--lessons', state.lessons.pinned.join(','), '--budget', spec.proof.budget], { stream: true });
+    const out = runTool(state, 'critic replay', [path.join(TOOLS, 'critic-replay.js'), path.join(refLib.RUNS_DIR, spec.proof.source), '--proxy', spec.proxy, '--run', ids.critic, '--config-hash', spec.treatmentConfigHash, '--budget', spec.proof.budget], { stream: true });
     if (out.code !== 0) throw new Error(`critic replay exited ${out.code}`);
     state.cost.proof = artifactsCost(path.join(refLib.RUNS_DIR, ids.critic));
     return { status: 'done', note: `$${state.cost.proof.toFixed(2)}` };

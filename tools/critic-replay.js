@@ -3,32 +3,25 @@ const path = require('path');
 const { resolveProxyTarget, estimateCost, budgetExceeded } = require('./batch-lib');
 const { createPipelineHost, withTimeout } = require('./pipeline-host');
 const lib = require('./reference-lib');
-const { composeCriticArtifact, concernCount } = require('./critic-lib');
+const { composeCriticArtifact, concernCount, CRITIC_DIAGNOSTIC_PROTOCOL, CRITIC_DIAGNOSTIC_PROTOCOL_HASH } = require('./critic-lib');
+const releases = require('./sites-lib');
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 function usage(code) {
-  console.log('Usage: node tools/critic-replay.js <sourceRunDir> --proxy <url> --run <runId> --lessons none|<ids> [--juror anthropic] [--sites a,b] [--limit n] [--budget $] [--delay ms] [--timeout ms] [--force] [--verbose]');
+  console.log('Usage: node tools/critic-replay.js <sourceRunDir> --proxy <url> --run <runId> --config-hash <hash> [--juror anthropic] [--sites a,b] [--limit n] [--budget $] [--delay ms] [--timeout ms] [--force] [--verbose]');
   console.log('Re-runs only the critic over the analyses stored in a graded run, so critic lessons can be compared against the same jury verdicts.');
   process.exit(code);
 }
 
-function parseLessons(value) {
-  const raw = String(value || '').trim();
-  if (raw === 'none') return 'none';
-  const ids = raw.split(',').map(s => s.trim()).filter(Boolean);
-  if (ids.length && ids.every(id => /^lsn_[0-9a-f]{16}$/.test(id))) return { ids };
-  console.error('--lessons must be none or a comma-separated list of lesson ids');
-  process.exit(1);
-}
-
 function parseArgs(args) {
-  const opts = { source: null, proxy: null, run: null, lessons: null, juror: 'anthropic', sites: null, limit: Infinity, budget: null, delay: 5500, timeout: 120000, force: false, verbose: false };
+  const opts = { source: null, proxy: null, run: null, configHash: null, juror: 'anthropic', sites: null, limit: Infinity, budget: null, delay: 5500, timeout: 120000, force: false, verbose: false };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--proxy') opts.proxy = args[++i];
     else if (a === '--run') opts.run = args[++i];
-    else if (a === '--lessons') opts.lessons = parseLessons(args[++i]);
+    else if (a === '--config-hash') opts.configHash = args[++i];
+    else if (a === '--lessons') throw new Error('Per-lesson critic replay selection is retired; use --config-hash for a complete release');
     else if (a === '--juror') opts.juror = args[++i];
     else if (a === '--sites') opts.sites = String(args[++i]).split(',').map(s => s.trim()).filter(Boolean);
     else if (a === '--limit') opts.limit = Number(args[++i]);
@@ -40,7 +33,8 @@ function parseArgs(args) {
     else if (a.startsWith('--')) { console.error(`Unknown option: ${a}`); process.exit(1); }
     else opts.source = a;
   }
-  if (!opts.source || !opts.run || opts.lessons === null) usage(1);
+  if (!opts.source || !opts.run || !opts.configHash) usage(1);
+  if (!/^[a-f0-9]{64}$/.test(opts.configHash)) throw new Error('--config-hash must be a 64-character lowercase SHA-256 hash');
   if (opts.budget !== null && !(Number.isFinite(opts.budget) && opts.budget > 0)) { console.error('--budget must be a positive dollar amount.'); process.exit(1); }
   return opts;
 }
@@ -76,7 +70,9 @@ async function criticOne(host, source, opts, runId) {
   const criticFailed = !!(critic && critic.failed);
   const evaluation = ctx.capForUnverifiedCritic(ctx.validateEvaluation(ctx.evaluateAnalysis(source.summary, criticFailed ? null : critic)), criticFailed);
   const { cost, unpriced } = estimateCost(state.usage);
-  return composeCriticArtifact(source, { runId, critic: critic && typeof critic === 'object' ? { ...critic } : critic, evaluation, usage: state.usage, cost, unpriced, error, durationMs: Date.now() - t0, startedAt });
+  const criticConfig = state.evidence.filter(e => e.operation === 'critic').map(({ provider, model, promptHash, lessonsHash, docType, configHash }) => ({ provider, model, promptHash, lessonsHash, docType, configHash })).pop() || null;
+  const criticClientPolicyHash = state.evidence.filter(e => e.operation === 'critic').map(e => e.clientPolicyHash).pop() || null;
+  return composeCriticArtifact(source, { runId, configHash: opts.configHash, criticConfig, criticClientPolicyHash, critic: critic && typeof critic === 'object' ? { ...critic } : critic, evaluation, usage: state.usage, cost, unpriced, error, durationMs: Date.now() - t0, startedAt });
 }
 
 async function runCriticReplay(args) {
@@ -84,10 +80,12 @@ async function runCriticReplay(args) {
   const target = resolveProxyTarget({ proxy: opts.proxy, env: process.env });
   if (target.error) { console.error(target.error); process.exit(1); }
   if (target.isProduction) { console.error('Critic replay runs against the dev proxy only.'); process.exit(1); }
+  const release = await releases.fetchRelease(target.url, opts.configHash);
 
   const sourceDir = path.resolve(opts.source);
   const sourceMetaPath = path.join(sourceDir, 'run.json');
-  const sourceRunId = fs.existsSync(sourceMetaPath) ? JSON.parse(fs.readFileSync(sourceMetaPath, 'utf8')).runId || path.basename(sourceDir) : path.basename(sourceDir);
+  const sourceMeta = fs.existsSync(sourceMetaPath) ? JSON.parse(fs.readFileSync(sourceMetaPath, 'utf8')) : {};
+  const sourceRunId = sourceMeta.runId || path.basename(sourceDir);
   const sources = loadSourceArtifacts(sourceDir, opts);
   const jobs = sources.filter(s => s.eligible).slice(0, opts.limit);
   if (!jobs.length) { console.error('No graded analyses to re-check in the source run.'); process.exit(1); }
@@ -96,18 +94,22 @@ async function runCriticReplay(args) {
   const artifactsDir = path.join(runDir, 'artifacts');
   fs.mkdirSync(artifactsDir, { recursive: true });
   const metaPath = path.join(runDir, 'run.json');
+  const options = { configHash: opts.configHash, juror: opts.juror, sites: opts.sites, limit: Number.isFinite(opts.limit) ? opts.limit : null };
   const meta = fs.existsSync(metaPath) ? JSON.parse(fs.readFileSync(metaPath, 'utf8')) : {
-    v: 1, runId: opts.run, startedAt: new Date().toISOString(), proxy: target.url, criticOf: sourceRunId,
-    options: { lessons: opts.lessons, juror: opts.juror, sites: opts.sites, limit: Number.isFinite(opts.limit) ? opts.limit : null },
+    v: 2, runId: opts.run, startedAt: new Date().toISOString(), proxy: target.url, criticOf: sourceRunId, sourceConfigHash: sourceMeta.configHash || null,
+    configHash: opts.configHash, release, evaluationProtocol: CRITIC_DIAGNOSTIC_PROTOCOL, evaluationProtocolHash: CRITIC_DIAGNOSTIC_PROTOCOL_HASH,
+    options,
     sites: [...new Set(jobs.map(j => j.artifact.domain))]
   };
-  fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + '\n', 'utf8');
+  if (meta.runId !== opts.run || meta.proxy !== target.url || meta.configHash !== opts.configHash || meta.evaluationProtocolHash !== CRITIC_DIAGNOSTIC_PROTOCOL_HASH || JSON.stringify(meta.release) !== JSON.stringify(release) || JSON.stringify(meta.options) !== JSON.stringify(options)) throw new Error('Critic replay declaration changed or historical run lacks release metadata; use a new run id');
 
-  const host = createPipelineHost({ proxyUrl: target.url, cache: false, write: false, critic: true, escalate: false, lessonSet: opts.lessons, runTag: opts.run, onLog: opts.verbose ? (line) => console.log('  ' + line) : null });
+  const host = createPipelineHost({ proxyUrl: target.url, cache: false, write: false, critic: true, escalate: false, configHash: opts.configHash, expectedClientPolicyHash: release.config.policy.versions.pipeline, runTag: opts.run, onLog: opts.verbose ? (line) => console.log('  ' + line) : null });
+  if (await host.clientPolicyHash !== release.config.policy.versions.pipeline) throw new Error('Client pipeline policy hash differs from the complete release');
+  fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + '\n', 'utf8');
 
   console.log(`TOS Guardian critic replay — ${jobs.length} analyses from ${sourceRunId} (${sources.length - jobs.length} skipped), proxy ${target.url}`);
   console.log(`  run: ${runDir}`);
-  console.log(`  lessons: ${opts.lessons === 'none' ? 'none' : opts.lessons.ids.join(',')} | budget: ${opts.budget === null ? 'none' : `$${opts.budget.toFixed(2)}`} | delay ${opts.delay}ms`);
+  console.log(`  config: ${opts.configHash} | budget: ${opts.budget === null ? 'none' : `$${opts.budget.toFixed(2)}`} | delay ${opts.delay}ms`);
   console.log('');
 
   let totalCost = 0;

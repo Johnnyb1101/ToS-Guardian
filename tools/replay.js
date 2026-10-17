@@ -5,22 +5,15 @@ const { createPipelineHost, withTimeout } = require('./pipeline-host');
 const Episode = require('../episode');
 const lib = require('./reference-lib');
 const { SECTIONS } = require('./jury-lib');
+const releases = require('./sites-lib');
+const { hash, EVALUATION_PROTOCOL, EVALUATION_PROTOCOL_HASH } = require('./evaluation-lib');
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
-function parseLessonsOption(value) {
-  const raw = String(value || '').trim();
-  if (['none', 'promoted', 'canary'].includes(raw)) return raw;
-  const ids = raw.split(',').map(s => s.trim()).filter(Boolean);
-  if (ids.length && ids.every(id => /^lsn_[0-9a-f]{16}$/.test(id))) return { ids };
-  console.error('--lessons must be none, promoted, canary, or a comma-separated list of lesson ids');
-  process.exit(1);
-}
 
 function parseArgs(args) {
   const opts = {
     proxy: null, split: 'work', type: null, sites: null, limit: Infinity, samples: 1, includeShells: false,
-    budget: null, delay: 12000, timeout: 180000, run: null, escalate: false, force: false, verbose: false, lessons: null
+    budget: null, delay: 12000, timeout: 180000, run: null, escalate: false, force: false, verbose: false, configHash: null
   };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -36,7 +29,8 @@ function parseArgs(args) {
     else if (a === '--timeout') opts.timeout = Number(args[++i]);
     else if (a === '--run') opts.run = args[++i];
     else if (a === '--escalate') opts.escalate = true;
-    else if (a === '--lessons') opts.lessons = parseLessonsOption(args[++i]);
+    else if (a === '--config-hash') opts.configHash = args[++i];
+    else if (a === '--lessons') throw new Error('Per-lesson replay selection is retired; use --config-hash for a complete release');
     else if (a === '--force') opts.force = true;
     else if (a === '--verbose') opts.verbose = true;
     else { console.error(`Unknown option: ${a}`); process.exit(1); }
@@ -44,6 +38,7 @@ function parseArgs(args) {
   if (!['work', 'holdout', 'all'].includes(opts.split)) { console.error('--split must be work, holdout, or all'); process.exit(1); }
   if (!(Number.isInteger(opts.samples) && opts.samples > 0)) { console.error('--samples must be a positive integer'); process.exit(1); }
   if (opts.budget !== null && !(Number.isFinite(opts.budget) && opts.budget > 0)) { console.error('--budget must be a positive dollar amount.'); process.exit(1); }
+  if (opts.configHash !== null && !/^[a-f0-9]{64}$/.test(opts.configHash)) throw new Error('--config-hash must be a 64-character lowercase SHA-256 hash');
   return opts;
 }
 
@@ -71,6 +66,8 @@ function loadFrozen(entry) {
 
 function stubPipeline(host) {
   const ctx = host.context;
+  if (!/^[a-f0-9]{64}$/.test(host.configHash || '')) throw new Error('Frozen replay requires a complete configHash');
+  ctx.beginReleaseSession = async () => ({ configHash: host.configHash, releaseToken: null });
   const frozenOf = () => {
     const state = host.runState.getStore();
     return state && state.frozen ? state.frozen : null;
@@ -111,16 +108,19 @@ function evaluationSet(entries, samples) {
   return entries.map(entry => ({ domain: entry.domain, split: entry.split === 'holdout' ? 'validation' : entry.split, docType: lib.effectiveType(entry), textHash: entry.textHash, samples: Array.from({ length: samples }, (_, i) => i + 1) }));
 }
 
-function replayMeta(existing, entries, opts, runId, proxy, manifestUpdatedAt) {
+function replayMeta(existing, entries, opts, runId, proxy, manifestUpdatedAt, release) {
+  if (!/^[a-f0-9]{64}$/.test(opts.configHash || '')) throw new Error('Replay declaration requires a complete configHash');
+  const releaseCheck = releases.checkRelease(release, opts.configHash);
+  if (!releaseCheck.valid) throw new Error(releaseCheck.reason);
   const declared = evaluationSet(entries, opts.samples);
-  const options = { split: opts.split, type: opts.type, sites: opts.sites, limit: Number.isFinite(opts.limit) ? opts.limit : null, samples: opts.samples, includeShells: opts.includeShells, escalate: opts.escalate, lessons: opts.lessons };
+  const options = { split: opts.split, type: opts.type, sites: opts.sites, limit: Number.isFinite(opts.limit) ? opts.limit : null, samples: opts.samples, includeShells: opts.includeShells, escalate: opts.escalate, configHash: opts.configHash };
   if (existing) {
-    if (existing.runId !== runId || existing.proxy !== proxy || JSON.stringify(existing.evaluationSet) !== JSON.stringify(declared) || JSON.stringify(existing.options) !== JSON.stringify(options)) {
+    if (existing.runId !== runId || existing.proxy !== proxy || existing.configHash !== opts.configHash || existing.evaluationProtocolHash !== EVALUATION_PROTOCOL_HASH || JSON.stringify(existing.release) !== JSON.stringify(release) || JSON.stringify(existing.evaluationSet) !== JSON.stringify(declared) || JSON.stringify(existing.options) !== JSON.stringify(options)) {
       throw new Error('Replay declaration or options changed, or historical run lacks evaluation metadata; use a new run id.');
     }
     return existing;
   }
-  return { v: 2, runId, startedAt: new Date().toISOString(), proxy, manifestUpdatedAt, options, sites: entries.map(e => e.domain), evaluationSet: declared };
+  return { v: 3, runId, startedAt: new Date().toISOString(), proxy, manifestUpdatedAt, configHash: opts.configHash, release, evaluationProtocol: EVALUATION_PROTOCOL, evaluationProtocolHash: EVALUATION_PROTOCOL_HASH, options, sites: entries.map(e => e.domain), evaluationSet: declared };
 }
 
 async function replayOne(host, entry, frozen, sample, opts, runId) {
@@ -158,6 +158,8 @@ async function replayOne(host, entry, frozen, sample, opts, runId) {
     split: entry.split,
     docType: lib.effectiveType(entry),
     textHash: entry.textHash,
+    configHash: opts.configHash || null,
+    evaluationProtocolHash: EVALUATION_PROTOCOL_HASH,
     episodeId,
     startedAt,
     durationMs,
@@ -178,7 +180,7 @@ async function replayOne(host, entry, frozen, sample, opts, runId) {
     analysisSource: result && typeof result.analysisSource === 'string' ? result.analysisSource : null,
     summary: result && typeof result.summary === 'string' ? result.summary : null,
     critic,
-    criticConfig: state.evidence.filter(e => e.operation === 'critic').map(({ model, promptHash, lessonsHash }) => ({ model, promptHash, lessonsHash })).pop() || null,
+    criticConfig: state.evidence.filter(e => e.operation === 'critic').map(({ provider, model, promptHash, lessonsHash, docType, configHash }) => ({ provider, model, promptHash, lessonsHash, ...(docType ? { docType } : {}), ...(configHash ? { configHash } : {}) })).pop() || null,
     verdict: verdict ? {
       label: verdict.label,
       score: verdict.score,
@@ -195,6 +197,14 @@ async function replayOne(host, entry, frozen, sample, opts, runId) {
     logTail: state.logs.slice(-8),
     jury: {}
   };
+  artifact.analyzerConfigHash = state.evidence.filter(e => e.operation === 'analyzer').map(e => e.configHash).pop() || null;
+  artifact.clientPolicyHash = state.evidence.filter(e => e.operation === 'analyzer').map(e => e.clientPolicyHash).pop() || null;
+  artifact.criticClientPolicyHash = state.evidence.filter(e => e.operation === 'critic').map(e => e.clientPolicyHash).pop() || null;
+  artifact.evidenceHashes = {
+    analysisSource: typeof artifact.analysisSource === 'string' ? hash(artifact.analysisSource) : null,
+    summary: typeof artifact.summary === 'string' ? hash(artifact.summary) : null,
+    critic: artifact.critic ? releases.sha256(artifact.critic) : null
+  };
   return { artifact, episode: episodeCheck.valid ? episode : null, episodeErrors: episodeCheck.errors };
 }
 
@@ -203,6 +213,8 @@ async function runReplay(args) {
   const target = resolveProxyTarget({ proxy: opts.proxy, env: process.env });
   if (target.error) { console.error(target.error); process.exit(1); }
   if (target.isProduction) { console.error('Replay runs against the dev proxy only.'); process.exit(1); }
+  if (!opts.configHash) throw new Error('Replay requires --config-hash for a complete immutable release');
+  const release = await releases.fetchRelease(target.url, opts.configHash);
 
   const manifest = lib.loadManifest();
   const entries = selectSites(manifest, opts);
@@ -213,13 +225,14 @@ async function runReplay(args) {
   const artifactsDir = path.join(runDir, 'artifacts');
   fs.mkdirSync(artifactsDir, { recursive: true });
   const metaPath = path.join(runDir, 'run.json');
-  const meta = replayMeta(fs.existsSync(metaPath) ? JSON.parse(fs.readFileSync(metaPath, 'utf8')) : null, entries, opts, runId, target.url, manifest.updatedAt);
-  fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + '\n', 'utf8');
+  const meta = replayMeta(fs.existsSync(metaPath) ? JSON.parse(fs.readFileSync(metaPath, 'utf8')) : null, entries, opts, runId, target.url, manifest.updatedAt, release);
 
   const host = createPipelineHost({
-    proxyUrl: target.url, cache: false, write: false, critic: true, escalate: opts.escalate, lessonSet: opts.lessons, runTag: runId,
+    proxyUrl: target.url, cache: false, write: false, critic: true, escalate: opts.escalate, configHash: opts.configHash, expectedClientPolicyHash: release.config.policy.versions.pipeline, runTag: runId,
     onLog: opts.verbose ? (line) => console.log('  ' + line) : null
   });
+  if (await host.clientPolicyHash !== release.config.policy.versions.pipeline) throw new Error('Client pipeline policy hash differs from the complete release');
+  fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + '\n', 'utf8');
   stubPipeline(host);
 
   const jobs = [];
@@ -227,7 +240,7 @@ async function runReplay(args) {
 
   console.log(`TOS Guardian replay — ${entries.length} site(s) x ${opts.samples} sample(s), proxy ${target.url}`);
   console.log(`  run: ${runDir}`);
-  console.log(`  escalation: ${opts.escalate ? 'ON' : 'off'} | lessons: ${opts.lessons === null ? 'proxy default' : typeof opts.lessons === 'string' ? opts.lessons : opts.lessons.ids.join(',')} | budget: ${opts.budget === null ? 'none' : `$${opts.budget.toFixed(2)}`} | delay ${opts.delay}ms`);
+  console.log(`  escalation: ${opts.escalate ? 'ON' : 'off'} | config: ${opts.configHash} | budget: ${opts.budget === null ? 'none' : `$${opts.budget.toFixed(2)}`} | delay ${opts.delay}ms`);
   console.log('');
 
   let totalCost = 0;

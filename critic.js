@@ -95,8 +95,12 @@ ${trimmedSource}`;
     let criticModel = '';
     let criticUsage = null;
     let criticLessonsHash = '';
+    let criticConfigHash = '';
 
     if (provider === 'anthropic' || provider === 'openai') {
+      if (provenance && !validReleasePin(provenance)) {
+        return { failed: true, _reason: 'invalid-release-pin' };
+      }
       // Relay through the proxy — no API key in the browser (audit refactor #5).
       // NOT escalated: the critic always runs on the provider's default (cheap)
       // model, which the proxy's llmRelay.js model map keeps in sync with
@@ -109,6 +113,11 @@ ${trimmedSource}`;
           provider,
           analysisSummary,
           sourceText: trimmedSource,
+          clientPolicyHash: await clientPolicyHash(),
+          ...(provenance?.configHash ? {
+            configHash: provenance.configHash,
+            releaseToken: provenance.releaseToken
+          } : {}),
           ...(provenance?.analysisReceipt && provenance?.providerAnalysis && provenance?.cacheContext
             ? {
                 analysisReceipt: provenance.analysisReceipt,
@@ -134,7 +143,13 @@ ${trimmedSource}`;
         const code = typeof data.error === 'string' ? data.error.slice(0, 60) : 'unknown';
         return { failed: true, _reason: `relay-error:${response.status}:${code}` };
       }
+      if (!/^[a-f0-9]{64}$/.test(data.configHash) ||
+          (provenance?.configHash && data.configHash !== provenance.configHash)) {
+        console.warn('[Critic] Relay returned an invalid or inconsistent release hash');
+        return { failed: true, _reason: 'release-mismatch' };
+      }
       responseText = data.text;
+      criticConfigHash = data.configHash;
       stopReason = data.stopReason; // "end_turn" | "max_tokens" | "stop" | "length" | ...
       writeReceipt = data.writeReceipt || null;
       criticModel = typeof data.model === 'string' ? data.model : '';
@@ -229,6 +244,7 @@ ${trimmedSource}`;
 
     applyDeterministicGrounding(verdict, analysisSummary, sourceText);
     verdict._writeReceipt = writeReceipt;
+    verdict._configHash = criticConfigHash;
     // For the episode log (learning loop, phase 0); underscore-prefixed like
     // _writeReceipt so the verdict fields stay the six section names.
     verdict._model = criticModel;

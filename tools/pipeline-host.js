@@ -3,13 +3,16 @@
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const crypto = require('crypto');
 const { AsyncLocalStorage } = require('async_hooks');
 const { usageRecordFromProxyResponse, applyProxyOverride } = require('./batch-lib');
+const { trainerHeaders } = require('./sites-lib');
 
 const EXTENSION_FILES = Object.freeze([
   'vendor/tldts-7.4.8.umd.min.js', 'tosUtils.js', 'evaluator.js', 'critic.js',
   'siteDatabase.js', 'episode.js', 'community.js', 'orchestrator.js', 'background.js'
 ]);
+const POLICY_SOURCE_FILES = Object.freeze([...EXTENSION_FILES, 'content.js', 'manifest.json']);
 
 const DIRECT_FETCH_HEADERS = Object.freeze({
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36',
@@ -30,12 +33,15 @@ function createPipelineHost(options) {
     escalate: false,
     storage: {},
     onLog: null,
-    lessonSet: null,
+    configHash: null,
+    expectedClientPolicyHash: null,
     repoRoot: path.resolve(__dirname, '..')
   }, options || {});
   if (typeof opts.proxyUrl !== 'string' || !/^https?:\/\//.test(opts.proxyUrl)) {
     throw new Error('createPipelineHost needs an explicit http(s) proxyUrl');
   }
+  if (options && Object.hasOwn(options, 'lessonSet')) throw new Error('Per-lesson host selection is retired; pin a complete configHash');
+  if (opts.configHash !== null && !/^[a-f0-9]{64}$/.test(opts.configHash)) throw new Error('createPipelineHost needs a valid configHash');
 
   const runState = new AsyncLocalStorage();
   const realFetch = globalThis.fetch;
@@ -48,23 +54,27 @@ function createPipelineHost(options) {
     if (state && state.controller && !finalOptions.signal) finalOptions.signal = state.controller.signal;
     if (target !== analyzeUrl) return realFetch(url, finalOptions);
     if (state) state.llmCalls++;
-    if (opts.runTag) finalOptions.headers = { ...(finalOptions.headers || {}), 'X-Trainer-Run': String(opts.runTag) };
-    if (opts.lessonSet !== null && typeof finalOptions.body === 'string') {
-      try {
-        const body = JSON.parse(finalOptions.body);
-        if (body && (body.operation === 'analyzer' || body.operation === 'critic')) {
-          body.lessonSet = opts.lessonSet;
-          finalOptions.body = JSON.stringify(body);
+    finalOptions.headers = trainerHeaders(opts.runTag ? { ...(finalOptions.headers || {}), 'X-Trainer-Run': String(opts.runTag) } : finalOptions.headers || {});
+    if (opts.configHash !== null && typeof finalOptions.body === 'string') {
+      let body;
+      try { body = JSON.parse(finalOptions.body); } catch (e) { body = null; }
+      if (body && (body.operation === 'analyzer' || body.operation === 'critic')) {
+        if (opts.configHash !== null) {
+          if (body.configHash && body.configHash !== opts.configHash) throw new Error(`Request configHash mismatch for ${body.operation}`);
+          if (!body.releaseToken) body.configHash = opts.configHash;
         }
-      } catch (e) { /* not a json body */ }
+        finalOptions.body = JSON.stringify(body);
+      }
     }
+    const request = typeof finalOptions.body === 'string' ? JSON.parse(finalOptions.body) : {};
+    if (opts.expectedClientPolicyHash !== null && (request.operation === 'analyzer' || request.operation === 'critic') && request.clientPolicyHash !== opts.expectedClientPolicyHash) throw new Error(`Client pipeline policy hash mismatch for ${request.operation}`);
     const response = await realFetch(url, finalOptions);
     const data = await response.json().catch(() => ({}));
+    if (response.ok && opts.configHash !== null && (request.operation === 'analyzer' || request.operation === 'critic') && data.configHash !== opts.configHash) throw new Error(`Proxy response configHash mismatch for ${request.operation}`);
     if (state && response.ok) {
       const record = usageRecordFromProxyResponse(data);
       if (record) state.usage.push(record);
-      const request = typeof finalOptions.body === 'string' ? JSON.parse(finalOptions.body) : {};
-      state.evidence.push({ operation: request.operation, model: data.model || '', promptHash: data.promptHash || '', lessonsHash: data.lessonsHash || '' });
+      state.evidence.push({ operation: request.operation, provider: request.provider || '', model: data.model || '', promptHash: data.promptHash || '', lessonsHash: data.lessonsHash || '', docType: data.docType || '', configHash: data.configHash || '', clientPolicyHash: request.clientPolicyHash || '' });
     }
     // analyzeWithModel and runCritic read only ok, status, and json from a response
     return { ok: response.ok, status: response.status, json: async () => data };
@@ -145,6 +155,7 @@ function createPipelineHost(options) {
     if (typeof opts.onLog === 'function') opts.onLog(line);
   }
 
+  const originalSources = Object.fromEntries(POLICY_SOURCE_FILES.map(file => [file, fs.readFileSync(path.join(opts.repoRoot, file), 'utf8')]));
   const context = {
     console: {
       log: (...a) => logLine('log', a),
@@ -153,9 +164,12 @@ function createPipelineHost(options) {
     },
     URL,
     Date,
+    TextEncoder,
     setTimeout,
     clearTimeout,
     AbortController,
+    crypto: crypto.webcrypto,
+    __TG_POLICY_SOURCES: originalSources,
     fetch: trackedFetch,
     importScripts: () => {},
     chrome: undefined,
@@ -168,10 +182,13 @@ function createPipelineHost(options) {
   vm.createContext(context);
 
   for (const file of EXTENSION_FILES) {
-    let source = fs.readFileSync(path.join(opts.repoRoot, file), 'utf8');
+    let source = originalSources[file];
     if (file === 'background.js') source = applyProxyOverride(source, opts.proxyUrl);
     vm.runInContext(source, context, { filename: file });
   }
+
+  // Hash the original packaged sources before the frozen host replaces helpers.
+  const clientPolicyHash = context.clientPolicyHash();
 
   // function declarations in the extension files land on the context global, so
   // assigning here replaces them for every caller inside the pipeline
@@ -221,6 +238,8 @@ function createPipelineHost(options) {
 
   return {
     context,
+    configHash: opts.configHash,
+    clientPolicyHash,
     runState,
     storageData,
     analyzeUrl,
@@ -279,4 +298,4 @@ function domainsFromInputs(inputs, onWarn) {
   return sitesFromInputs(inputs, onWarn).map(site => site.domain);
 }
 
-module.exports = { EXTENSION_FILES, createPipelineHost, newRunState, withTimeout, sitesFromInputs, domainsFromInputs };
+module.exports = { EXTENSION_FILES, POLICY_SOURCE_FILES, createPipelineHost, newRunState, withTimeout, sitesFromInputs, domainsFromInputs };

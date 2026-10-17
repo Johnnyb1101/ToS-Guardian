@@ -3,6 +3,7 @@ const path = require('path');
 const { resolveProxyTarget, usageRecordFromProxyResponse, estimateCost, budgetExceeded } = require('./batch-lib');
 const J = require('./jury-lib');
 const { sha256Hex } = require('./reference-lib');
+const { trainerHeaders } = require('./sites-lib');
 
 const args = process.argv.slice(2);
 const command = args.shift();
@@ -64,7 +65,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 async function askJury(proxyUrl, artifact) {
   const response = await fetch(`${proxyUrl}/v2/analyze`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: trainerHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ operation: 'jury', provider: opts.juror, analysisSummary: artifact.summary, sourceText: artifact.analysisSource })
   });
   const data = await response.json().catch(() => ({}));

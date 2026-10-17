@@ -14,13 +14,13 @@ function loadArtifacts(runDir) {
   return fs.readdirSync(dir).filter(f => f.endsWith('.json')).sort().map(f => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')));
 }
 
-function runIdOf(runDir) {
+function metaOf(runDir) {
   const metaPath = path.join(runDir, 'run.json');
   if (fs.existsSync(metaPath)) {
     const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-    if (typeof meta.runId === 'string') return meta.runId;
+    return meta;
   }
-  return path.basename(runDir);
+  return { runId: path.basename(runDir) };
 }
 
 const argv = process.argv.slice(2);
@@ -52,17 +52,11 @@ const proof = proveCritic({
   maxFalseAlarmRise: opts.maxFalseAlarmRise,
   maxFailureRise: opts.maxFailureRise,
   maxHoldoutLoss: opts.maxHoldoutLoss,
-  meta: { runId: runIdOf(treatment), controlRunId: runIdOf(control) }
+  meta: { runId: metaOf(treatment).runId, controlRunId: metaOf(control).runId, configHash: metaOf(treatment).configHash || null, controlConfigHash: metaOf(control).configHash || null }
 });
-proof.legacyCriteriaPassed = proof.proven;
-proof.evaluationPassed = false;
-proof.proven = false;
-proof.diagnosticOnly = true;
-proof.promotionEligible = false;
-proof.summary = `Diagnostic critic comparison: legacy criteria ${proof.legacyCriteriaPassed ? 'passed' : 'failed'}${proof.reasons.length ? ` (${proof.reasons.join('; ')})` : ''}. This comparison does not satisfy the Step 1A evidence contract. Promotion is disabled pending Step 1B.`;
 fs.mkdirSync(out, { recursive: true });
 fs.writeFileSync(path.join(out, 'evaluation.json'), JSON.stringify(proof, null, 2) + '\n', 'utf8');
-const markdown = renderCriticProof(proof).replace('# Critic proof', '# Diagnostic critic comparison').replace('Rule: proven when', 'Legacy statistical criteria:').replace('## Why not proven', '## Legacy comparison failures');
+const markdown = renderCriticProof(proof);
 fs.writeFileSync(path.join(out, 'evaluation.md'), markdown, 'utf8');
 console.log(markdown);
 console.log(`Written to ${path.join(out, 'evaluation.md')}`);

@@ -3,6 +3,9 @@
 const crypto = require('crypto');
 const { SECTIONS, summarizeRun, parseJuryJson, normalizeVerdict } = require('./jury-lib');
 const { mean, bootstrapMeanInterval, DEFAULT_RESAMPLES, num, signed, pct } = require('./prove-lib');
+const releases = require('./sites-lib');
+const CRITIC_DIAGNOSTIC_PROTOCOL = Object.freeze({ v: 1, kind: 'historical-critic-diagnostic', approvalEligible: false });
+const CRITIC_DIAGNOSTIC_PROTOCOL_HASH = releases.sha256(CRITIC_DIAGNOSTIC_PROTOCOL);
 
 const DEFAULT_MIN_CATCH_GAIN = 0.10;
 const DEFAULT_MAX_FALSE_ALARM_RISE = 0.10;
@@ -45,6 +48,17 @@ function composeCriticArtifact(source, result) {
     split: source.split,
     docType: source.docType,
     textHash: source.textHash,
+    configHash: result.configHash || null,
+    evaluationProtocolHash: CRITIC_DIAGNOSTIC_PROTOCOL_HASH,
+    analyzerConfigHash: source.analyzerConfigHash || source.configHash || null,
+    clientPolicyHash: source.clientPolicyHash || null,
+    criticClientPolicyHash: result.criticClientPolicyHash || null,
+    criticConfig: result.criticConfig || null,
+    evidenceHashes: {
+      analysisSource: typeof source.analysisSource === 'string' ? sha256(source.analysisSource) : null,
+      summary: typeof source.summary === 'string' ? sha256(source.summary) : null,
+      critic: result.critic ? releases.sha256(result.critic) : null
+    },
     episodeId: source.episodeId,
     startedAt: result.startedAt,
     durationMs: result.durationMs,
@@ -191,7 +205,7 @@ function proveCritic({ controlArtifacts, treatmentArtifacts, juror = 'anthropic'
   const treatmentHashes = new Set(Object.values(treatment.sites).flatMap(s => s.lessonsHashes));
   const controlHashSet = new Set(Object.values(control.sites).flatMap(s => s.lessonsHashes));
   if (treatmentHashes.size !== 1) reasons.push(`treatment critic ran under ${treatmentHashes.size} lesson sets; a proof needs exactly one`);
-  const proven = reasons.length === 0;
+  const legacyCriteriaPassed = reasons.length === 0;
   const flips = labelFlips(treatment);
   return {
     v: 1,
@@ -199,6 +213,10 @@ function proveCritic({ controlArtifacts, treatmentArtifacts, juror = 'anthropic'
     provenAt: new Date().toISOString(),
     controlRunId: meta.controlRunId || null,
     runId: meta.runId || null,
+    configHash: meta.configHash || null,
+    controlConfigHash: meta.controlConfigHash || null,
+    evaluationProtocolHash: CRITIC_DIAGNOSTIC_PROTOCOL_HASH,
+    evidenceHash: releases.sha256({ control: controlArtifacts.map(a => releases.sha256(a)).sort(), treatment: treatmentArtifacts.map(a => releases.sha256(a)).sort() }),
     juror,
     thresholds: { minCatchGain, maxFalseAlarmRise, maxFailureRise, maxHoldoutLoss, resamples },
     lessonsHash: treatmentHashes.size === 1 ? [...treatmentHashes][0] : null,
@@ -208,23 +226,25 @@ function proveCritic({ controlArtifacts, treatmentArtifacts, juror = 'anthropic'
     failure,
     labelFlips: flips,
     metrics,
-    proven,
+    legacyCriteriaPassed,
+    evaluationPassed: false,
+    proven: false,
+    diagnosticOnly: true,
+    promotionEligible: false,
     reasons,
-    summary: proven
-      ? `Proven: critic catch rate ${signed(catchRate.work.mean * 100, 0)} pts on ${catchRate.work.n} work sites (95% ${num(catchRate.work.lower * 100, 0)} to ${num(catchRate.work.upper * 100, 0)}), false alarms ${signed(falseAlarm.all.mean * 100, 0)} pts, holdout ${catchRate.holdout.n ? `${signed(catchRate.holdout.mean * 100, 0)} pts on ${catchRate.holdout.n}` : 'not compared'}.`
-      : `Not proven: ${reasons.join('; ')}.`
+    summary: `Diagnostic critic comparison: legacy criteria ${legacyCriteriaPassed ? 'passed' : 'failed'}${reasons.length ? ` (${reasons.join('; ')})` : ''}. This comparison cannot authorize a release.`
   };
 }
 
 function renderCriticProof(proof) {
   const lines = [];
-  lines.push(`# Critic proof — ${proof.runId || 'treatment'} against ${proof.controlRunId || 'control'}`);
+  lines.push(`# Diagnostic critic comparison — ${proof.runId || 'treatment'} against ${proof.controlRunId || 'control'}`);
   lines.push('');
   lines.push(proof.summary);
   lines.push('');
   lines.push(`Critic lesson set ${proof.lessonsHash ? proof.lessonsHash.slice(0, 12) : 'mixed or none'} against control set(s) ${proof.controlLessonsHashes.length ? proof.controlLessonsHashes.map(h => h.slice(0, 12)).join(', ') : 'none recorded'}. Juror ${proof.juror}. ${proof.samples.treatment} treatment verdicts, ${proof.samples.control} control verdicts, ${proof.samples.paired} paired on identical analyses${proof.samples.mismatched ? ` (${proof.samples.mismatched} differ)` : ''}; treatment critic calls cost $${num(proof.cost.treatment, 2)}.`);
   lines.push(`Catch rate counts a section labelled unsupported or vague on a verdict where the jury found a fabrication; notice rate also counts a flag with no section label changed, which the evaluator ignores.`);
-  lines.push(`Rule: proven when the paired work-split catch rate gains at least ${Math.round(proof.thresholds.minCatchGain * 100)} points with a 95% bootstrap interval above zero, false alarms (a concern on a verdict the jury found clean) do not rise by more than ${Math.round(proof.thresholds.maxFalseAlarmRise * 100)} points, the critic's parse failures do not rise by more than ${Math.round(proof.thresholds.maxFailureRise * 100)} points, and the holdout catch rate does not fall by more than ${Math.round(proof.thresholds.maxHoldoutLoss * 100)}.`);
+  lines.push(`Legacy statistical criteria: the paired work-split catch rate gains at least ${Math.round(proof.thresholds.minCatchGain * 100)} points with a 95% bootstrap interval above zero, false alarms (a concern on a verdict the jury found clean) do not rise by more than ${Math.round(proof.thresholds.maxFalseAlarmRise * 100)} points, the critic's parse failures do not rise by more than ${Math.round(proof.thresholds.maxFailureRise * 100)} points, and the holdout catch rate does not fall by more than ${Math.round(proof.thresholds.maxHoldoutLoss * 100)}. This report cannot authorize a release.`);
   lines.push(`Parse failures: ${pct(proof.failure.control)} control, ${pct(proof.failure.treatment)} treatment.`);
   if (proof.labelFlips.compared) {
     const detail = Object.entries(proof.labelFlips.flips).map(([k, n]) => `${k} ${n}`).join(', ');
@@ -255,7 +275,7 @@ function renderCriticProof(proof) {
   for (const d of [...proof.metrics.catchRate.sites].sort((a, b) => a.delta - b.delta)) lines.push(`| ${d.domain} | ${d.split} | ${d.docType} | ${pct(d.control)} | ${pct(d.treatment)} | ${signed(d.delta * 100, 0)} pts |`);
   if (proof.reasons.length) {
     lines.push('');
-    lines.push('## Why not proven');
+    lines.push('## Legacy comparison failures');
     lines.push('');
     for (const r of proof.reasons) lines.push(`- ${r}`);
   }
@@ -263,4 +283,4 @@ function renderCriticProof(proof) {
   return lines.join('\n');
 }
 
-module.exports = { DEFAULT_MIN_CATCH_GAIN, DEFAULT_MAX_FALSE_ALARM_RISE, DEFAULT_MAX_FAILURE_RISE, DEFAULT_MAX_HOLDOUT_LOSS, CONCERN_LABELS, concernCount, composeCriticArtifact, signalsFor, perSiteCritic, pairedSiteDeltas, proveCritic, renderCriticProof };
+module.exports = { DEFAULT_MIN_CATCH_GAIN, DEFAULT_MAX_FALSE_ALARM_RISE, DEFAULT_MAX_FAILURE_RISE, DEFAULT_MAX_HOLDOUT_LOSS, CRITIC_DIAGNOSTIC_PROTOCOL, CRITIC_DIAGNOSTIC_PROTOCOL_HASH, CONCERN_LABELS, concernCount, composeCriticArtifact, signalsFor, perSiteCritic, pairedSiteDeltas, proveCritic, renderCriticProof };

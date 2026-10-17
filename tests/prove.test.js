@@ -1,6 +1,7 @@
 const P = require('../tools/prove-lib');
 const { candidatesToLessons, reviseCandidate, renderLessonList } = require('../tools/lessons-lib');
-const { hash } = require('../tools/evaluation-lib');
+const { hash, EVALUATION_PROTOCOL, EVALUATION_PROTOCOL_HASH } = require('../tools/evaluation-lib');
+const { sha256, releaseConfigHash, releaseLessonsHash } = require('../tools/sites-lib');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -28,14 +29,33 @@ function verdictFor(score) {
   return score >= 90 ? verdict('correct', 'complete', (100 - score) / 10) : verdict('correct', 'partial', (80 - score) / 10);
 }
 
+const pipelineHash = hash('fixed client pipeline');
+const policy = { models: { anthropic: { default: 'claude-sonnet-4-6', escalated: 'claude-opus-4-8', jury: 'claude-opus-5' }, openai: { default: 'gpt-4o-mini', escalated: 'gpt-4o', jury: 'gpt-4o' } }, promptHashes: { analyzer: hash('analyzer-prompt'), critic: hash('critic-prompt'), jury: hash('jury-prompt') }, rubricHash: hash('rubric'), versions: Object.fromEntries(['resolver', 'classifier', 'excerpt', 'escalation', 'evaluator', 'siteLookup', 'pipeline'].map(k => [k, k === 'pipeline' ? pipelineHash : hash(k)])), limits: { maxLessonsPerTarget: 12 }, selection: { order: 'explicit' } };
+const releaseFor = key => {
+  const criticText = 'Report an unsupported choice only when the source omits it.';
+  const criticLesson = { id: `lsn_${hash(`critic\n${criticText}`).slice(0, 16)}`, target: 'critic', text: criticText, scope: 'social', section: null, order: 0 };
+  const lessons = key === 'h0' ? [criticLesson] : (() => {
+    const text = `For release ${key}, name only privacy choices supported by the source.`;
+    return [{ id: `lsn_${hash(`analyzer\n${text}`).slice(0, 16)}`, target: 'analyzer', text, scope: 'all', section: null, order: 0 }, criticLesson];
+  })();
+  const config = { lessons, sites: [], policy };
+  return { v: 2, configHash: releaseConfigHash(config), config };
+};
+
 function artifact(domain, sample, split, score, lessonsHash) {
   const raw = verdictFor(score);
+  const release = releaseFor(lessonsHash);
+  const configHash = release.configHash;
+  const summary = '🧭 RISK LEVEL\nHigh';
+  const analysisSource = 'x';
+  const critic = { dataCollection: 'grounded', dataSelling: 'grounded', optOutRights: 'grounded', howToOptOut: 'grounded', autoRenewal: 'skipped', dataDeletion: 'grounded' };
   return {
-    runId: lessonsHash === 'h0' ? 'c' : 't', domain, sample, split, docType: 'financial', textHash: hash(domain),
-    analyzer: { status: 'ok', model: 'claude-sonnet-4-6', analysisChars: 1000, lessonsHash: hash(lessonsHash), promptHash: hash('analyzer-prompt'), lessonsArm: lessonsHash === 'h0' ? 'none' : 'pinned' },
-    summary: '🧭 RISK LEVEL\nHigh', analysisSource: 'x',
-    criticConfig: { model: 'critic-model', promptHash: hash('critic-prompt'), lessonsHash: hash('fixed-critic-lessons') },
-    critic: { dataCollection: 'grounded', dataSelling: 'grounded', optOutRights: 'grounded', howToOptOut: 'grounded', autoRenewal: 'skipped', dataDeletion: 'grounded' },
+    runId: lessonsHash === 'h0' ? 'c' : 't', domain, sample, split, docType: 'financial', textHash: hash(domain), configHash, analyzerConfigHash: configHash, clientPolicyHash: pipelineHash, criticClientPolicyHash: pipelineHash, evaluationProtocolHash: EVALUATION_PROTOCOL_HASH,
+    analyzer: { status: 'ok', model: 'claude-sonnet-4-6', providerTag: 'anthropic', escalated: false, analysisChars: 1000, lessonsHash: releaseLessonsHash(release, 'analyzer', 'financial'), promptHash: hash('analyzer-prompt'), lessonsArm: 'release', docType: 'financial' },
+    summary, analysisSource,
+    criticConfig: { provider: 'anthropic', model: 'claude-sonnet-4-6', promptHash: hash('critic-prompt'), lessonsHash: releaseLessonsHash(release, 'critic', 'financial'), docType: 'financial', configHash },
+    critic,
+    evidenceHashes: { analysisSource: hash(analysisSource), summary: hash(summary), critic: sha256(critic) },
     verdict: { label: 'Strong', score: 100, risk: 'High', issues: [] }, cost: 0.1,
     jury: { anthropic: { model: 'claude-opus-5', promptHash: hash('jury-prompt'), rubricHash: hash('rubric'), sourceHash: hash('x'), summaryHash: hash('🧭 RISK LEVEL\nHigh'), raw, usageRecord: { model: 'claude-opus-5', input: 1000, output: 100, cacheRead: 0, cacheWrite: 0 } } }
   };
@@ -50,8 +70,8 @@ function run(domains, scoreFor, hash) {
 const domains = [['a.com', 'work'], ['b.com', 'work'], ['c.com', 'work'], ['j.com', 'work'], ['e.com', 'work'], ['f.com', 'work'], ['k.com', 'holdout'], ['h.com', 'holdout'], ['i.com', 'holdout']];
 const control = run(domains, () => 60, 'h0');
 const declaration = (sites = domains, samples = [1, 2, 3]) => sites.map(([domain, split]) => ({ domain, split, docType: 'financial', textHash: hash(domain), samples }));
-const controlMeta = { runId: 'c', evaluationSet: declaration() };
-const treatmentMeta = { runId: 't', evaluationSet: declaration() };
+const controlMeta = { runId: 'c', evaluationSet: declaration(), configHash: releaseFor('h0').configHash, release: releaseFor('h0'), evaluationProtocol: EVALUATION_PROTOCOL, evaluationProtocolHash: EVALUATION_PROTOCOL_HASH };
+const treatmentMeta = { runId: 't', evaluationSet: declaration(), configHash: releaseFor('h1').configHash, release: releaseFor('h1'), evaluationProtocol: EVALUATION_PROTOCOL, evaluationProtocolHash: EVALUATION_PROTOCOL_HASH };
 const evaluate = (opts = {}) => P.prove({ controlArtifacts: control, treatmentArtifacts: run(domains, () => 100, 'h1'), controlMeta, treatmentMeta, ...opts });
 
 ok('the bootstrap is deterministic and brackets the mean', (() => { const a = P.bootstrapMeanInterval([1, 2, 3, 4, 5], 2000, 3); const b = P.bootstrapMeanInterval([1, 2, 3, 4, 5], 2000, 3); return a.lower === b.lower && a.lower < 3 && a.upper > 3; })());
@@ -62,10 +82,38 @@ ok('the fixture scores are what the jury math says', (() => { const one = P.perS
 {
   const treatment = run(domains, () => 100, 'h1');
   const proof = evaluate({ controlArtifacts: control, treatmentArtifacts: treatment, meta: { runId: 't', controlRunId: 'c' } });
-  ok('a clear gain on work and validation passes diagnostics only', proof.evaluationPassed && !proof.proven && proof.diagnosticOnly && !proof.promotionEligible && proof.lessonsHash === hash('h1') && proof.metrics.score.work.n === 6 && proof.metrics.score.validation.n === 3, JSON.stringify(proof.reasons));
+  ok('a clear gain on work and validation passes diagnostics only', proof.evaluationPassed && !proof.proven && proof.diagnosticOnly && !proof.promotionEligible && proof.lessonsHash === releaseLessonsHash(releaseFor('h1'), 'analyzer', 'financial') && proof.metrics.score.work.n === 6 && proof.metrics.score.validation.n === 3, JSON.stringify(proof.reasons));
   ok('the fabrication and incompleteness metrics move the right way', proof.metrics.fabricationRate.work.mean < 0 && proof.metrics.incompleteRate.work.mean < 0);
   const md = P.renderProof(proof);
   ok('the proof renders the verdict, the rule, and the per-site table', md.startsWith('# DIAGNOSTIC evaluation — t against c') && md.includes('DIAGNOSTIC evaluation passed:') && md.includes('cannot authorize promotion') && md.includes('| a.com |') && md.includes('| score | work |'));
+}
+
+{
+  const controlMixed = run(domains, () => 60, 'h0');
+  const treatmentMixed = run(domains, () => 100, 'h1');
+  for (const [records, key] of [[controlMixed, 'h0'], [treatmentMixed, 'h1']]) for (const a of records.filter(a => a.domain === 'b.com')) {
+    a.analyzer.docType = 'social';
+    a.criticConfig.docType = 'social';
+    a.analyzer.lessonsHash = releaseLessonsHash(releaseFor(key), 'analyzer', 'social');
+    a.criticConfig.lessonsHash = releaseLessonsHash(releaseFor(key), 'critic', 'social');
+  }
+  const mixed = evaluate({ controlArtifacts: controlMixed, treatmentArtifacts: treatmentMixed });
+  ok('scoped lessons can resolve differently by proxy-classified type while each arm remains one pinned config', mixed.evaluationPassed && mixed.evidence.completeAndCompatible && new Set(treatmentMixed.map(a => a.criticConfig.lessonsHash)).size === 2, JSON.stringify(mixed.reasons));
+  treatmentMixed.find(a => a.domain === 'b.com').analyzer.docType = 'financial';
+  const mismatched = evaluate({ controlArtifacts: controlMixed, treatmentArtifacts: treatmentMixed });
+  ok('a changed proxy classification in one arm fails paired evaluation', !mismatched.evaluationPassed && mismatched.reasons.some(r => /proxy-classified document type/.test(r)), JSON.stringify(mismatched.reasons));
+}
+
+{
+  const escalatedControl = run(domains, () => 60, 'h0');
+  const escalatedTreatment = run(domains, () => 100, 'h1');
+  for (const a of [...escalatedControl, ...escalatedTreatment]) {
+    a.analyzer.providerTag = 'anthropic-escalated';
+    a.analyzer.escalated = true;
+    a.analyzer.model = policy.models.anthropic.escalated;
+  }
+  const escalated = evaluate({ controlArtifacts: escalatedControl, treatmentArtifacts: escalatedTreatment });
+  ok('a declared escalated analyzer tier can pass while critic remains on the default tier', escalated.evaluationPassed, JSON.stringify(escalated.reasons));
 }
 
 {
@@ -85,7 +133,7 @@ ok('the fixture scores are what the jury math says', (() => { const one = P.perS
 {
   const treatment = run(domains, () => 100, 'h1').map((a, i) => i % 2 ? { ...a, analyzer: { ...a.analyzer, lessonsHash: hash('h2') } } : a);
   const proof = evaluate({ controlArtifacts: control, treatmentArtifacts: treatment });
-  ok('a treatment that ran under two lesson sets is not a proof', !proof.evaluationPassed && !proof.proven && proof.reasons.some(r => /lesson sets/.test(r)));
+  ok('a treatment artifact with unpinned lessons is not a proof', !proof.evaluationPassed && !proof.proven && proof.reasons.some(r => /analyzer lessonsHash differs from complete release/.test(r)));
 }
 
 {
@@ -108,6 +156,42 @@ function rejects(label, change, pattern) {
 }
 
 rejects('legacy artifacts without a declaration fail closed', o => { o.controlMeta = null; o.treatmentMeta = null; }, /missing declared evaluation set/);
+rejects('legacy run declarations without a complete release fail closed', o => { delete o.treatmentMeta.release; }, /complete release configHash/);
+rejects('an artifact cannot claim a different configuration than its run', o => { o.treatmentArtifacts[0].configHash = '0'.repeat(64); }, /response configHash differs/);
+rejects('an analyzer response cannot silently switch configurations', o => { o.treatmentArtifacts[0].analyzerConfigHash = '0'.repeat(64); }, /response configHash differs/);
+rejects('a critic response cannot silently switch configurations', o => { o.treatmentArtifacts[0].criticConfig.configHash = '0'.repeat(64); }, /response configHash differs/);
+rejects('captured content hash must match the analysis', o => { o.treatmentArtifacts[0].evidenceHashes.summary = '0'.repeat(64); }, /evidence hashes do not match/);
+rejects('a changed evaluation protocol cannot be paired', o => { o.treatmentMeta.evaluationProtocolHash = '0'.repeat(64); }, /evaluation protocol/);
+rejects('a changed semantic pipeline policy cannot be paired', o => {
+  o.treatmentMeta.release.config.policy.versions.pipeline = '0'.repeat(64);
+  o.treatmentMeta.release.configHash = releaseConfigHash(o.treatmentMeta.release.config);
+  o.treatmentMeta.configHash = o.treatmentMeta.release.configHash;
+  o.treatmentArtifacts.forEach(a => { a.configHash = o.treatmentMeta.configHash; a.analyzerConfigHash = o.treatmentMeta.configHash; a.criticConfig.configHash = o.treatmentMeta.configHash; a.clientPolicyHash = '0'.repeat(64); a.criticClientPolicyHash = '0'.repeat(64); });
+}, /semantic policy versions differ/);
+rejects('matching wrong analyzer models in both arms fail the declared release policy', o => {
+  [...o.controlArtifacts, ...o.treatmentArtifacts].forEach(a => { a.analyzer.model = 'wrong-model'; });
+}, /model or provider differs from declared release policy/);
+rejects('matching wrong analyzer prompts in both arms fail the declared release policy', o => {
+  [...o.controlArtifacts, ...o.treatmentArtifacts].forEach(a => { a.analyzer.promptHash = hash('wrong-prompt'); });
+}, /prompt or rubric hash differs from declared release policy/);
+rejects('matching wrong critic models in both arms fail the declared release policy', o => {
+  [...o.controlArtifacts, ...o.treatmentArtifacts].forEach(a => { a.criticConfig.model = 'wrong-model'; });
+}, /model or provider differs from declared release policy/);
+rejects('matching wrong critic prompts in both arms fail the declared release policy', o => {
+  [...o.controlArtifacts, ...o.treatmentArtifacts].forEach(a => { a.criticConfig.promptHash = hash('wrong-prompt'); });
+}, /prompt or rubric hash differs from declared release policy/);
+rejects('matching wrong jury models in both arms fail the declared release policy', o => {
+  [...o.controlArtifacts, ...o.treatmentArtifacts].forEach(a => { a.jury.anthropic.model = 'wrong-model'; a.jury.anthropic.usageRecord.model = 'wrong-model'; });
+}, /model or provider differs from declared release policy/);
+rejects('matching wrong jury prompts in both arms fail the declared release policy', o => {
+  [...o.controlArtifacts, ...o.treatmentArtifacts].forEach(a => { a.jury.anthropic.promptHash = hash('wrong-prompt'); });
+}, /prompt or rubric hash differs from declared release policy/);
+rejects('matching wrong jury rubrics in both arms fail the declared release policy', o => {
+  [...o.controlArtifacts, ...o.treatmentArtifacts].forEach(a => { a.jury.anthropic.rubricHash = hash('wrong-rubric'); });
+}, /prompt or rubric hash differs from declared release policy/);
+rejects('a critic provider different from the pinned analyzer provider fails', o => {
+  o.treatmentArtifacts[0].criticConfig.provider = 'openai';
+}, /model or provider differs from declared release policy/);
 rejects('unsupported jurors fail evaluation', o => { o.juror = 'other'; }, /juror must be/);
 rejects('a declared site omitted from both arms cannot disappear from evaluation', o => {
   o.controlArtifacts = o.controlArtifacts.filter(a => a.domain !== 'a.com');
@@ -177,7 +261,7 @@ rejects('all not-applicable verdicts cannot supply numeric evidence', o => {
 }, /invalid or missing jury verdict/);
 for (const field of ['model', 'promptHash']) rejects(`analyzer ${field} must stay fixed across arms`, o => { o.treatmentArtifacts.forEach(a => { a.analyzer[field] = field === 'model' ? 'other-model' : hash('other'); }); }, /incompatible analyzer/);
 for (const field of ['model', 'promptHash', 'rubricHash']) rejects(`jury ${field} must stay fixed across arms`, o => { o.treatmentArtifacts.forEach(a => { a.jury.anthropic[field] = field === 'model' ? 'other-model' : hash('other'); }); }, /incompatible analyzer/);
-for (const field of ['model', 'promptHash', 'lessonsHash']) rejects(`critic ${field} must stay fixed across arms`, o => { o.treatmentArtifacts.forEach(a => { a.criticConfig[field] = field === 'model' ? 'other-model' : hash('other'); }); }, /incompatible analyzer/);
+for (const field of ['model', 'promptHash', 'lessonsHash']) rejects(`critic ${field} must stay fixed across arms`, o => { o.treatmentArtifacts.forEach(a => { a.criticConfig[field] = field === 'model' ? 'other-model' : hash('other'); }); }, field === 'lessonsHash' ? /critic lessonsHash differs from complete release/ : /incompatible analyzer/);
 rejects('metadata absent from both arms cannot count as matching', o => {
   [...o.controlArtifacts, ...o.treatmentArtifacts].forEach(a => { delete a.analyzer.promptHash; });
 }, /missing or invalid analyzer/);
@@ -186,9 +270,9 @@ rejects('failed critic results fail even when metadata matches', o => { o.treatm
 rejects('a jury grade cannot bind to a changed summary', o => { o.treatmentArtifacts[0].summary += ' changed'; }, /does not match graded content/);
 rejects('a jury grade cannot bind to changed source text', o => { o.treatmentArtifacts[0].analysisSource += ' changed'; }, /does not match graded content/);
 rejects('correctly rebound grades with different analyzed sources are incompatible', o => {
-  o.treatmentArtifacts[0].analysisSource = 'changed'; o.treatmentArtifacts[0].jury.anthropic.sourceHash = hash('changed');
+  o.treatmentArtifacts[0].analysisSource = 'changed'; o.treatmentArtifacts[0].jury.anthropic.sourceHash = hash('changed'); o.treatmentArtifacts[0].evidenceHashes.analysisSource = hash('changed');
 }, /incompatible analyzed source hashes/);
-rejects('mixed control lesson sets fail evaluation', o => { o.controlArtifacts[0].analyzer.lessonsHash = hash('different'); }, /control ran under 2 lesson sets/);
+rejects('a control artifact with unpinned lessons fails evaluation', o => { o.controlArtifacts[0].analyzer.lessonsHash = hash('different'); }, /analyzer lessonsHash differs from complete release/);
 rejects('a negative validation mean fails even with its interval above the loss floor', o => {
   o.treatmentArtifacts = run(domains, (d, sample) => d === 'k.com' && sample === 1 ? 50 : ['k.com', 'h.com', 'i.com'].includes(d) ? 60 : 100, 'h1');
 }, /validation mean must be nonnegative/);

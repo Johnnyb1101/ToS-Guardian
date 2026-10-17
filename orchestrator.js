@@ -131,8 +131,18 @@ async function runOrchestrator(pageUrl, pageText, pageHtml, options = {}) {
   // re-analyzing and writing a duplicate row. (FIXPLAN #1)
   const domain = pageUrl ? (() => { try { return registrableDomain(new URL(pageUrl).hostname); } catch(e) { return null; } })() : null;
 
+  const releaseSession = await beginReleaseSession();
+  if (!releaseSession || (!releaseSession.local &&
+      (!/^[a-f0-9]{64}$/.test(releaseSession.configHash) ||
+       (liveRun && !releaseSession.releaseToken)))) {
+    const summary = 'TOS Guardian could not verify the current analysis configuration. Please try again later.';
+    rec.record('verdict', { risk: 'Unknown', label: 'Error', score: 0, retrievalFailure: false, cached: false, optOutLinks: 0, unreadableDocs: 0 });
+    finishEpisode('Error');
+    return { summary };
+  }
+
 // --- STEP 1: FETCHER AGENT ---
-const knownUrls = await lookupSite(pageUrl);
+const knownUrls = await lookupSite(pageUrl, releaseSession.releaseToken || null);
 if (knownUrls) {
   console.log("[Orchestrator] Site database hit — passing confirmed URLs to Fetcher");
 }
@@ -214,7 +224,7 @@ const cacheVerificationText = buildCacheVerificationText(textToAnalyze);
 let cacheOutcome = 'skipped';
 let cacheSimilarity;
 if (domain && fetched) {
-  const supabaseResult = await readFromSupabase(domain, cacheVerificationText);
+  const supabaseResult = await readFromSupabase(domain, cacheVerificationText, releaseSession);
   if (supabaseResult && typeof supabaseResult.similarity === 'number' && Number.isFinite(supabaseResult.similarity)) {
     cacheSimilarity = supabaseResult.similarity;
   }
@@ -327,7 +337,7 @@ const unreadableDocs = [
   // --- STEP 4: ANALYZER AGENT ---
   let result = null;
   let analyzerAttempts = 0;
-  result = await runWithRetry(() => { analyzerAttempts++; return analyzeWithModel(enrichedText, source); }, "[Analyzer]");
+  result = await runWithRetry(() => { analyzerAttempts++; return analyzeWithModel(enrichedText, source, false, releaseSession); }, "[Analyzer]");
   logStage("analyzer");
 
   if (result && result.summary) {
@@ -345,7 +355,7 @@ const unreadableDocs = [
       rec.record('analyze', analyzeFactsFor(result, enrichedText, false, analyzerAttempts > 1));
       rec.record('verdict', { risk: 'Unknown', label: 'Configuration', score: 0, retrievalFailure: false, cached: false, optOutLinks: displayOptOutLinks.length, unreadableDocs: unreadableDocs.length });
       finishEpisode('Configuration');
-      return result;
+      return { summary: result.summary };
     }
   } else {
     console.warn('[Orchestrator] Analyzer returned:', JSON.stringify(result).slice(0, 300));
@@ -366,7 +376,9 @@ const unreadableDocs = [
       activeCacheContext ? {
         analysisReceipt: result.analysisReceipt,
         providerAnalysis: result.providerAnalysis,
-        cacheContext: activeCacheContext
+        cacheContext: activeCacheContext,
+        configHash: result.configHash,
+        releaseToken: result.releaseToken
       } : null
     );
     if (criticResult && criticResult.failed) {
@@ -448,7 +460,10 @@ const unreadableDocs = [
       console.log(`[Orchestrator] Escalating to Opus — first-pass score: ${evaluation.score}, count: ${escalationCount + 1}/${CAP} (resets ${new Date(stored.resetAt).toLocaleTimeString()})`);
       let escalatedAttempts = 0;
       const escalatedResult = await runWithRetry(
-        () => { escalatedAttempts++; return analyzeWithModel(enrichedText, source, true); },
+        () => { escalatedAttempts++; return analyzeWithModel(enrichedText, source, true,
+          result?.configHash && result?.releaseToken
+            ? { configHash: result.configHash, releaseToken: result.releaseToken }
+            : releaseSession); },
         "[Analyzer-Opus]"
       );
 
@@ -467,7 +482,9 @@ const unreadableDocs = [
           escalatedCacheContext ? {
             analysisReceipt: escalatedResult.analysisReceipt,
             providerAnalysis: escalatedResult.providerAnalysis,
-            cacheContext: escalatedCacheContext
+            cacheContext: escalatedCacheContext,
+            configHash: escalatedResult.configHash,
+            releaseToken: escalatedResult.releaseToken
           } : null
         );
         const escalatedCriticFailed = !!(escalatedCriticResult && escalatedCriticResult.failed);

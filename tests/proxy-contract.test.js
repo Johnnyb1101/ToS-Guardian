@@ -1,8 +1,16 @@
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const { webcrypto } = require('crypto');
+const { TextEncoder } = require('util');
+
+const RELEASE_HASH = 'a'.repeat(64);
+const RELEASE_TOKEN = 'signed-release-token';
 
 const repoRoot = path.resolve(__dirname, '..');
+const policyFiles = ['vendor/tldts-7.4.8.umd.min.js', 'tosUtils.js', 'evaluator.js',
+  'critic.js', 'siteDatabase.js', 'episode.js', 'community.js', 'orchestrator.js',
+  'background.js', 'content.js', 'manifest.json'];
 let passed = 0;
 let failed = 0;
 let storageData = { selectedProvider: 'anthropic' };
@@ -45,6 +53,10 @@ const context = {
   console: { log() {}, warn() {}, error() {} },
   URL,
   Date,
+  crypto: webcrypto,
+  TextEncoder,
+  __TG_POLICY_SOURCES: Object.fromEntries(policyFiles.map(file =>
+    [file, fs.readFileSync(path.join(repoRoot, file), 'utf8')])),
   setTimeout,
   clearTimeout,
   importScripts() {},
@@ -55,7 +67,9 @@ const context = {
     return {
       ok: data.status >= 200 && data.status < 300,
       status: data.status,
-      json: async () => data.body
+      json: async () => data.status === 200
+        ? { configHash: RELEASE_HASH, releaseToken: RELEASE_TOKEN, ...data.body }
+        : data.body
     };
   },
   browser: {
@@ -75,7 +89,7 @@ const context = {
 };
 
 vm.createContext(context);
-for (const file of ['vendor/tldts-7.4.8.umd.min.js', 'tosUtils.js', 'critic.js', 'episode.js', 'community.js', 'background.js']) {
+for (const file of ['vendor/tldts-7.4.8.umd.min.js', 'tosUtils.js', 'evaluator.js', 'critic.js', 'siteDatabase.js', 'episode.js', 'community.js', 'orchestrator.js', 'background.js']) {
   vm.runInContext(fs.readFileSync(path.join(repoRoot, file), 'utf8'), context, { filename: file });
 }
 
@@ -200,7 +214,8 @@ const popupSender = {
     sourceFingerprint: 'a1b2c3d4', schemaVersion: 2, aiProvider: 'anthropic', privacyText: 'privacy text'
   };
   await context.runCritic('Canonical analysis.', 'Exact analyzer source.', {
-    analysisReceipt: 'analysis-token', providerAnalysis: 'Provider analysis.', cacheContext
+    analysisReceipt: 'analysis-token', providerAnalysis: 'Provider analysis.', cacheContext,
+    configHash: RELEASE_HASH, releaseToken: RELEASE_TOKEN
   });
   const provenanceCriticRequest = requests.shift();
   const provenanceCriticBody = JSON.parse(provenanceCriticRequest.options.body);

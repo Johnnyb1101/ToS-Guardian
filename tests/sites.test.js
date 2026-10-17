@@ -1,4 +1,8 @@
 const lib = require('../tools/sites-lib');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { spawnSync } = require('child_process');
 
 let passed = 0;
 let failed = 0;
@@ -8,6 +12,16 @@ function ok(label, condition, detail = '') {
 }
 
 console.log('Site tools');
+
+{
+  const previous = process.env.TRAINER_ACCESS_TOKEN;
+  process.env.TRAINER_ACCESS_TOKEN = 'test-only-trainer-token';
+  const headers = lib.trainerHeaders({ 'Content-Type': 'application/json' });
+  ok('trainer requests carry a bearer token without changing other headers', headers.Authorization === 'Bearer test-only-trainer-token' && headers['Content-Type'] === 'application/json');
+  if (previous === undefined) delete process.env.TRAINER_ACCESS_TOKEN;
+  else process.env.TRAINER_ACCESS_TOKEN = previous;
+  ok('mock requests remain usable when no trainer token is configured', previous === undefined ? !Object.hasOwn(lib.trainerHeaders(), 'Authorization') : lib.trainerHeaders().Authorization === `Bearer ${previous}`);
+}
 
 function chain(kinds) {
   const entries = [];
@@ -71,12 +85,86 @@ ok('without a key the signatures are not checked', lib.verifyLedger(signed).sign
 const signedRender = lib.renderLedger(signed, signedCheck);
 ok('roll-out entries render their bundle and counts', /Signatures: 5 valid, 0 unsigned, 0 invalid/.test(signedRender) && /rollout-exported.*bundle abcdef012345: 6 lesson\(s\), 2 site\(s\)/.test(signedRender) && /rollout-applied.*lessons \+6\/0, sites \+2\/0, signer feedface/.test(signedRender) && /lesson-imported.*imported from abcdef012345/.test(signedRender));
 
-const bundleBody = { v: 1, exportedAt: '2026-10-10T12:00:00.000Z', head: { seq: 5, hash: signed[4].hash }, lessons: [{ id: 'lsn_0123456789abcdef', target: 'analyzer', scope: 'all', section: null, text: 'Never write a web address the document does not print.', provenance: {}, proof: { proven: true, runId: 'treat-1' } }], sites: [{ domain: 'acmeprivacy.com', tos_url: 'https://acmeprivacy.com/t', privacy_url: 'https://acmeprivacy.com/p', supplemental_urls: [], expires_at: '2027-01-01T00:00:00.000Z' }], publicKey };
+const owner = crypto.generateKeyPairSync('ed25519');
+const ownerKey = owner.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+const policy = { models: { anthropic: { default: 'a', escalated: 'b', jury: 'c' }, openai: { default: 'd', escalated: 'e', jury: 'f' } }, promptHashes: { analyzer: 'a'.repeat(64), critic: 'b'.repeat(64), jury: 'c'.repeat(64) }, rubricHash: 'e'.repeat(64), versions: Object.fromEntries(['resolver', 'classifier', 'excerpt', 'escalation', 'evaluator', 'siteLookup', 'pipeline'].map(k => [k, 'd'.repeat(64)])), limits: { maxLessonsPerTarget: 12 }, selection: { order: 'explicit' } };
+const config = { lessons: [], sites: [], policy };
+const release = { v: 2, configHash: lib.releaseConfigHash(config), config };
+ok('release config hash matches the proxy canonical versioned hash vector', release.configHash === 'e6e3800012536d12e96f06300ab7a76e2cd222fd16b2dca84bd98f749506fcf3');
+{
+  const memberRelease = (lessons, sites) => {
+    const memberConfig = { lessons, sites, policy };
+    return { v: 2, configHash: lib.releaseConfigHash(memberConfig), config: memberConfig };
+  };
+  const lessonText = 'Name only privacy choices supported by the actual source text.';
+  const analyzerLesson = { id: `lsn_${crypto.createHash('sha256').update(`analyzer\n${lessonText}`).digest('hex').slice(0, 16)}`, target: 'analyzer', text: lessonText, scope: 'all', section: null, order: 0 };
+  const criticText = 'Flag a missing opt-out only when the actual source omits one.';
+  const criticLesson = { id: `lsn_${crypto.createHash('sha256').update(`critic\n${criticText}`).digest('hex').slice(0, 16)}`, target: 'critic', text: criticText, scope: 'financial', section: 'optOutRights', order: 0 };
+  const tos = 'https://acmeprivacy.com/terms';
+  const privacy = 'https://acmeprivacy.com/privacy';
+  const site = { domain: 'acmeprivacy.com', tos_url: tos, privacy_url: privacy, supplemental_urls: [], path: 'known-urls', urls_hash: crypto.createHash('sha256').update(lib.strictCanonicalJson({ tos, privacy, supplemental: [] })).digest('hex'), verified_at: '2026-10-01T00:00:00.000Z', expires_at: '2026-11-01T00:00:00.000Z', evidence: null };
+  ok('canonical complete lessons and site members validate', lib.checkRelease(memberRelease([analyzerLesson, criticLesson], [site])).valid);
+  const rejected = [
+    ['null lesson', [null], [], /invalid release lesson/],
+    ['invalid lesson scope', [{ ...analyzerLesson, scope: 'unrecognized' }], [], /invalid lesson scope/],
+    ['duplicate lesson id', [analyzerLesson, analyzerLesson], [], /duplicate release lesson/],
+    ['duplicate lesson order', [analyzerLesson, { ...analyzerLesson, id: `lsn_${crypto.createHash('sha256').update('analyzer\nAnother source-supported privacy choice must be named clearly.').digest('hex').slice(0, 16)}`, text: 'Another source-supported privacy choice must be named clearly.' }], [], /duplicate lesson order/],
+    ['unsorted lessons', [criticLesson, analyzerLesson], [], /noncanonical/],
+    ['noncanonical lesson text', [{ ...analyzerLesson, text: `  ${lessonText}  ` }], [], /noncanonical/],
+    ['cross-domain URL', [], [{ ...site, privacy_url: 'https://other.com/privacy' }], /invalid release site/],
+    ['URL with query', [], [{ ...site, tos_url: `${tos}?next=1` }], /canonical HTTPS URLs/],
+    ['expired verification lifetime', [], [{ ...site, expires_at: '2026-09-01T00:00:00.000Z' }], /verification lifetime/],
+    ['duplicate site domain', [], [site, site], /duplicate release site/],
+    ['private suffix as site key', [], [{ ...site, domain: 'github.io' }], /invalid release site/]
+  ];
+  for (const [label, lessons, sites, reason] of rejected) {
+    const checked = lib.checkRelease(memberRelease(lessons, sites));
+    ok(`rehashed ${label} is rejected like the proxy`, !checked.valid && reason.test(checked.reason), checked.reason);
+  }
+}
+ok('a release without runtime models or jury rubric cannot be evaluated', (() => {
+  const withoutModels = { ...config, policy: { ...policy, models: {} } };
+  const withoutRubric = { ...config, policy: { ...policy, rubricHash: undefined } };
+  return /complete runtime policy/.test(lib.checkRelease({ v: 2, configHash: lib.releaseConfigHash(withoutModels), config: withoutModels }).reason) &&
+    /rubric/.test(lib.checkRelease({ v: 2, configHash: '0'.repeat(64), config: withoutRubric }).reason);
+})());
+const issuedAt = new Date(Date.now() - 60_000).toISOString();
+const expiresAt = new Date(Date.now() + 60_000).toISOString();
+const payload = { v: 2, kind: 'release-activation', authorizationId: 'approval_0123456789', action: 'activate', environment: 'production', configHash: release.configHash, expectedGeneration: 0, expectedConfigHash: null, expectedHeadHash: null, issuedAt, expiresAt, evidence: { phase: 'step2-final', configHash: release.configHash, evidenceHash: 'e'.repeat(64), protocolHash: 'f'.repeat(64), corpusHash: '0'.repeat(64), evaluationPassed: true, promotionEligible: true, diagnosticOnly: false } };
+const authorization = { payload, signature: crypto.sign(null, Buffer.from(lib.AUTHORIZATION_PURPOSE + lib.strictCanonicalJson(payload)), owner.privateKey).toString('base64') };
+const bundleBody = { v: 2, kind: 'complete-release', exportedAt: new Date().toISOString(), release, authorization, publicKey };
 const bundle = { ...bundleBody, hash: lib.bundleHash(bundleBody) };
-bundle.sig = sign(bundle.hash);
-ok('a bundle verifies against the key it names and against the same key given explicitly', lib.checkBundle(bundle).valid && lib.checkBundle(bundle, publicKey).valid && lib.checkBundle(bundle).signer === lib.fingerprint(publicKey));
-ok('a bundle fails against another key, with a changed lesson, or with a swapped named key', !lib.checkBundle(bundle, crypto.generateKeyPairSync('ed25519').publicKey.export({ type: 'spki', format: 'pem' }).toString()).valid && /hash/.test(lib.checkBundle({ ...bundle, lessons: [{ ...bundle.lessons[0], text: 'Invent addresses.' }] }).reason) && !lib.checkBundle({ ...bundle, publicKey: 'x' }).valid);
-ok('a bundle summary names its lessons and sites', /1 promoted lesson/.test(lib.summarizeBundle(bundle)) && /acmeprivacy.com/.test(lib.summarizeBundle(bundle)) && /proof treat-1/.test(lib.summarizeBundle(bundle)));
+bundle.sig = sign(lib.BUNDLE_PURPOSE + bundle.hash);
+const active = { environment: 'production', generation: 0, configHash: null, headHash: null };
+ok('a complete release bundle verifies both trusted signatures and prior state', lib.checkBundle(bundle, publicKey, ownerKey, { active }).valid && lib.checkBundle(bundle, publicKey, ownerKey, { active }).ownerVerified && lib.checkBundle(bundle).signer === lib.fingerprint(publicKey));
+ok('owner approval must use a key independent of the transport signer', /independent/.test(lib.checkBundle(bundle, publicKey, publicKey, { active }).reason));
+ok('the same key with different PEM line endings is not an independent owner', /independent/.test(lib.checkBundle(bundle, publicKey, publicKey.replace(/\n/g, '\r\n'), { active }).reason));
+ok('a bundle fails against another transport key, changed config, or swapped named key', !lib.checkBundle(bundle, crypto.generateKeyPairSync('ed25519').publicKey.export({ type: 'spki', format: 'pem' }).toString()).valid && /release lesson/.test(lib.checkBundle({ ...bundle, release: { ...release, config: { ...config, lessons: [{ text: 'changed' }] } } }).reason) && !lib.checkBundle({ ...bundle, publicKey: 'x' }).valid);
+ok('a diagnostic authorization and stale destination state cannot activate', !lib.checkBundle({ ...bundle, authorization: { ...authorization, payload: { ...payload, evidence: { ...payload.evidence, diagnosticOnly: true } } } }, publicKey, ownerKey).valid && /expected state mismatch/.test(lib.checkBundle(bundle, publicKey, ownerKey, { active: { ...active, generation: 1 } }).reason));
+ok('legacy per-lesson bundles are rejected', /version 2/.test(lib.checkBundle({ v: 1, lessons: [], sites: [] }).reason));
+ok('a bundle summary names the complete config and destination', lib.summarizeBundle(bundle).includes(release.configHash) && lib.summarizeBundle(bundle).includes('production'));
+
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-rollout-show-'));
+  try {
+    const bundlePath = path.join(dir, 'bundle.json');
+    const transportPath = path.join(dir, 'transport.pem');
+    const ownerPath = path.join(dir, 'owner.pem');
+    fs.writeFileSync(bundlePath, JSON.stringify(bundle));
+    fs.writeFileSync(transportPath, publicKey);
+    fs.writeFileSync(ownerPath, ownerKey);
+    const cli = path.join(__dirname, '..', 'tools', 'rollout.js');
+    const inspected = spawnSync(process.execPath, [cli, 'show', bundlePath, '--transport-key', transportPath, '--approval-key', ownerPath], { encoding: 'utf8' });
+    ok('rollout show verifies both supplied keys without submitting a bundle', inspected.status === 0 && /owner approval verified against supplied key/.test(inspected.stdout));
+    const unsafe = spawnSync(process.execPath, [cli, 'import', bundlePath, '--proxy', 'http://127.0.0.1:9'], { encoding: 'utf8' });
+    ok('rollout import refuses to contact a destination without explicit trust keys', unsafe.status !== 0 && /explicit --approval-key/.test(unsafe.stderr));
+    fs.writeFileSync(ownerPath, publicKey.replace(/\n/g, '\r\n'));
+    const sameKey = spawnSync(process.execPath, [cli, 'show', bundlePath, '--transport-key', transportPath, '--approval-key', ownerPath], { encoding: 'utf8' });
+    ok('rollout CLI refuses the same key under different PEM formatting', sameKey.status !== 0 && /independent owner|independent of transport/.test(sameKey.stdout));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 console.log(`\nSummary: ${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

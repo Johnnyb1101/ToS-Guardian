@@ -35,7 +35,7 @@ if (target.error) { console.error(target.error); process.exit(1); }
 if (target.isProduction && command !== 'status' && command !== 'ledger') { console.error('Trainer proposals and halts go to the dev proxy only.'); process.exit(1); }
 
 async function json(method, path, body) {
-  const response = await fetch(`${target.url}${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  const response = await fetch(`${target.url}${path}`, { method, headers: lib.trainerHeaders({ 'Content-Type': 'application/json' }), body: body ? JSON.stringify(body) : undefined });
   const text = await response.text();
   let data;
   try { data = JSON.parse(text); } catch { data = { raw: text }; }

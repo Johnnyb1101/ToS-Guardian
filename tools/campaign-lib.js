@@ -2,6 +2,7 @@
 
 const { summarizeRun } = require('./jury-lib');
 const { mean, num, signed } = require('./prove-lib');
+const CONFIG_HASH = /^[a-f0-9]{64}$/;
 
 const STEPS = Object.freeze({
   jury: ['health', 'register', 'screen-replay', 'screen-jury', 'screen-decide', 'proof-replay', 'proof-jury', 'prove', 'report', 'notify'],
@@ -33,6 +34,8 @@ function validateSpec(input) {
   if (!name) errors.push('name must be 3 to 61 lowercase letters, digits or dashes');
   if (typeof input.proxy !== 'string' || !/^https?:\/\/\S+$/.test(input.proxy)) errors.push('proxy must be an http(s) url');
   if (typeof input.control !== 'string' || !input.control.trim()) errors.push('control must name a graded run');
+  if (!CONFIG_HASH.test(input.treatmentConfigHash)) errors.push('treatmentConfigHash must name a complete immutable release');
+  if (input.controlConfigHash !== undefined && !CONFIG_HASH.test(input.controlConfigHash)) errors.push('controlConfigHash must be a 64-character SHA-256 hash');
   const kind = input.proof && input.proof.kind === 'critic' ? 'critic' : 'jury';
   const lessons = input.lessons && typeof input.lessons === 'object' ? input.lessons : {};
   const create = lessons.create && typeof lessons.create === 'object' ? { run: String(lessons.create.run || ''), ids: Array.isArray(lessons.create.ids) ? lessons.create.ids.map(String) : [] } : null;
@@ -42,8 +45,7 @@ function validateSpec(input) {
   const revise = Array.isArray(lessons.revise) ? lessons.revise.map(r => ({ run: String((r && r.run) || ''), candidateId: String((r && r.candidateId) || ''), id: r && r.id ? String(r.id) : null, after: r && r.after ? String(r.after) : null, text: String((r && r.text) || '').trim() })) : [];
   for (const r of revise) if (!r.run || !r.candidateId || r.text.length < 20) errors.push(`lessons.revise entry ${r.candidateId || '?'} needs a run, a candidateId and a text of 20+ characters`);
   const pin = Array.isArray(lessons.pin) ? lessons.pin.map(String) : [];
-  for (const id of pin) if (!LESSON_ID.test(id)) errors.push(`lessons.pin has an invalid id ${id}`);
-  if (!create && !revise.length && !pin.length) errors.push('a campaign needs lessons to create, revise or pin');
+  if (pin.length) errors.push('lessons.pin is retired; treatmentConfigHash selects the complete release');
   const screen = input.screen && typeof input.screen === 'object' ? {
     sites: Array.isArray(input.screen.sites) ? input.screen.sites.map(String) : [],
     samples: positiveInt(input.screen.samples, DEFAULTS.screenSamples),
@@ -62,7 +64,7 @@ function validateSpec(input) {
   if (kind === 'critic' && !proof.source) errors.push('a critic proof needs proof.source, the graded run whose analyses the critic re-checks');
   const notify = input.notify && typeof input.notify === 'object' && typeof input.notify.url === 'string' ? { url: input.notify.url } : null;
   if (notify && !/^https:\/\/\S+$/.test(notify.url)) errors.push('notify.url must be https');
-  const spec = errors.length ? null : { name, proxy: input.proxy.replace(/\/+$/, ''), control: input.control.trim(), lessons: { carry, create, revise, pin }, screen, proof, notify, delayMs: positiveInt(input.delayMs, DEFAULTS.delayMs) };
+  const spec = errors.length ? null : { name, proxy: input.proxy.replace(/\/+$/, ''), control: input.control.trim(), controlConfigHash: input.controlConfigHash || null, treatmentConfigHash: input.treatmentConfigHash, lessons: { carry, create, revise, pin }, screen, proof, notify, delayMs: positiveInt(input.delayMs, DEFAULTS.delayMs) };
   return { valid: errors.length === 0, errors, spec };
 }
 
@@ -110,14 +112,9 @@ function nextStep(state, steps) {
 }
 
 function proposal(state) {
-  const proxy = state.spec.proxy;
-  const ids = state.lessons.registered.filter(r => r.underTest !== false).map(r => r.id).filter(Boolean);
-  const list = ids.length ? ids : ['<lesson id>'];
-  if (state.decision === 'stopped-at-screen') return `Retire the candidates; the screen showed the regression that bundle 2 had.\n${list.map(id => `node tools/lessons.js status ${id} retired --proxy ${proxy}`).join('\n')}`;
+  if (state.decision === 'stopped-at-screen') return 'The screen showed a regression. Review the candidate release and keep it inactive.';
   if (!state.proof) return 'No proof was reached.';
-  if (state.proof.diagnosticOnly || state.proof.promotionEligible === false) return 'Evaluation is diagnostic only. Keep candidates pending; promotion and rollout require Step 1B.';
-  const verb = state.proof.proven ? 'promoted' : 'retired';
-  return `${state.proof.proven ? 'Promote' : 'Retire'} the candidates with the proof attached.\n${list.map(id => `node tools/lessons.js status ${id} ${verb} --proxy ${proxy} --proof ${state.proof.runDir}`).join('\n')}`;
+  return 'Evaluation is diagnostic only. Keep the complete candidate release inactive pending an independent approval.';
 }
 
 function renderReport(state) {
@@ -127,6 +124,7 @@ function renderReport(state) {
   lines.push(`${state.failure ? `Failed: ${state.failure}` : state.decision === 'stopped-at-screen' ? 'Stopped at the screen.' : state.proof ? state.proof.summary : 'Not finished.'}`);
   lines.push('');
   lines.push(`Started ${state.startedAt}${state.finishedAt ? `, finished ${state.finishedAt}` : ''}. Proxy ${state.spec.proxy}. Control ${state.spec.control}. Proof kind ${state.spec.proof.kind}${state.spec.proof.source ? ` on ${state.spec.proof.source}` : ''}.`);
+  lines.push(`Treatment config ${state.spec.treatmentConfigHash}; control config ${state.spec.controlConfigHash || 'declared by control run'}.`);
   lines.push(`Cost: screen $${num(state.cost.screen, 2)}, proof $${num(state.cost.proof, 2)}, total $${num(state.cost.screen + state.cost.proof, 2)}.`);
   lines.push('');
   lines.push('## Lessons');
@@ -165,7 +163,7 @@ function renderReport(state) {
 }
 
 function notificationText(state) {
-  const outcome = state.failure ? `failed: ${state.failure}` : state.decision === 'stopped-at-screen' ? 'stopped at the screen' : state.proof ? (state.proof.diagnosticOnly ? (state.proof.evaluationPassed ? 'evaluation passed (diagnostic only)' : 'evaluation failed (diagnostic only)') : state.proof.proven ? 'PROVEN' : 'not proven') : 'finished';
+  const outcome = state.failure ? `failed: ${state.failure}` : state.decision === 'stopped-at-screen' ? 'stopped at the screen' : state.proof ? (state.proof.evaluationPassed ? 'evaluation passed (diagnostic only)' : 'evaluation recorded (diagnostic only)') : 'finished';
   const detail = state.proof && state.proof.summary ? ` ${state.proof.summary}` : state.screen && !state.screen.proceed ? ` ${state.screen.reasons.join('; ')}` : '';
   return `ToS Guardian campaign ${state.name}: ${outcome}.${detail} Cost $${num(state.cost.screen + state.cost.proof, 2)}.`.slice(0, 400);
 }
