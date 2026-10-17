@@ -63,7 +63,7 @@ function ok(label, condition, detail = '') {
       const text = body.includes('"operation":"critic"')
         ? '{"dataCollection":"grounded","dataSelling":"unsupported","optOutRights":"grounded","howToOptOut":"vague","autoRenewal":"skipped","dataDeletion":"grounded","flags":["sharing overstated"]}'
         : 'SUMMARY FROM FAKE PROXY';
-      const data = { text, stopReason: 'end_turn', model: 'claude-sonnet-4-6', provider: 'anthropic', usage: { inputTokens: 900, outputTokens: 120, cacheReadTokens: 0, cacheWriteTokens: 0 } };
+      const data = { text, promptHash: 'a'.repeat(64), lessonsHash: 'b'.repeat(64), stopReason: 'end_turn', model: 'claude-sonnet-4-6', provider: 'anthropic', usage: { inputTokens: 900, outputTokens: 120, cacheReadTokens: 0, cacheWriteTokens: 0 } };
       return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => data, text: async () => JSON.stringify(data) };
     };
     try {
@@ -81,6 +81,7 @@ function ok(label, condition, detail = '') {
       ok('captured results are snapshots, untouched by later rewrites', state.analyses[0].result.summary === 'SUMMARY FROM FAKE PROXY' && state.critics[0].dataSelling === 'unsupported');
       ok('critic verdicts are captured on the run', state.critics.length === 1 && state.critics[0] && state.critics[0].dataSelling === 'unsupported', JSON.stringify(state.critics));
       ok('proxy usage is recorded for both calls', state.llmCalls === 2 && state.usage.length === 2 && state.usage.every(u => u.model === 'claude-sonnet-4-6' && u.input === 900), JSON.stringify(state.usage));
+      ok('analyzer prompt and fixed critic identity come from actual proxy responses', state.analyses[0].result.promptHash === 'a'.repeat(64) && state.evidence.length === 2 && state.evidence[1].operation === 'critic' && state.evidence[1].promptHash === 'a'.repeat(64) && state.evidence[1].lessonsHash === 'b'.repeat(64));
       const seen = [];
       const realFetchForPin = globalThis.fetch;
       globalThis.fetch = async (url, options) => { seen.push(JSON.parse(options.body)); return realFetchForPin(url, options); };

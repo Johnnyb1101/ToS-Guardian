@@ -4,7 +4,7 @@ const { proveCritic, renderCriticProof, DEFAULT_MIN_CATCH_GAIN, DEFAULT_MAX_FALS
 
 function usage(code) {
   console.log('Usage: node tools/prove-critic.js <treatmentRunDir> --control <controlRunDir> [--out <dir>] [--juror anthropic|openai] [--min-catch-gain 0.10] [--max-false-alarm-rise 0.10] [--max-failure-rise 0.02] [--max-holdout-loss 0.10]');
-  console.log('Both runs must hold the same analyses and jury verdicts; only the critic verdicts may differ. The proof is written to the treatment run unless --out names another directory.');
+  console.log('Historical critic comparison only; never authorizes promotion. Writes a separate diagnostic evaluation.');
   process.exit(code);
 }
 
@@ -43,11 +43,7 @@ if (!treatmentDir || !opts.control) usage(1);
 
 const treatment = path.resolve(treatmentDir);
 const control = path.resolve(opts.control);
-const out = path.resolve(opts.out || treatment);
-if (!opts.out && fs.existsSync(path.join(treatment, 'proof.json')) && !JSON.parse(fs.readFileSync(path.join(treatment, 'proof.json'), 'utf8')).kind) {
-  console.error(`${treatment} already holds a jury-score proof; pass --out to write the critic proof elsewhere.`);
-  process.exit(1);
-}
+const out = path.join(path.resolve(opts.out || treatment), 'step1a', 'critic-evaluation');
 const proof = proveCritic({
   controlArtifacts: loadArtifacts(control),
   treatmentArtifacts: loadArtifacts(treatment),
@@ -58,10 +54,16 @@ const proof = proveCritic({
   maxHoldoutLoss: opts.maxHoldoutLoss,
   meta: { runId: runIdOf(treatment), controlRunId: runIdOf(control) }
 });
+proof.legacyCriteriaPassed = proof.proven;
+proof.evaluationPassed = false;
+proof.proven = false;
+proof.diagnosticOnly = true;
+proof.promotionEligible = false;
+proof.summary = `Diagnostic critic comparison: legacy criteria ${proof.legacyCriteriaPassed ? 'passed' : 'failed'}${proof.reasons.length ? ` (${proof.reasons.join('; ')})` : ''}. This comparison does not satisfy the Step 1A evidence contract. Promotion is disabled pending Step 1B.`;
 fs.mkdirSync(out, { recursive: true });
-fs.writeFileSync(path.join(out, 'proof.json'), JSON.stringify(proof, null, 2) + '\n', 'utf8');
-const markdown = renderCriticProof(proof);
-fs.writeFileSync(path.join(out, 'proof.md'), markdown, 'utf8');
+fs.writeFileSync(path.join(out, 'evaluation.json'), JSON.stringify(proof, null, 2) + '\n', 'utf8');
+const markdown = renderCriticProof(proof).replace('# Critic proof', '# Diagnostic critic comparison').replace('Rule: proven when', 'Legacy statistical criteria:').replace('## Why not proven', '## Legacy comparison failures');
+fs.writeFileSync(path.join(out, 'evaluation.md'), markdown, 'utf8');
 console.log(markdown);
-console.log(`Written to ${path.join(out, 'proof.md')}`);
-process.exit(proof.proven ? 0 : 2);
+console.log(`Written to ${path.join(out, 'evaluation.md')}`);
+process.exit(proof.evaluationPassed ? 0 : 2);

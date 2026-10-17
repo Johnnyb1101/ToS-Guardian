@@ -1,6 +1,7 @@
 'use strict';
 
 const { SECTIONS } = require('./jury-lib');
+const { splitFor } = require('./reference-lib');
 
 const SECTION_TITLES = Object.freeze({
   dataCollection: 'WHAT THEY COLLECT',
@@ -65,7 +66,35 @@ function candidate(fields) {
   return { status: 'candidate', ...fields };
 }
 
-function dreamLessons(findings) {
+function assertWorkFindings(findings, opts = {}) {
+  const p = findings && findings.provenance;
+  if (!p || p.v !== 1 || p.scope !== 'work-only' || p.split !== 'work' || !/^[a-f0-9]{64}$/.test(p.manifestHash || '') || !Array.isArray(p.inputs) || !Array.isArray(p.excluded)) {
+    throw new Error('Findings lack trustworthy work-only provenance; regenerate Step1A reflection');
+  }
+  if (p.evaluationSetHash !== null && p.evaluationSetHash !== undefined && !/^[a-f0-9]{64}$/.test(p.evaluationSetHash)) throw new Error('Invalid run evaluation set provenance');
+  if (opts.juror && findings.juror !== opts.juror) throw new Error(`Cached findings juror ${findings.juror} does not match requested juror ${opts.juror}`);
+  if (!findings.totals || findings.totals.artifacts !== p.inputs.length || findings.totals.graded > p.inputs.length ||
+      !findings.score || !findings.score.bySplit || Object.keys(findings.score.bySplit).some(split => split !== 'work')) {
+    throw new Error('Findings totals or score splits conflict with work-only provenance');
+  }
+  const seen = new Set();
+  for (const input of p.inputs) {
+    const id = `${input.domain}#${input.sample}`;
+    if (seen.has(id) || typeof input.domain !== 'string' || input.split !== 'work' || splitFor(input.domain) !== 'work' ||
+        !Number.isInteger(input.sample) || input.sample < 1 || !/^[a-f0-9]{64}$/.test(input.textHash || '') || !/^[a-f0-9]{64}$/.test(input.artifactHash || '')) {
+      throw new Error(`Invalid work-only input provenance for ${id}`);
+    }
+    seen.add(id);
+  }
+  for (const item of p.excluded) {
+    if (typeof item.domain !== 'string' || item.split !== 'holdout' || splitFor(item.domain) !== 'holdout' || !Number.isInteger(item.sample) || seen.has(`${item.domain}#${item.sample}`)) {
+      throw new Error('Invalid validation-only exclusion provenance');
+    }
+  }
+}
+
+function dreamLessons(findings, opts = {}) {
+  assertWorkFindings(findings, opts);
   const out = [];
   let n = 0;
   const id = () => `L${String(++n).padStart(3, '0')}`;
@@ -250,4 +279,4 @@ function renderLessons(candidates, meta = {}) {
   return lines.join('\n');
 }
 
-module.exports = { SECTION_TITLES, COMPLETENESS_LESSONS, FABRICATION_LESSONS, IMPACT, dreamLessons, renderLessons };
+module.exports = { SECTION_TITLES, COMPLETENESS_LESSONS, FABRICATION_LESSONS, IMPACT, assertWorkFindings, dreamLessons, renderLessons };

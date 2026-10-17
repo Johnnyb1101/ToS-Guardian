@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { resolveProxyTarget, usageRecordFromProxyResponse, estimateCost, budgetExceeded } = require('./batch-lib');
 const J = require('./jury-lib');
+const { sha256Hex } = require('./reference-lib');
 
 const args = process.argv.slice(2);
 const command = args.shift();
@@ -116,6 +117,10 @@ async function grade() {
       const parsed = J.parseJuryJson(outcome.data.text);
       const verdict = J.normalizeVerdict(parsed);
       result.model = typeof outcome.data.model === 'string' ? outcome.data.model : '';
+      result.promptHash = typeof outcome.data.promptHash === 'string' ? outcome.data.promptHash : '';
+      result.rubricHash = typeof outcome.data.rubricHash === 'string' ? outcome.data.rubricHash : '';
+      result.sourceHash = sha256Hex(artifact.analysisSource);
+      result.summaryHash = sha256Hex(artifact.summary);
       result.stopReason = typeof outcome.data.stopReason === 'string' ? outcome.data.stopReason : '';
       result.usageRecord = usageRecordFromProxyResponse(outcome.data);
       result.raw = outcome.data.text;

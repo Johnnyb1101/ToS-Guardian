@@ -197,10 +197,10 @@ const steps = {
     const runDir = path.join(refLib.RUNS_DIR, ids.proof);
     const out = runTool(state, 'prove', [path.join(TOOLS, 'prove.js'), runDir, '--control', path.join(refLib.RUNS_DIR, spec.control)]);
     if (out.code !== 0 && out.code !== 2) throw new Error(`prove exited ${out.code}`);
-    const proof = JSON.parse(fs.readFileSync(path.join(runDir, 'proof.json'), 'utf8'));
-    state.proof = { kind: 'jury', proven: proof.proven === true, summary: proof.summary, lessonsHash: proof.lessonsHash, runDir: path.relative(path.join(TOOLS, '..'), runDir).replace(/\\/g, '/') };
-    state.decision = proof.proven ? 'proven' : 'not-proven';
-    return { status: 'done', note: proof.proven ? 'proven' : 'not proven' };
+    const proof = JSON.parse(fs.readFileSync(path.join(runDir, 'step1a', 'evaluation', 'evaluation.json'), 'utf8'));
+    state.proof = { kind: 'jury', proven: false, diagnosticOnly: true, promotionEligible: false, evaluationPassed: proof.evaluationPassed === true, summary: proof.summary, lessonsHash: proof.lessonsHash, runDir: path.relative(path.join(TOOLS, '..'), runDir).replace(/\\/g, '/'), reportFile: 'step1a/evaluation/evaluation.md' };
+    state.decision = proof.evaluationPassed ? 'evaluation-passed' : 'evaluation-failed';
+    return { status: 'done', note: state.decision };
   },
 
   async 'critic-replay'(state) {
@@ -219,10 +219,10 @@ const steps = {
     const runDir = path.join(refLib.RUNS_DIR, ids.critic);
     const out = runTool(state, 'prove critic', [path.join(TOOLS, 'prove-critic.js'), runDir, '--control', path.join(refLib.RUNS_DIR, spec.control)]);
     if (out.code !== 0 && out.code !== 2) throw new Error(`prove-critic exited ${out.code}`);
-    const proof = JSON.parse(fs.readFileSync(path.join(runDir, 'proof.json'), 'utf8'));
-    state.proof = { kind: 'critic', proven: proof.proven === true, summary: proof.summary, lessonsHash: proof.lessonsHash, runDir: path.relative(path.join(TOOLS, '..'), runDir).replace(/\\/g, '/') };
-    state.decision = proof.proven ? 'proven' : 'not-proven';
-    return { status: 'done', note: proof.proven ? 'proven' : 'not proven' };
+    const proof = JSON.parse(fs.readFileSync(path.join(runDir, 'step1a', 'critic-evaluation', 'evaluation.json'), 'utf8'));
+    state.proof = { kind: 'critic', proven: false, diagnosticOnly: true, promotionEligible: false, evaluationPassed: proof.evaluationPassed === true, summary: proof.summary, lessonsHash: proof.lessonsHash, runDir: path.relative(path.join(TOOLS, '..'), runDir).replace(/\\/g, '/'), reportFile: 'step1a/critic-evaluation/evaluation.md' };
+    state.decision = proof.evaluationPassed ? 'evaluation-passed' : 'evaluation-failed';
+    return { status: 'done', note: state.decision };
   },
 
   async report(state) {
@@ -281,7 +281,7 @@ async function go() {
   }
   console.log('');
   console.log(lib.renderReport(state));
-  process.exit(state.decision === 'proven' ? 0 : 2);
+  process.exit(state.decision === 'evaluation-passed' ? 0 : 2);
 }
 
 async function status() {

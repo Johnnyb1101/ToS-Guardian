@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { resolveProxyTarget } = require('./batch-lib');
 const { candidatesToLessons, reviseCandidate, renderLessonList } = require('./lessons-lib');
+const { dream } = require('./dream');
 
 function usage(code) {
   console.log('Usage:');
@@ -53,7 +54,8 @@ async function list() {
 async function create() {
   const runDir = positional[0];
   if (!runDir) usage(1);
-  const file = path.join(path.resolve(runDir), 'dream', 'lessons.json');
+  dream(path.resolve(runDir));
+  const file = path.join(path.resolve(runDir), 'step1a', 'dream', 'lessons.json');
   if (!fs.existsSync(file)) { console.error(`No dream output at ${file}; run tools/dream.js first.`); process.exit(1); }
   const record = JSON.parse(fs.readFileSync(file, 'utf8'));
   const lessons = candidatesToLessons(record.candidates, { ids: opts.ids, target: opts.target, runId: record.runId });
@@ -68,7 +70,8 @@ async function create() {
 async function revise() {
   const [runDir, candidateId] = positional;
   if (!runDir || !candidateId || !opts.text) usage(1);
-  const file = path.join(path.resolve(runDir), 'dream', 'lessons.json');
+  dream(path.resolve(runDir));
+  const file = path.join(path.resolve(runDir), 'step1a', 'dream', 'lessons.json');
   if (!fs.existsSync(file)) { console.error(`No dream output at ${file}; run tools/dream.js first.`); process.exit(1); }
   const record = JSON.parse(fs.readFileSync(file, 'utf8'));
   const lesson = reviseCandidate(record.candidates, candidateId, opts.text, { id: opts.id, runId: record.runId, after: opts.after });
@@ -83,9 +86,12 @@ async function setStatus() {
   if (!id || !status) usage(1);
   let proof;
   if (opts.proof) {
-    const file = path.join(path.resolve(opts.proof), 'proof.json');
+    const runDir = path.resolve(opts.proof);
+    if (['evaluation', 'critic-evaluation'].some(name => fs.existsSync(path.join(runDir, 'step1a', name, 'evaluation.json')))) throw new Error('This run has a diagnostic evaluation; its historical proof cannot authorize a new lesson status change. Step 1B is pending.');
+    const file = path.join(runDir, 'proof.json');
     if (!fs.existsSync(file)) { console.error(`No proof at ${file}; run tools/prove.js first.`); process.exit(1); }
     const p = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (p.diagnosticOnly || p.promotionEligible === false) throw new Error('Diagnostic evaluation cannot authorize a lesson status change; Step 1B is pending.');
     proof = { runId: p.runId, controlRunId: p.controlRunId, proven: p.proven === true, summary: p.summary };
   }
   const { status: http, data } = await json('POST', `/lessons/${encodeURIComponent(id)}/status`, { status, proof });

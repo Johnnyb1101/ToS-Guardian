@@ -1,6 +1,12 @@
 const D = require('../tools/dream-lib');
 const { SECTIONS } = require('../tools/jury-lib');
 const { THEME_SECTIONS } = require('../tools/reflect-lib');
+const { splitFor } = require('../tools/reference-lib');
+const { loadManifest } = require('../tools/reference-lib');
+const { dream } = require('../tools/dream');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 let passed = 0;
 let failed = 0;
@@ -12,12 +18,18 @@ function ok(label, condition, detail = '') {
 console.log('Dream');
 
 function findings(over = {}) {
+  const inputs = [];
+  for (let n = 0; inputs.length < 150; n++) {
+    const domain = `work-${n}.example`;
+    if (splitFor(domain) === 'work') inputs.push({ domain, sample: 1, split: 'work', textHash: 'a'.repeat(64), artifactHash: 'b'.repeat(64) });
+  }
   const sections = Object.fromEntries(SECTIONS.map(s => [s, { applicable: 100, errorRate: 0, incompleteRate: 0.3, byType: { financial: { n: 40, errorRate: 0, incompleteRate: 0.3 } }, notesSample: [] }]));
   sections.optOutRights.incompleteRate = 0.85;
   sections.dataSelling.incompleteRate = 0.9;
   sections.dataSelling.byType.commerce = { n: 15, errorRate: 0, incompleteRate: 1 };
   return {
     v: 1, runId: 'r1', generatedAt: '2026-09-10T00:00:00.000Z', juror: 'anthropic',
+    provenance: { v: 1, scope: 'work-only', split: 'work', manifestHash: 'c'.repeat(64), evaluationSetHash: null, inputs, excluded: [] },
     snapshot: {}, totals: { artifacts: 150, graded: 147, cost: { total: 38 } },
     score: { overall: { n: 147, mean: 70 }, bySplit: {}, byType: {} },
     sections,
@@ -55,6 +67,10 @@ ok('unstable sites yield a proof-design note', find(c => c.kind === 'note' && /t
 ok('candidates are sorted by priority with ids assigned', candidates.every((c, i) => i === 0 || candidates[i - 1].priority >= c.priority) && candidates.every(c => /^L\d{3}$/.test(c.id)));
 ok('the most frequent fabrication pattern ranks first and the proof note near last', candidates[0].kind === 'lesson' && /menu path/.test(candidates[0].text) && candidates.findIndex(c => c.kind === 'note') >= candidates.length - 3);
 ok('every candidate starts as a proposal', candidates.every(c => c.status === 'candidate'));
+const rejects = fn => { try { fn(); return false; } catch (_) { return true; } };
+ok('old findings without work-only provenance cannot produce lessons', rejects(() => D.dreamLessons(findings({ provenance: undefined }))));
+ok('library rejects findings with holdout disguised as work', rejects(() => D.dreamLessons(findings({ provenance: { ...findings().provenance, inputs: [{ domain: 'amazon.com', sample: 1, split: 'work', textHash: 'a'.repeat(64), artifactHash: 'b'.repeat(64) }] } }))));
+ok('library rejects cached findings for a different juror', rejects(() => D.dreamLessons(findings(), { juror: 'openai' })));
 
 const quiet = D.dreamLessons(findings({
   sections: Object.fromEntries(SECTIONS.map(s => [s, { applicable: 100, errorRate: 0, incompleteRate: 0.2, byType: {}, notesSample: [] }])),
@@ -71,6 +87,29 @@ ok('a clean run yields no candidates', quiet.length === 0, JSON.stringify(quiet.
 const md = D.renderLessons(candidates, { runId: 'r1', generatedAt: '2026-09-10T00:00:00.000Z' });
 ok('lessons render grouped by kind with evidence lines', md.includes('# Lesson candidates — r1') && md.includes('## Prompt lessons') && md.includes('## Code changes') && md.includes('- a.com: Settings → Privacy'));
 ok('an empty candidate list renders', D.renderLessons([], {}).includes('0 candidate(s)'));
+
+const tempRun = fs.mkdtempSync(path.join(os.tmpdir(), 'tos-step1a-dream-'));
+try {
+  const site = loadManifest().sites['acorns.com'];
+  fs.mkdirSync(path.join(tempRun, 'artifacts'));
+  fs.mkdirSync(path.join(tempRun, 'reflect'));
+  fs.mkdirSync(path.join(tempRun, 'dream'));
+  fs.writeFileSync(path.join(tempRun, 'reflect', 'findings.json'), 'legacy reflection');
+  fs.writeFileSync(path.join(tempRun, 'dream', 'lessons.json'), 'legacy lessons');
+  fs.writeFileSync(path.join(tempRun, 'run.json'), JSON.stringify({ runId: 'test-step1a', evaluationSet: [{ domain: 'acorns.com', split: 'work', docType: 'financial', textHash: site.textHash, samples: [1] }] }));
+  fs.writeFileSync(path.join(tempRun, 'artifacts', 'acorns.com.1.json'), JSON.stringify({ domain: 'acorns.com', sample: 1, split: 'work', docType: 'financial', textHash: site.textHash, analyzer: { status: 'error' }, summary: null, cost: 0 }));
+  const generated = dream(tempRun, { juror: 'anthropic' });
+  const stepFindings = path.join(tempRun, 'step1a', 'reflect', 'findings.json');
+  ok('CLI writes Step1A outputs while preserving historical reports', generated.outDir === path.join(tempRun, 'step1a', 'dream') && fs.existsSync(stepFindings) && fs.readFileSync(path.join(tempRun, 'reflect', 'findings.json'), 'utf8') === 'legacy reflection' && fs.readFileSync(path.join(tempRun, 'dream', 'lessons.json'), 'utf8') === 'legacy lessons');
+  ok('CLI rejects cached findings from another juror', rejects(() => dream(tempRun, { juror: 'openai' })));
+  const saved = JSON.parse(fs.readFileSync(stepFindings, 'utf8'));
+  fs.writeFileSync(stepFindings, JSON.stringify({ ...saved, provenance: undefined }));
+  ok('CLI rejects legacy cache without provenance', rejects(() => dream(tempRun, { juror: 'anthropic' })));
+  fs.writeFileSync(stepFindings, JSON.stringify({ ...saved, fabrications: { total: 999, byPattern: { 'menu-path': { count: 999, sites: 1, examples: [] } } } }));
+  ok('CLI derives lessons from current work artifacts even if cached aggregates were edited', dream(tempRun, { juror: 'anthropic' }).candidates.length === 0);
+} finally {
+  if (path.resolve(tempRun).startsWith(path.resolve(os.tmpdir()) + path.sep)) fs.rmSync(tempRun, { recursive: true, force: true });
+}
 
 console.log(`\nSummary: ${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

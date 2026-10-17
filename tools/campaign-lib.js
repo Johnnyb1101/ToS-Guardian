@@ -115,6 +115,7 @@ function proposal(state) {
   const list = ids.length ? ids : ['<lesson id>'];
   if (state.decision === 'stopped-at-screen') return `Retire the candidates; the screen showed the regression that bundle 2 had.\n${list.map(id => `node tools/lessons.js status ${id} retired --proxy ${proxy}`).join('\n')}`;
   if (!state.proof) return 'No proof was reached.';
+  if (state.proof.diagnosticOnly || state.proof.promotionEligible === false) return 'Evaluation is diagnostic only. Keep candidates pending; promotion and rollout require Step 1B.';
   const verb = state.proof.proven ? 'promoted' : 'retired';
   return `${state.proof.proven ? 'Promote' : 'Retire'} the candidates with the proof attached.\n${list.map(id => `node tools/lessons.js status ${id} ${verb} --proxy ${proxy} --proof ${state.proof.runDir}`).join('\n')}`;
 }
@@ -149,7 +150,7 @@ function renderReport(state) {
     lines.push('## Proof');
     lines.push('');
     lines.push(`${state.proof.summary}`);
-    lines.push(`Lesson set ${state.proof.lessonsHash ? state.proof.lessonsHash.slice(0, 12) : 'mixed or none'}; details in ${state.proof.runDir}/proof.md.`);
+    lines.push(`Lesson set ${state.proof.lessonsHash ? state.proof.lessonsHash.slice(0, 12) : 'mixed or none'}; details in ${state.proof.runDir}/${state.proof.reportFile || 'proof.md'}.`);
   }
   lines.push('');
   lines.push('## Steps');
@@ -164,7 +165,7 @@ function renderReport(state) {
 }
 
 function notificationText(state) {
-  const outcome = state.failure ? `failed: ${state.failure}` : state.decision === 'stopped-at-screen' ? 'stopped at the screen' : state.proof ? (state.proof.proven ? 'PROVEN' : 'not proven') : 'finished';
+  const outcome = state.failure ? `failed: ${state.failure}` : state.decision === 'stopped-at-screen' ? 'stopped at the screen' : state.proof ? (state.proof.diagnosticOnly ? (state.proof.evaluationPassed ? 'evaluation passed (diagnostic only)' : 'evaluation failed (diagnostic only)') : state.proof.proven ? 'PROVEN' : 'not proven') : 'finished';
   const detail = state.proof && state.proof.summary ? ` ${state.proof.summary}` : state.screen && !state.screen.proceed ? ` ${state.screen.reasons.join('; ')}` : '';
   return `ToS Guardian campaign ${state.name}: ${outcome}.${detail} Cost $${num(state.cost.screen + state.cost.proof, 2)}.`.slice(0, 400);
 }

@@ -3,7 +3,7 @@ const os = require('os');
 const path = require('path');
 const lib = require('../tools/reference-lib');
 const { createPipelineHost } = require('../tools/pipeline-host');
-const { parseArgs, selectSites, loadFrozen, stubPipeline } = require('../tools/replay');
+const { parseArgs, selectSites, loadFrozen, stubPipeline, evaluationSet, replayMeta } = require('../tools/replay');
 
 let passed = 0;
 let failed = 0;
@@ -38,6 +38,19 @@ function ok(label, condition, detail = '') {
   ok('explicit sites bypass the split and shell filters', names(selectSites(manifest, parseArgs(['--sites', 's.com,h.com']))) === 'h.com,s.com');
   ok('limit applies after filtering', names(selectSites(manifest, parseArgs(['--split', 'all', '--limit', '2']))) === 'a.com,h.com');
 
+  const selected = selectSites(manifest, parseArgs(['--split', 'all']));
+  const declaration = evaluationSet(selected, 3);
+  ok('declaration pins each site, document, type, split and sample', declaration.length === 3 && declaration.find(e => e.domain === 'h.com').split === 'validation' && declaration.every(e => e.textHash === 'h' && e.docType && e.samples.join(',') === '1,2,3'));
+  const replayOptions = parseArgs(['--split', 'all', '--samples', '3', '--lessons', 'none']);
+  const recorded = replayMeta(null, selected, replayOptions, 'r', 'http://localhost:3000', 'date');
+  ok('an identical replay can resume its pinned declaration', replayMeta(recorded, selected, replayOptions, 'r', 'http://localhost:3000', 'later') === recorded);
+  const refuses = fn => { try { fn(); return false; } catch (e) { return /new run id/.test(e.message); } };
+  ok('resuming rejects changed sites, samples, lessons and historical metadata',
+    refuses(() => replayMeta(recorded, selected.slice(1), replayOptions, 'r', recorded.proxy)) &&
+    refuses(() => replayMeta(recorded, selected, { ...replayOptions, samples: 4 }, 'r', recorded.proxy)) &&
+    refuses(() => replayMeta(recorded, selected, { ...replayOptions, lessons: 'canary' }, 'r', recorded.proxy)) &&
+    refuses(() => replayMeta({ ...recorded, evaluationSet: undefined }, selected, replayOptions, 'r', recorded.proxy)));
+
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-replay-'));
   const text = '=== PRIVACY POLICY ===\nWe share with affiliates.';
   const frozen = {
@@ -52,6 +65,10 @@ function ok(label, condition, detail = '') {
   ok('a frozen source that matches the manifest hash loads', !!loadFrozen({ sourceFile: relative, textHash: frozen.textHash }).frozen);
   ok('a frozen source with a different hash is refused', /does not match/.test(loadFrozen({ sourceFile: relative, textHash: 'x'.repeat(64) }).error));
   ok('a missing frozen source is reported', /missing/.test(loadFrozen({ sourceFile: 'sources/nope.example.json', textHash: 'h' }).error));
+  fs.writeFileSync(sourcePath, JSON.stringify({ ...frozen, fetched: { ...frozen.fetched, text: 'changed source' } }), 'utf8');
+  ok('a stored hash cannot conceal changed frozen source text', /does not match/.test(loadFrozen({ sourceFile: relative, textHash: frozen.textHash }).error));
+  fs.writeFileSync(sourcePath, JSON.stringify(frozen), 'utf8');
+  ok('a frozen source for another domain is rejected', /domain/.test(loadFrozen({ domain: 'other.com', sourceFile: relative, textHash: frozen.textHash }).error));
 
   const host = createPipelineHost({ proxyUrl: 'http://127.0.0.1:9', critic: false });
   stubPipeline(host);

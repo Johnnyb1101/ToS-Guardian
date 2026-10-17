@@ -84,5 +84,10 @@ const text = C.notificationText(state);
 ok('the notification is short, names the campaign and the outcome, and carries no document text', text.startsWith('ToS Guardian campaign bundle-2b-billing: PROVEN.') && /Cost \$48\.00/.test(text) && text.length <= 400);
 ok('a failure notification names the step', /failed: register: proxy down/.test(C.notificationText({ ...state, failure: 'register: proxy down' })));
 
+const diagnostic = { ...state, decision: 'evaluation-passed', proof: { ...state.proof, proven: false, diagnosticOnly: true, promotionEligible: false, evaluationPassed: true, reportFile: 'step1a/evaluation/evaluation.md' } };
+ok('passing diagnostic evaluations keep candidates pending and issue no promotion commands', /Keep candidates pending/.test(C.proposal(diagnostic)) && !/lessons.js status/.test(C.proposal(diagnostic)) && C.renderReport(diagnostic).includes('/step1a/evaluation/evaluation.md'));
+ok('diagnostic flags override even an inconsistent proven flag', !/lessons.js status/.test(C.proposal({ ...diagnostic, proof: { ...diagnostic.proof, proven: true } })));
+ok('diagnostic notifications distinguish evaluation success from promotion proof', C.notificationText(diagnostic).includes('evaluation passed (diagnostic only)') && !C.notificationText(diagnostic).includes('PROVEN'));
+
 console.log(`\nSummary: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

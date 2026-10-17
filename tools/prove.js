@@ -13,13 +13,13 @@ function loadArtifacts(runDir) {
   return fs.readdirSync(dir).filter(f => f.endsWith('.json')).sort().map(f => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')));
 }
 
-function runIdOf(runDir) {
+function loadMeta(runDir) {
   const metaPath = path.join(runDir, 'run.json');
   if (fs.existsSync(metaPath)) {
     const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-    if (typeof meta.runId === 'string') return meta.runId;
+    return meta;
   }
-  return path.basename(runDir);
+  return {};
 }
 
 const argv = process.argv.slice(2);
@@ -39,17 +39,23 @@ if (!treatmentDir || !opts.control) usage(1);
 
 const treatment = path.resolve(treatmentDir);
 const control = path.resolve(opts.control);
+const treatmentMeta = loadMeta(treatment);
+const controlMeta = loadMeta(control);
 const proof = prove({
   controlArtifacts: loadArtifacts(control),
   treatmentArtifacts: loadArtifacts(treatment),
+  treatmentMeta,
+  controlMeta,
   juror: opts.juror,
   minGain: opts.minGain,
   maxHoldoutLoss: opts.maxHoldoutLoss,
-  meta: { runId: runIdOf(treatment), controlRunId: runIdOf(control) }
+  meta: { runId: treatmentMeta.runId || path.basename(treatment), controlRunId: controlMeta.runId || path.basename(control) }
 });
-fs.writeFileSync(path.join(treatment, 'proof.json'), JSON.stringify(proof, null, 2) + '\n', 'utf8');
+const outputDir = path.join(treatment, 'step1a', 'evaluation');
+fs.mkdirSync(outputDir, { recursive: true });
+fs.writeFileSync(path.join(outputDir, 'evaluation.json'), JSON.stringify(proof, null, 2) + '\n', 'utf8');
 const markdown = renderProof(proof);
-fs.writeFileSync(path.join(treatment, 'proof.md'), markdown, 'utf8');
+fs.writeFileSync(path.join(outputDir, 'evaluation.md'), markdown, 'utf8');
 console.log(markdown);
-console.log(`Written to ${path.join(treatment, 'proof.md')}`);
-process.exit(proof.proven ? 0 : 2);
+console.log(`Written to ${path.join(outputDir, 'evaluation.md')}`);
+process.exit(proof.evaluationPassed ? 0 : 2);

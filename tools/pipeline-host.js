@@ -18,7 +18,7 @@ const DIRECT_FETCH_HEADERS = Object.freeze({
 });
 
 function newRunState() {
-  return { controller: new AbortController(), usage: [], llmCalls: 0, logs: [], lastResult: null, events: [], analyses: [], critics: [], communityReports: [] };
+  return { controller: new AbortController(), usage: [], llmCalls: 0, logs: [], lastResult: null, events: [], analyses: [], critics: [], evidence: [], communityReports: [] };
 }
 
 function createPipelineHost(options) {
@@ -63,6 +63,8 @@ function createPipelineHost(options) {
     if (state && response.ok) {
       const record = usageRecordFromProxyResponse(data);
       if (record) state.usage.push(record);
+      const request = typeof finalOptions.body === 'string' ? JSON.parse(finalOptions.body) : {};
+      state.evidence.push({ operation: request.operation, model: data.model || '', promptHash: data.promptHash || '', lessonsHash: data.lessonsHash || '' });
     }
     // analyzeWithModel and runCritic read only ok, status, and json from a response
     return { ok: response.ok, status: response.status, json: async () => data };
@@ -195,9 +197,11 @@ function createPipelineHost(options) {
   // the orchestrator rewrites the returned objects in place, so capture copies
   const realAnalyzeWithModel = context.analyzeWithModel;
   context.analyzeWithModel = async (...args) => {
+    const before = runState.getStore()?.evidence.length || 0;
     const result = await realAnalyzeWithModel(...args);
     const state = runState.getStore();
-    if (state) state.analyses.push({ escalated: args[2] === true, result: result && typeof result === 'object' ? { ...result } : result });
+    const evidence = state && state.evidence.slice(before).filter(e => e.operation === 'analyzer').pop();
+    if (state) state.analyses.push({ escalated: args[2] === true, result: result && typeof result === 'object' ? { ...result, promptHash: evidence?.promptHash || '' } : result });
     return result;
   };
   const realRunCritic = context.runCritic;

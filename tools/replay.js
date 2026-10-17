@@ -64,7 +64,8 @@ function loadFrozen(entry) {
   const file = path.join(lib.REFERENCE_DIR, entry.sourceFile);
   if (!fs.existsSync(file)) return { error: 'frozen source missing; refreeze the site' };
   const frozen = JSON.parse(fs.readFileSync(file, 'utf8'));
-  if (frozen.textHash !== entry.textHash) return { error: 'frozen source does not match the manifest hash; refreeze the site' };
+  if (frozen.textHash !== entry.textHash || !frozen.fetched || typeof frozen.fetched.text !== 'string' || lib.sha256Hex(frozen.fetched.text) !== entry.textHash) return { error: 'frozen source does not match the manifest hash; refreeze the site' };
+  if (entry.domain && frozen.domain !== entry.domain) return { error: 'frozen source domain does not match the manifest; refreeze the site' };
   return { frozen };
 }
 
@@ -104,6 +105,22 @@ function stubPipeline(host) {
 
 function groundedCount(critic) {
   return SECTIONS.filter(name => critic[name] === 'grounded').length;
+}
+
+function evaluationSet(entries, samples) {
+  return entries.map(entry => ({ domain: entry.domain, split: entry.split === 'holdout' ? 'validation' : entry.split, docType: lib.effectiveType(entry), textHash: entry.textHash, samples: Array.from({ length: samples }, (_, i) => i + 1) }));
+}
+
+function replayMeta(existing, entries, opts, runId, proxy, manifestUpdatedAt) {
+  const declared = evaluationSet(entries, opts.samples);
+  const options = { split: opts.split, type: opts.type, sites: opts.sites, limit: Number.isFinite(opts.limit) ? opts.limit : null, samples: opts.samples, includeShells: opts.includeShells, escalate: opts.escalate, lessons: opts.lessons };
+  if (existing) {
+    if (existing.runId !== runId || existing.proxy !== proxy || JSON.stringify(existing.evaluationSet) !== JSON.stringify(declared) || JSON.stringify(existing.options) !== JSON.stringify(options)) {
+      throw new Error('Replay declaration or options changed, or historical run lacks evaluation metadata; use a new run id.');
+    }
+    return existing;
+  }
+  return { v: 2, runId, startedAt: new Date().toISOString(), proxy, manifestUpdatedAt, options, sites: entries.map(e => e.domain), evaluationSet: declared };
 }
 
 async function replayOne(host, entry, frozen, sample, opts, runId) {
@@ -147,6 +164,7 @@ async function replayOne(host, entry, frozen, sample, opts, runId) {
     analyzer: result ? {
       status: result.status || (typeof result.summary === 'string' ? 'ok' : 'none'),
       model: result.model || '',
+      promptHash: result.promptHash || '',
       providerTag: result.providerTag || '',
       stopReason: result.stopReason || '',
       escalated: !!analysis.escalated,
@@ -160,6 +178,7 @@ async function replayOne(host, entry, frozen, sample, opts, runId) {
     analysisSource: result && typeof result.analysisSource === 'string' ? result.analysisSource : null,
     summary: result && typeof result.summary === 'string' ? result.summary : null,
     critic,
+    criticConfig: state.evidence.filter(e => e.operation === 'critic').map(({ model, promptHash, lessonsHash }) => ({ model, promptHash, lessonsHash })).pop() || null,
     verdict: verdict ? {
       label: verdict.label,
       score: verdict.score,
@@ -194,11 +213,7 @@ async function runReplay(args) {
   const artifactsDir = path.join(runDir, 'artifacts');
   fs.mkdirSync(artifactsDir, { recursive: true });
   const metaPath = path.join(runDir, 'run.json');
-  const meta = fs.existsSync(metaPath) ? JSON.parse(fs.readFileSync(metaPath, 'utf8')) : {
-    v: 1, runId, startedAt: new Date().toISOString(), proxy: target.url, manifestUpdatedAt: manifest.updatedAt,
-    options: { split: opts.split, type: opts.type, sites: opts.sites, limit: Number.isFinite(opts.limit) ? opts.limit : null, samples: opts.samples, includeShells: opts.includeShells, escalate: opts.escalate, lessons: opts.lessons },
-    sites: entries.map(e => e.domain)
-  };
+  const meta = replayMeta(fs.existsSync(metaPath) ? JSON.parse(fs.readFileSync(metaPath, 'utf8')) : null, entries, opts, runId, target.url, manifest.updatedAt);
   fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + '\n', 'utf8');
 
   const host = createPipelineHost({
@@ -249,7 +264,7 @@ async function runReplay(args) {
   console.log(`Next: node tools/jury.js grade "${runDir}" --proxy ${target.url}`);
 }
 
-module.exports = { parseArgs, selectSites, loadFrozen, stubPipeline, replayOne, runReplay };
+module.exports = { parseArgs, selectSites, loadFrozen, stubPipeline, replayOne, runReplay, evaluationSet, replayMeta };
 
 if (require.main === module) {
   runReplay(process.argv.slice(2)).catch(err => {

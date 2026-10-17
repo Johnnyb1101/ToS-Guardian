@@ -1,6 +1,7 @@
 'use strict';
 
 const { SECTIONS, summarizeRun } = require('./jury-lib');
+const { validateEvidence } = require('./evaluation-lib');
 
 const DEFAULT_MIN_GAIN = 3;
 const DEFAULT_MAX_HOLDOUT_LOSS = 5;
@@ -36,7 +37,7 @@ function bootstrapMeanInterval(values, resamples = DEFAULT_RESAMPLES, seed = 7) 
 
 function perSite(artifacts, juror) {
   const summary = summarizeRun(artifacts, { juror });
-  const sites = {};
+  const sites = Object.create(null);
   for (const row of summary.rows) {
     if (typeof row.juryScore !== 'number') continue;
     const site = sites[row.domain] = sites[row.domain] || { domain: row.domain, split: row.split, docType: row.docType, scores: [], fabrications: [], incomplete: [], criticAgreement: [], lessonsHashes: new Set() };
@@ -54,6 +55,7 @@ function perSite(artifacts, juror) {
   for (const site of Object.values(sites)) {
     site.score = mean(site.scores);
     site.fabricationRate = mean(site.fabrications);
+    site.fabricationCount = site.fabrications.reduce((sum, n) => sum + n, 0);
     site.incompleteRate = mean(site.incomplete);
     site.critic = mean(site.criticAgreement);
     site.lessonsHashes = [...site.lessonsHashes];
@@ -78,48 +80,66 @@ function splitStats(deltas, split, resamples, seed) {
   return { n: values.length, mean: mean(values), lower: interval.lower, upper: interval.upper, improved: values.filter(v => v > 0).length, worsened: values.filter(v => v < 0).length };
 }
 
-function prove({ controlArtifacts, treatmentArtifacts, juror = 'anthropic', minGain = DEFAULT_MIN_GAIN, maxHoldoutLoss = DEFAULT_MAX_HOLDOUT_LOSS, resamples = DEFAULT_RESAMPLES, meta = {} }) {
-  const control = perSite(controlArtifacts, juror);
-  const treatment = perSite(treatmentArtifacts, juror);
+function prove({ controlArtifacts, treatmentArtifacts, controlMeta, treatmentMeta, juror = 'anthropic', minGain = DEFAULT_MIN_GAIN, maxHoldoutLoss = DEFAULT_MAX_HOLDOUT_LOSS, resamples = DEFAULT_RESAMPLES, meta = {} }) {
+  const evidence = validateEvidence({ controlArtifacts, treatmentArtifacts, controlMeta, treatmentMeta, juror });
+  const reasons = [...evidence.reasons];
+  if (!Number.isFinite(minGain) || minGain < DEFAULT_MIN_GAIN) reasons.push('minGain must be finite and at least 3');
+  if (!Number.isFinite(maxHoldoutLoss) || maxHoldoutLoss < 0 || maxHoldoutLoss > DEFAULT_MAX_HOLDOUT_LOSS) reasons.push('validation loss floor must be finite and between 0 and 5');
+  if (!Number.isSafeInteger(resamples) || resamples < 1000 || resamples > 100000) { reasons.push('resamples must be an integer between 1000 and 100000'); resamples = DEFAULT_RESAMPLES; }
+  const control = perSite(evidence.valid.control, juror);
+  const treatment = perSite(evidence.valid.treatment, juror);
   const metrics = {};
-  for (const [metric, higherIsBetter] of [['score', true], ['fabricationRate', false], ['incompleteRate', false], ['critic', true]]) {
+  for (const [metric, higherIsBetter] of [['score', true], ['fabricationCount', false], ['fabricationRate', false], ['incompleteRate', false], ['critic', true]]) {
     const deltas = pairedDeltas(control, treatment, metric);
     metrics[metric] = {
       higherIsBetter,
       all: splitStats(deltas, 'all', resamples, 1),
       work: splitStats(deltas, 'work', resamples, 2),
-      holdout: splitStats(deltas, 'holdout', resamples, 3),
+      validation: splitStats(deltas, 'validation', resamples, 3),
       sites: deltas.sort((a, b) => a.domain.localeCompare(b.domain))
     };
   }
   const score = metrics.score;
-  const reasons = [];
   if (score.work.n < 5) reasons.push(`only ${score.work.n} paired work site(s); need at least 5`);
   if (score.work.lower === null || score.work.lower <= 0) reasons.push(`work-split gain is inside the noise (mean ${num(score.work.mean)}, 95% interval ${num(score.work.lower)} to ${num(score.work.upper)})`);
   if (score.work.mean !== null && score.work.mean < minGain) reasons.push(`work-split mean gain ${num(score.work.mean)} is below the ${minGain}-point floor`);
-  if (score.holdout.n >= 3 && score.holdout.lower !== null && score.holdout.lower < -maxHoldoutLoss) reasons.push(`holdout may have regressed (95% interval ${num(score.holdout.lower)} to ${num(score.holdout.upper)})`);
-  if (score.holdout.n >= 3 && score.holdout.mean !== null && score.holdout.mean < 0 && score.holdout.upper !== null && score.holdout.upper < 0) reasons.push(`holdout mean fell by ${num(-score.holdout.mean)} with the interval below zero`);
+  if (score.validation.n < 3) reasons.push(`only ${score.validation.n} paired validation site(s); need at least 3`);
+  if (score.validation.mean === null || score.validation.mean < 0) reasons.push(`validation mean must be nonnegative (mean ${num(score.validation.mean)})`);
+  if (score.validation.lower === null || score.validation.lower < -maxHoldoutLoss) reasons.push(`validation interval falls below -${maxHoldoutLoss} (95% ${num(score.validation.lower)} to ${num(score.validation.upper)})`);
+  for (const row of metrics.fabricationCount.sites) if (row.delta > 0) reasons.push(`fabrication count increased at ${row.domain}: ${row.control} to ${row.treatment}`);
+  for (const split of ['work', 'validation']) {
+    const delta = metrics.fabricationCount.sites.filter(row => row.split === split).reduce((sum, row) => sum + row.delta, 0);
+    if (delta > 0) reasons.push(`fabrication count increased on ${split} split by ${delta}`);
+  }
   const treatmentHashes = new Set(Object.values(treatment.sites).flatMap(s => s.lessonsHashes));
   const controlHashes = new Set(Object.values(control.sites).flatMap(s => s.lessonsHashes));
-  if (treatmentHashes.size !== 1) reasons.push(`treatment ran under ${treatmentHashes.size} lesson sets; a proof needs exactly one`);
-  const proven = reasons.length === 0;
+  const evaluationPassed = reasons.length === 0;
   return {
-    v: 1,
-    provenAt: new Date().toISOString(),
-    controlRunId: meta.controlRunId || null,
-    runId: meta.runId || null,
+    v: 2,
+    evaluatedAt: new Date().toISOString(),
+    controlRunId: controlMeta && controlMeta.runId || meta.controlRunId || null,
+    runId: treatmentMeta && treatmentMeta.runId || meta.runId || null,
     juror,
     thresholds: { minGain, maxHoldoutLoss, resamples },
     lessonsHash: treatmentHashes.size === 1 ? [...treatmentHashes][0] : null,
     controlLessonsHashes: [...controlHashes],
     samples: { control: control.summary.graded, treatment: treatment.summary.graded },
+    evidence: {
+      completeAndCompatible: evidence.reasons.length === 0,
+      declaredRecords: { control: evidence.declarations.control.size, treatment: evidence.declarations.treatment.size },
+      acceptedRecords: { control: evidence.valid.control.length, treatment: evidence.valid.treatment.length },
+      reasons: evidence.reasons
+    },
     cost: { control: control.summary.cost.total, treatment: treatment.summary.cost.total },
     metrics,
-    proven,
+    diagnosticOnly: true,
+    promotionEligible: false,
+    evaluationPassed,
+    proven: false,
     reasons,
-    summary: proven
-      ? `Proven: jury score +${num(score.work.mean)} on ${score.work.n} work sites (95% ${num(score.work.lower)} to ${num(score.work.upper)}), holdout ${score.holdout.n ? `${signed(score.holdout.mean)} on ${score.holdout.n}` : 'not graded'}.`
-      : `Not proven: ${reasons.join('; ')}.`
+    summary: evaluationPassed
+      ? `DIAGNOSTIC evaluation passed: jury score +${num(score.work.mean)} on ${score.work.n} work sites (95% ${num(score.work.lower)} to ${num(score.work.upper)}), validation ${signed(score.validation.mean)} on ${score.validation.n}; not eligible for promotion.`
+      : `DIAGNOSTIC evaluation failed: ${reasons.join('; ')}.`
   };
 }
 
@@ -138,26 +158,28 @@ function pct(v) {
 
 function renderProof(proof) {
   const lines = [];
-  lines.push(`# Proof — ${proof.runId || 'treatment'} against ${proof.controlRunId || 'control'}`);
+  lines.push(`# DIAGNOSTIC evaluation — ${proof.runId || 'treatment'} against ${proof.controlRunId || 'control'}`);
   lines.push('');
   lines.push(proof.summary);
+  if (!proof.evidence.completeAndCompatible) lines.push('Evidence is incomplete or incompatible. Metrics below describe accepted records only and cannot establish an evaluation pass.');
   lines.push('');
   lines.push(`Lesson set ${proof.lessonsHash ? proof.lessonsHash.slice(0, 12) : 'mixed or none'} against control set(s) ${proof.controlLessonsHashes.length ? proof.controlLessonsHashes.map(h => h.slice(0, 12)).join(', ') : 'none recorded'}. Juror ${proof.juror}. ${proof.samples.treatment} treatment verdicts, ${proof.samples.control} control verdicts; treatment cost $${num(proof.cost.treatment, 2)}.`);
-  lines.push(`Rule: proven when the paired work-split jury gain is at least ${proof.thresholds.minGain} points with a 95% bootstrap interval above zero, and the holdout interval does not fall below -${proof.thresholds.maxHoldoutLoss}.`);
+  lines.push(`Rule: diagnostic evaluation passes when the paired work-split jury gain is at least ${proof.thresholds.minGain} points with a 95% bootstrap interval above zero, validation mean is nonnegative and its interval does not fall below -${proof.thresholds.maxHoldoutLoss}.`);
+  lines.push('At least 5 work sites, 3 validation sites, and 3 paired samples per site are required. All declared records and fixed evaluation metadata must match, and fabrication counts must not increase at any site or split. This report cannot authorize promotion.');
   lines.push('');
   lines.push('| metric | split | sites | control | treatment | delta | 95% interval | better / worse |');
   lines.push('|---|---|---|---|---|---|---|---|');
   for (const [metric, m] of Object.entries(proof.metrics)) {
-    for (const split of ['work', 'holdout', 'all']) {
+    for (const split of ['work', 'validation', 'all']) {
       const s = m[split];
       if (!s.n) continue;
       const rows = m.sites.filter(d => split === 'all' || d.split === split);
       const c = mean(rows.map(d => d.control));
       const t = mean(rows.map(d => d.treatment));
-      const fmt = metric === 'score' ? (v) => num(v) : metric === 'fabricationRate' ? (v) => num(v, 2) : pct;
+      const fmt = metric === 'score' ? (v) => num(v) : metric.startsWith('fabrication') ? (v) => num(v, 2) : pct;
       const better = m.higherIsBetter ? s.improved : s.worsened;
       const worse = m.higherIsBetter ? s.worsened : s.improved;
-      lines.push(`| ${metric} | ${split} | ${s.n} | ${fmt(c)} | ${fmt(t)} | ${metric === 'score' ? signed(s.mean) : metric === 'fabricationRate' ? signed(s.mean, 2) : signed(s.mean * 100, 0) + ' pts'} | ${metric === 'score' ? `${num(s.lower)} to ${num(s.upper)}` : metric === 'fabricationRate' ? `${num(s.lower, 2)} to ${num(s.upper, 2)}` : `${num(s.lower * 100, 0)} to ${num(s.upper * 100, 0)} pts`} | ${better} / ${worse} |`);
+      lines.push(`| ${metric} | ${split} | ${s.n} | ${fmt(c)} | ${fmt(t)} | ${metric === 'score' ? signed(s.mean) : metric.startsWith('fabrication') ? signed(s.mean, 2) : signed(s.mean * 100, 0) + ' pts'} | ${metric === 'score' ? `${num(s.lower)} to ${num(s.upper)}` : metric.startsWith('fabrication') ? `${num(s.lower, 2)} to ${num(s.upper, 2)}` : `${num(s.lower * 100, 0)} to ${num(s.upper * 100, 0)} pts`} | ${better} / ${worse} |`);
     }
   }
   lines.push('');
@@ -168,7 +190,7 @@ function renderProof(proof) {
   for (const d of [...proof.metrics.score.sites].sort((a, b) => a.delta - b.delta)) lines.push(`| ${d.domain} | ${d.split} | ${d.docType} | ${num(d.control)} | ${num(d.treatment)} | ${signed(d.delta)} |`);
   if (proof.reasons.length) {
     lines.push('');
-    lines.push('## Why not proven');
+    lines.push('## Why evaluation failed');
     lines.push('');
     for (const r of proof.reasons) lines.push(`- ${r}`);
   }
