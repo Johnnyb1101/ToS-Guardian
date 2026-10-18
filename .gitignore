@@ -16,3 +16,4 @@ observer/
 # learning loop reference set: frozen third-party document text and run artifacts stay local
 reference/sources/
 reference/runs/
+reference/final/
