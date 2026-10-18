@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Local training data review</title>
+<style>
+  :root { color-scheme: light; font: 15px/1.45 system-ui, sans-serif; }
+  * { box-sizing: border-box; }
+  body { margin: 0; color: #17251f; background: #f4f6f2; }
+  header { padding: 1rem 1.4rem; color: white; background: #193c32; }
+  h1 { margin: 0; font-size: 1.35rem; }
+  header p { max-width: 90rem; margin: .4rem 0 0; }
+  main { max-width: 1600px; margin: auto; padding: 1rem; }
+  nav { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; margin-bottom: 1rem; }
+  button, select, textarea, input { font: inherit; }
+  button, select, textarea, input[type="text"] { border: 1px solid #9bac9f; border-radius: .35rem; padding: .45rem .6rem; background: white; color: #17251f; }
+  button { cursor: pointer; }
+  button.primary { color: white; background: #245b45; border-color: #245b45; }
+  button:disabled { opacity: .55; cursor: default; }
+  .layout { display: grid; grid-template-columns: minmax(300px, 1fr) minmax(500px, 1.15fr); gap: 1rem; align-items: start; }
+  .panel { min-width: 0; padding: 1rem; background: white; border: 1px solid #cad5c9; border-radius: .5rem; }
+  .source-panel { position: sticky; top: 1rem; }
+  h2 { margin: 0 0 .5rem; font-size: 1.13rem; }
+  h3 { margin: 1rem 0 .4rem; font-size: 1rem; }
+  pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.5 ui-monospace, Consolas, monospace; }
+  #source { max-height: 72vh; overflow: auto; border: 1px solid #d6dfd4; padding: .75rem; background: #fbfcfa; }
+  .hint { color: #475c50; font-size: .92rem; }
+  .warning { padding: .7rem; border-left: 4px solid #a45a16; background: #fff4e2; }
+  .field { margin-top: 1rem; padding: .9rem; border: 1px solid #d2ddd1; border-radius: .4rem; }
+  .field h3 { margin-top: 0; }
+  label { display: grid; gap: .25rem; margin: .5rem 0; font-weight: 600; }
+  textarea, input[type="text"] { width: 100%; }
+  textarea { min-height: 4.5rem; resize: vertical; }
+  .quotes { display: grid; gap: .5rem; }
+  .quote-row { display: flex; align-items: flex-start; gap: .4rem; }
+  .quote-row textarea { flex: 1; min-height: 3.5rem; }
+  .proposals { margin-top: .65rem; padding: .65rem; border: 1px dashed #a9bba9; background: #f8faf6; }
+  .proposals p { margin: 0 0 .5rem; }
+  .proposal { padding: .4rem 0; border-top: 1px solid #dde4da; }
+  .proposal small { display: block; color: #56675c; }
+  .confirmations { padding: .7rem; background: #f4f7f3; }
+  .confirmations label { display: flex; align-items: flex-start; gap: .5rem; font-weight: 500; }
+  .confirmations input { margin-top: .27rem; }
+  .actions { display: flex; gap: .6rem; align-items: center; margin-top: 1rem; }
+  #message { min-height: 1.5rem; font-weight: 600; }
+  @media (max-width: 960px) { .layout { grid-template-columns: 1fr; } .source-panel { position: static; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Local training data review</h1>
+  <p>Build human reviewed reference answers from the full frozen public document. AI proposals are UNVERIFIED suggestions. Approval records a reviewer decision; it does not prove semantic correctness by machine.</p>
+</header>
+<main>
+  <nav>
+    <button id="previous" type="button">Previous</button>
+    <select id="casePicker" aria-label="Training case"></select>
+    <button id="next" type="button">Next</button>
+    <span id="position" role="status"></span>
+    <span id="counts" class="hint"></span>
+  </nav>
+  <div class="layout">
+    <section class="panel source-panel">
+      <h2>Full saved public source</h2>
+      <p id="sourceIdentity" class="hint"></p>
+      <pre id="source"></pre>
+    </section>
+    <section class="panel">
+      <h2>Six field review</h2>
+      <p class="warning">Read the full source for exceptions, regional limits, conditions, and cross references. A missing statement is not proof that a right does not exist. Use “Not found in the captured document.” only after searching this saved source, and explain the review in a note.</p>
+      <p id="revisionInfo" class="hint"></p>
+      <form id="reviewForm">
+        <label>Reviewer name or initials<input id="reviewer" type="text" maxlength="200" required autocomplete="name"></label>
+        <label>Case decision<select id="decision">
+          <option value="needs-review">Needs review</option>
+          <option value="needs-correction">Needs correction</option>
+          <option value="approved">Approved</option>
+          <option value="excluded">Excluded</option>
+        </select></label>
+        <label>Overall review note<textarea id="caseNote" maxlength="12000" placeholder="Record unresolved issues, exclusion reason, or relevant context."></textarea></label>
+        <div id="fields"></div>
+        <section class="confirmations">
+          <h3>Required before approval</h3>
+          <label><input id="sourceComplete" type="checkbox">I reviewed the full saved source and consider it complete enough for this case.</label>
+          <label><input id="reviewedAllFields" type="checkbox">I reviewed all six field answers against the source.</label>
+          <label><input id="conditionsChecked" type="checkbox">I checked exceptions, conditions, and regional limits, including whether absence of text could be misleading.</label>
+        </section>
+        <div class="actions"><button id="save" class="primary" type="submit">Append review revision</button><span id="message" role="status"></span></div>
+      </form>
+    </section>
+  </div>
+</main>
+<script>
+'use strict';
+const NOT_FOUND = 'Not found in the captured document.';
+const labels = {
+  dataCollection: 'What they collect', dataSelling: 'Data selling', optOutRights: 'Opt out rights',
+  howToOptOut: 'How to opt out', autoRenewal: 'Auto renewal', dataDeletion: 'Data deletion rights'
+};
+const byId = id => document.getElementById(id);
+let state;
+let index = 0;
+let editedApproved = false;
+
+function element(tag, className, value) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (value !== undefined) node.textContent = value;
+  return node;
+}
+function fieldAnswer(trainingCase, key) {
+  const proposal = trainingCase.proposals.find(item => typeof item.fields?.[key] === 'string' && item.fields[key].trim());
+  return proposal ? proposal.fields[key] : '';
+}
+function addQuote(container, value = '') {
+  const row = element('div', 'quote-row');
+  const input = element('textarea');
+  input.className = 'quote';
+  input.maxLength = 12000;
+  input.setAttribute('aria-label', 'Exact source quote');
+  input.placeholder = 'Paste an exact passage from the full saved source.';
+  input.value = value;
+  const remove = element('button', '', 'Remove');
+  remove.type = 'button';
+  remove.addEventListener('click', () => { row.remove(); markEdited(); });
+  row.append(input, remove);
+  container.append(row);
+}
+function updateFieldMode(field) {
+  const status = field.querySelector('.field-status').value;
+  const answer = field.querySelector('.answer');
+  const quoteArea = field.querySelector('.quotes');
+  if (status === 'not-found') {
+    answer.value = NOT_FOUND;
+    answer.readOnly = true;
+    quoteArea.replaceChildren();
+    field.querySelector('.add-quote').disabled = true;
+  } else {
+    if (answer.readOnly && answer.value === NOT_FOUND) answer.value = '';
+    answer.readOnly = false;
+    field.querySelector('.add-quote').disabled = false;
+    if (!quoteArea.children.length) addQuote(quoteArea);
+  }
+}
+function markEdited(event) {
+  if (event?.target?.id === 'decision') { editedApproved = true; return; }
+  if (state.latest[state.cases[index].caseId]?.status === 'approved' && !editedApproved) {
+    editedApproved = true;
+    byId('decision').value = 'needs-correction';
+    byId('message').textContent = 'Editing an approved case: save a needs-correction revision to revoke approval.';
+  }
+}
+function buildField(trainingCase, key, saved) {
+  const field = element('section', 'field');
+  field.dataset.key = key;
+  field.append(element('h3', '', labels[key] || key));
+  const statusLabel = element('label', '', 'Field finding');
+  const status = element('select', 'field-status');
+  for (const [value, caption] of [['supported', 'Supported by source'], ['not-found', 'Not found in captured document'], ['uncertain', 'Uncertain']]) {
+    const option = element('option', '', caption); option.value = value; status.append(option);
+  }
+  status.value = saved?.status || (fieldAnswer(trainingCase, key) ? 'supported' : 'uncertain');
+  statusLabel.append(status);
+  field.append(statusLabel);
+  const answerLabel = element('label', '', 'Corrected answer');
+  const answer = element('textarea', 'answer');
+  answer.maxLength = 12000;
+  answer.value = saved?.answer ?? fieldAnswer(trainingCase, key);
+  answerLabel.append(answer);
+  field.append(answerLabel);
+  const quoteLabel = element('label', '', 'Exact source quote(s)');
+  const quotes = element('div', 'quotes');
+  for (const quote of saved?.quotes?.length ? saved.quotes : ['']) addQuote(quotes, quote);
+  quoteLabel.append(quotes);
+  field.append(quoteLabel);
+  const add = element('button', 'add-quote', 'Add another source quote');
+  add.type = 'button';
+  add.addEventListener('click', () => { addQuote(quotes); markEdited(); });
+  field.append(add);
+  const noteLabel = element('label', '', 'Field review note');
+  const note = element('textarea', 'field-note');
+  note.maxLength = 12000;
+  note.placeholder = 'Required when not found; explain uncertainty and relevant exceptions or limits.';
+  note.value = saved?.note || '';
+  noteLabel.append(note);
+  field.append(noteLabel);
+  const proposals = element('div', 'proposals');
+  proposals.append(element('p', '', 'UNVERIFIED AI proposal alternatives — compare with the source above:'));
+  let count = 0;
+  for (const proposal of trainingCase.proposals) {
+    const value = proposal.fields?.[key];
+    if (typeof value !== 'string' || !value.trim()) continue;
+    count++;
+    const item = element('div', 'proposal');
+    item.append(element('small', '', `Sample ${proposal.sample} · UNVERIFIED`));
+    item.append(element('pre', '', value));
+    proposals.append(item);
+  }
+  if (!count) proposals.append(element('p', 'hint', 'No AI proposal for this field.'));
+  field.append(proposals);
+  status.addEventListener('change', () => { updateFieldMode(field); markEdited(); });
+  updateFieldMode(field);
+  return field;
+}
+function render() {
+  const trainingCase = state.cases[index];
+  if (!trainingCase) return;
+  editedApproved = false;
+  const latest = state.latest[trainingCase.caseId];
+  const counts = { 'needs-review': 0, 'needs-correction': 0, approved: 0, excluded: 0 };
+  for (const item of state.cases) counts[state.latest[item.caseId]?.status || 'needs-review']++;
+  byId('counts').textContent = `${counts['needs-review']} need review · ${counts['needs-correction']} need correction · ${counts.approved} approved · ${counts.excluded} excluded`;
+  const groundTruth = latest?.groundTruth;
+  byId('casePicker').value = trainingCase.caseId;
+  byId('position').textContent = `${index + 1} of ${state.cases.length}`;
+  byId('sourceIdentity').textContent = `${trainingCase.domain} · Source hash ${trainingCase.sourceHash}`;
+  byId('source').textContent = trainingCase.sourceText;
+  byId('revisionInfo').textContent = latest
+    ? `Latest revision ${latest.revision}: ${latest.status}.${latest.status === 'approved' && !state.approval[trainingCase.caseId]?.valid ? ' Approval is stale and cannot be exported.' : ''} Only the latest valid approval can be exported.`
+    : 'No review saved. Proposal text is unverified; no field is preapproved.';
+  byId('reviewer').value = latest?.reviewer || '';
+  byId('decision').value = latest?.status || 'needs-review';
+  byId('caseNote').value = latest?.note || '';
+  for (const key of ['sourceComplete', 'reviewedAllFields', 'conditionsChecked']) byId(key).checked = groundTruth?.confirmations?.[key] === true;
+  const fields = byId('fields');
+  fields.replaceChildren();
+  for (const key of state.fields) fields.append(buildField(trainingCase, key, groundTruth?.fields?.[key]));
+  byId('message').textContent = '';
+}
+function collect() {
+  const trainingCase = state.cases[index];
+  const fields = {};
+  for (const field of byId('fields').children) {
+    const key = field.dataset.key;
+    fields[key] = {
+      status: field.querySelector('.field-status').value,
+      answer: field.querySelector('.answer').value,
+      quotes: [...field.querySelectorAll('.quote')].map(node => node.value).filter(Boolean),
+      note: field.querySelector('.field-note').value
+    };
+  }
+  return {
+    caseId: trainingCase.caseId, baseHash: state.latest[trainingCase.caseId]?.hash || null,
+    status: byId('decision').value, reviewer: byId('reviewer').value.trim(),
+    reviewedAt: new Date().toISOString(), note: byId('caseNote').value,
+    groundTruth: {
+      confirmations: {
+        sourceComplete: byId('sourceComplete').checked,
+        reviewedAllFields: byId('reviewedAllFields').checked,
+        conditionsChecked: byId('conditionsChecked').checked
+      }, fields
+    }
+  };
+}
+async function load() {
+  const response = await fetch('/api/state', { cache: 'no-store' });
+  if (!response.ok) throw new Error('Could not load local review state.');
+  state = await response.json();
+  const picker = byId('casePicker');
+  picker.replaceChildren();
+  for (let i = 0; i < state.cases.length; i++) {
+    const option = element('option', '', `${i + 1}. ${state.cases[i].domain}`);
+    option.value = state.cases[i].caseId;
+    picker.append(option);
+  }
+  render();
+}
+byId('previous').addEventListener('click', () => { index = Math.max(0, index - 1); render(); });
+byId('next').addEventListener('click', () => { index = Math.min(state.cases.length - 1, index + 1); render(); });
+byId('casePicker').addEventListener('change', event => { index = state.cases.findIndex(item => item.caseId === event.target.value); render(); });
+byId('reviewForm').addEventListener('input', markEdited);
+byId('reviewForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  const submission = collect();
+  byId('save').disabled = true;
+  byId('message').textContent = 'Saving…';
+  try {
+    const response = await fetch('/api/revisions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Review-Token': state.token },
+      body: JSON.stringify(submission)
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.reason || result.error || 'Save failed.');
+    const selected = submission.caseId;
+    await load();
+    index = state.cases.findIndex(item => item.caseId === selected);
+    render();
+    byId('message').textContent = `Saved revision ${result.revision}.`;
+  } catch (error) { byId('message').textContent = error.message; }
+  finally { byId('save').disabled = false; }
+});
+load().catch(error => { byId('message').textContent = error.message; });
+</script>
+</body>
+</html>
