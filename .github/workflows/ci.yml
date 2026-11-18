@@ -1,7 +1,8 @@
 name: CI
 
 # The full suite includes native Windows path and junction checks.
-# Keep their temporary fixtures on the Windows system drive.
+# Keep source and temporary fixtures together on the Windows system drive;
+# replay tests use relative paths, which cannot span Windows drives.
 # The extension has no runtime/dev dependencies, so there is nothing to install.
 
 on:
@@ -21,9 +22,16 @@ jobs:
         shell: pwsh
         run: |
           $systemDrive = [IO.Path]::GetPathRoot($env:SystemRoot)
-          $testTemp = Join-Path $systemDrive ('tos-guardian-ci-' + [guid]::NewGuid().ToString('N'))
+          $testRoot = Join-Path $systemDrive ('tos-guardian-ci-' + [guid]::NewGuid().ToString('N'))
+          $testSource = Join-Path $testRoot 'source'
+          $testTemp = Join-Path $testRoot 'temp'
           New-Item -ItemType Directory -Path $testTemp -ErrorAction Stop | Out-Null
+          $sourceArchive = Join-Path $testRoot 'source.zip'
+          git archive --format=zip --output=$sourceArchive HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Expand-Archive -LiteralPath $sourceArchive -DestinationPath $testSource -ErrorAction Stop
           $env:TEMP = $testTemp
           $env:TMP = $testTemp
+          Set-Location -LiteralPath $testSource -ErrorAction Stop
           npm.cmd test
           exit $LASTEXITCODE
