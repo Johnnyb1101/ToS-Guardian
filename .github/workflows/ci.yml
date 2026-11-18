@@ -1,7 +1,7 @@
 name: CI
 
-# Run the full test suite (logic + system + discord-score repro + detection)
-# on every push and pull request. Pure visibility — no behavior change.
+# The full suite includes native Windows path and junction checks.
+# Keep their temporary fixtures on the Windows system drive.
 # The extension has no runtime/dev dependencies, so there is nothing to install.
 
 on:
@@ -11,11 +11,19 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
-          node-version: '22'
+          node-version: '22.23.3'
       - name: Run tests
-        run: npm test
+        shell: pwsh
+        run: |
+          $systemDrive = [IO.Path]::GetPathRoot($env:SystemRoot)
+          $testTemp = Join-Path $systemDrive ('tos-guardian-ci-' + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $testTemp -ErrorAction Stop | Out-Null
+          $env:TEMP = $testTemp
+          $env:TMP = $testTemp
+          npm.cmd test
+          exit $LASTEXITCODE
