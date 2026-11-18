@@ -54,8 +54,9 @@ const staticDomain = Object.keys(vm.runInContext('STATIC_SITES', context))[0];
 
   requests.length = 0;
   nextResponse = { status: 200, body: { tos: 'https://acmeprivacy.com/terms', privacy: 'https://acmeprivacy.com/privacy', supplemental: ['https://acmeprivacy.com/glba'], path: 'page-links', is_static: false, updated_at: new Date().toISOString(), expires_at: new Date(Date.now() + 86400000).toISOString() } };
-  const learned = await context.lookupSite('https://www.acmeprivacy.com/x');
+  const learned = await context.lookupSite('https://www.acmeprivacy.com/x', 'signed-release-token');
   ok('a learned entry with a future expiry is served with its supplemental urls and path', learned && learned.source === 'learned' && learned.supplemental[0] === 'https://acmeprivacy.com/glba' && learned.path === 'page-links', JSON.stringify(learned));
+  ok('a learned-site lookup carries the release pin', requests[0].options.headers['X-Release-Token'] === 'signed-release-token');
 
   nextResponse = { status: 200, body: { ...nextResponse.body, expires_at: new Date(Date.now() - 1000).toISOString() } };
   ok('an entry past its expiry is not used', (await context.lookupSite('https://acmeprivacy.com/')) === null);

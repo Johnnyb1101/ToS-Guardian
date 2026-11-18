@@ -120,6 +120,7 @@ const spies = {
   learnSite: makeSpy('learnSite', async () => null),
   fetcherAgent: makeSpy('fetcherAgent'),
   analyzeWithModel: makeSpy('analyzeWithModel'),
+  beginReleaseSession: makeSpy('beginReleaseSession', async () => ({ local: true })),
   runCritic: makeSpy('runCritic', async () => null),
   readFromSupabase: makeSpy('readFromSupabase', async () => null),
   writeToSupabase: makeSpy('writeToSupabase', async () => null),
@@ -168,6 +169,7 @@ function reset() {
     documentLinks: ['https://chase.com/privacy']
   });
   spies.analyzeWithModel.impl = async (_text, _source, escalate = false) => ({ summary: escalate ? strongSummary('Opus') : strongSummary('Haiku') });
+  spies.beginReleaseSession.impl = async () => ({ local: true });
   spies.runCritic.impl = async () => null;
   spies.readFromSupabase.impl = async () => null;
   spies.writeToSupabase.impl = async () => null;
@@ -257,6 +259,41 @@ async function runTest(fn) {
 }
 
 (async () => {
+  await runTest(async () => {
+    spies.beginReleaseSession.impl = async () => ({ configHash: 'a'.repeat(64), releaseToken: 'retrieval-token' });
+    spies.analyzeWithModel.impl = async () => ({ summary: strongSummary('Pinned'),
+      providerTag: 'anthropic', configHash: 'a'.repeat(64), releaseToken: 'analysis-token' });
+    await context.runOrchestrator('https://chase.com/signup', 'page text', '<html></html>');
+    mustTrue('runOrchestrator', 'pins before site lookup and document fetch', true,
+      order.indexOf('beginReleaseSession') < order.indexOf('lookupSite') &&
+      order.indexOf('beginReleaseSession') < order.indexOf('fetcherAgent'));
+    mustEqual('lookupSite', 'receives the retrieval release token', 'retrieval-token', spies.lookupSite.calls[0][1]);
+    mustEqual('readFromSupabase', 'receives the retrieval release token', 'retrieval-token', spies.readFromSupabase.calls[0][2].releaseToken);
+    mustEqual('analyzeWithModel', 'receives the retrieval release token', 'retrieval-token', spies.analyzeWithModel.calls[0][3].releaseToken);
+    mustEqual('runCritic', 'receives the analysis release token', 'analysis-token', spies.runCritic.calls[0][2].releaseToken);
+  });
+
+  await runTest(async () => {
+    spies.beginReleaseSession.impl = async () => null;
+    const result = await context.runOrchestrator('https://chase.com/signup', 'page text', '<html></html>');
+    mustTrue('runOrchestrator', 'session failure returns a safe error', true, /could not verify/.test(result.summary));
+    mustEqual('lookupSite', 'session failure stops before site lookup', 0, spies.lookupSite.calls.length);
+    mustEqual('fetcherAgent', 'session failure stops before fetch', 0, spies.fetcherAgent.calls.length);
+  });
+
+  await runTest(async () => {
+    spies.beginReleaseSession.impl = async () => ({ configHash: 'a'.repeat(64), releaseToken: 'retrieval-token' });
+    spies.analyzeWithModel.impl = async (_text, _source, escalate = false) => ({
+      summary: failedSummary(escalate ? 'Escalated' : 'First pass'),
+      providerTag: 'anthropic', configHash: 'a'.repeat(64), releaseToken: 'analysis-token'
+    });
+    const result = await context.runOrchestrator('https://chase.com/signup', 'page text', '<html></html>');
+    const escalation = spies.analyzeWithModel.calls.find(args => args[2] === true);
+    mustEqual('analyzeWithModel', 'escalation uses first Analyzer release token', 'analysis-token', escalation[3].releaseToken);
+    mustTrue('runOrchestrator', 'opaque release pin stays out of the UI result', true,
+      !JSON.stringify(result).includes('analysis-token') && !JSON.stringify(result).includes('retrieval-token'));
+  });
+
   // Fetch must happen before semantic cache lookup so cached summaries are verified against current fetched text.
   await runTest(async () => {
     spies.readFromSupabase.impl = async () => ({ summary: 'cached', optOutLinks: ['https://chase.com/privacy'] });
@@ -742,6 +779,20 @@ ${strongSummary('clean source')}`
     await context.runOrchestrator('https://chase.com/signup', 'page text', '<html></html>');
     mustEqual('community', 'a failed discovery is still reported, without a receipt', 1, spies.sendCommunityReport.calls.length);
     mustEqual('community', 'no receipt on a run that never analyzed', undefined, spies.sendCommunityReport.calls[0][0].analysisReceipt);
+  });
+
+  await runTest(async () => {
+    storageData.tosGuardianObserver = { enabled: true, port: 3123 };
+    spies.analyzeWithModel.impl = async () => ({ summary: strongSummary('Lessons'), analysisReceipt: 'analysis-token', provider: 'anthropic', model: 'claude-sonnet-4-6', status: 'ok', lessonsHash: 'c'.repeat(64), lessonsArm: 'promoted', docType: 'financial' });
+    spies.runCritic.impl = async () => ({
+      dataCollection: 'grounded', dataSelling: 'grounded', optOutRights: 'grounded', howToOptOut: 'grounded', autoRenewal: 'skipped', dataDeletion: 'grounded',
+      flags: [], adjustments: [], _model: 'claude-sonnet-4-6', _stopReason: 'end_turn', _usage: { inputTokens: 10, outputTokens: 2 }, _lessonsHash: 'd'.repeat(64)
+    });
+    await context.runOrchestrator('https://chase.com/signup', 'page text', '<html></html>');
+    const episode = context.assembleEpisode(spies.observerSink.calls.map(c => c[0]));
+    mustEqual('lessons', 'the analyze stage records the lessons hash, arm, and document type', `${'c'.repeat(64)}/promoted/financial`, `${episode.stages.analyze.lessonsHash}/${episode.stages.analyze.lessonsArm}/${episode.stages.analyze.docType}`);
+    mustEqual('lessons', 'the critic stage records its lessons hash', 'd'.repeat(64), episode.stages.critic.lessonsHash);
+    mustTrue('lessons', 'the episode still validates as uploadable', true, context.validateEpisode(context.stripLocal(episode), { uploadable: true }).valid);
   });
 
   // --- Observer mode (learning loop, phase 0) ---------------------------------

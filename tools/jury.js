@@ -2,6 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const { resolveProxyTarget, usageRecordFromProxyResponse, estimateCost, budgetExceeded } = require('./batch-lib');
 const J = require('./jury-lib');
+const { sha256Hex } = require('./reference-lib');
+const { trainerHeaders } = require('./sites-lib');
 
 const args = process.argv.slice(2);
 const command = args.shift();
@@ -63,7 +65,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 async function askJury(proxyUrl, artifact) {
   const response = await fetch(`${proxyUrl}/v2/analyze`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: trainerHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ operation: 'jury', provider: opts.juror, analysisSummary: artifact.summary, sourceText: artifact.analysisSource })
   });
   const data = await response.json().catch(() => ({}));
@@ -116,6 +118,10 @@ async function grade() {
       const parsed = J.parseJuryJson(outcome.data.text);
       const verdict = J.normalizeVerdict(parsed);
       result.model = typeof outcome.data.model === 'string' ? outcome.data.model : '';
+      result.promptHash = typeof outcome.data.promptHash === 'string' ? outcome.data.promptHash : '';
+      result.rubricHash = typeof outcome.data.rubricHash === 'string' ? outcome.data.rubricHash : '';
+      result.sourceHash = sha256Hex(artifact.analysisSource);
+      result.summaryHash = sha256Hex(artifact.summary);
       result.stopReason = typeof outcome.data.stopReason === 'string' ? outcome.data.stopReason : '';
       result.usageRecord = usageRecordFromProxyResponse(outcome.data);
       result.raw = outcome.data.text;

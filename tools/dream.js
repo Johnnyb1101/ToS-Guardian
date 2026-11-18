@@ -1,7 +1,9 @@
 const fs = require('fs');
 const path = require('path');
-const { dreamLessons, renderLessons } = require('./dream-lib');
-const { reflect } = require('./reflect');
+const { assertWorkFindings, dreamLessons, renderLessons } = require('./dream-lib');
+const { reflect, loadArtifacts } = require('./reflect');
+const { selectWorkArtifacts } = require('./reflect-lib');
+const { loadManifest } = require('./reference-lib');
 
 function usage(code) {
   console.log('Usage: node tools/dream.js <runDir> [--juror anthropic|openai]');
@@ -9,12 +11,26 @@ function usage(code) {
 }
 
 function dream(runDir, opts = {}) {
-  const findingsPath = path.join(runDir, 'reflect', 'findings.json');
-  const findings = fs.existsSync(findingsPath) ? JSON.parse(fs.readFileSync(findingsPath, 'utf8')) : reflect(runDir, opts).findings;
-  const candidates = dreamLessons(findings);
-  const outDir = path.join(runDir, 'dream');
+  const juror = opts.juror || 'anthropic';
+  const findingsPath = path.join(runDir, 'step1a', 'reflect', 'findings.json');
+  if (fs.existsSync(findingsPath)) {
+    const cached = JSON.parse(fs.readFileSync(findingsPath, 'utf8'));
+    assertWorkFindings(cached, { juror });
+    const metaPath = path.join(runDir, 'run.json');
+    const meta = fs.existsSync(metaPath) ? JSON.parse(fs.readFileSync(metaPath, 'utf8')) : {};
+    const current = selectWorkArtifacts(loadArtifacts(runDir), loadManifest(), juror, meta.evaluationSet).provenance;
+    if (cached.provenance.manifestHash !== current.manifestHash ||
+        cached.provenance.evaluationSetHash !== current.evaluationSetHash ||
+        JSON.stringify(cached.provenance.inputs) !== JSON.stringify(current.inputs) ||
+        JSON.stringify(cached.provenance.excluded) !== JSON.stringify(current.excluded)) {
+      throw new Error('Cached findings inputs changed; regenerate Step1A reflection');
+    }
+  }
+  const findings = reflect(runDir, opts).findings;
+  const candidates = dreamLessons(findings, { juror });
+  const outDir = path.join(runDir, 'step1a', 'dream');
   fs.mkdirSync(outDir, { recursive: true });
-  const record = { v: 1, runId: findings.runId, generatedAt: new Date().toISOString(), juror: findings.juror, snapshot: findings.snapshot, candidates };
+  const record = { v: 1, runId: findings.runId, generatedAt: new Date().toISOString(), juror: findings.juror, snapshot: findings.snapshot, provenance: findings.provenance, candidates };
   fs.writeFileSync(path.join(outDir, 'lessons.json'), JSON.stringify(record, null, 2) + '\n', 'utf8');
   const markdown = renderLessons(candidates, { runId: findings.runId, generatedAt: findings.generatedAt });
   fs.writeFileSync(path.join(outDir, 'lessons.md'), markdown, 'utf8');

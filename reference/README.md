@@ -152,3 +152,66 @@ node tools/sites.js halt --proxy http://localhost:3000 --reason "owner review"
 `propose` needs `TRAINER_OPERATIONS=1` on the proxy to count as the trainer; anywhere
 else it is one more anonymous report. `ledger` verifies the hash chain locally and exits
 non-zero if it is broken.
+
+## Lessons and proofs (tier 2)
+
+A dream candidate becomes a lesson on the dev proxy, is proven by replaying the frozen set
+with it pinned, and is promoted only by the owner with the proof attached:
+
+```bash
+node tools/lessons.js create reference/runs/baseline-1 --proxy http://localhost:3000 --ids L013,L015
+node tools/reference.js replay --proxy http://localhost:3000 --split all --samples 3 --run treat-1 --lessons lsn_...,lsn_... --budget 45
+node tools/jury.js grade reference/runs/treat-1 --proxy http://localhost:3000 --budget 45
+node tools/prove.js reference/runs/treat-1 --control reference/runs/baseline-1
+node tools/lessons.js status lsn_... promoted --proxy http://localhost:3000 --proof reference/runs/treat-1
+```
+
+`prove` pairs the two runs per site and reports the bootstrapped mean jury-score delta on
+the work split and the holdout. Proven means at least five paired work sites, a work gain
+of three or more points with the interval above zero, no holdout fall below minus five,
+and one lesson set across the whole treatment. `--lessons none` replays without any
+lessons; `promoted` and `canary` replay the proxy's current sets.
+
+Critic lessons change no analyzer text, so they are proven on the critic alone: re-run
+only the critic over a graded run's analyses and compare its verdicts with the jury
+verdicts that run already holds.
+
+```bash
+node tools/critic-replay.js reference/runs/baseline-1 --proxy http://localhost:3000 --run critic-1 --lessons lsn_...,lsn_... --budget 8
+node tools/prove-critic.js reference/runs/critic-1 --control reference/runs/baseline-1
+node tools/lessons.js revise reference/runs/baseline-1 L005 --proxy http://localhost:3000 --text "..." --id L005b --after proof-bundle2
+```
+
+`prove-critic` pairs the two runs per site on identical analyses and bootstraps the catch
+rate (a concern raised where the jury found a fabrication), the false-alarm rate (a concern
+raised where the jury found the summary clean), agreement, and parse failures. `revise`
+registers a reworded candidate with its parent and the retiring proof in its provenance.
+
+## Campaigns, roll-out, and the signed ledger (phase 6)
+
+A campaign runs a whole bundle from a spec file (`campaigns/`) to a text-free report with
+the proposed decision, and never promotes:
+
+```bash
+node tools/campaign.js go reference/campaigns/bundle-2b-billing-deletion.json
+node tools/campaign.js status bundle-2b-billing-deletion
+```
+
+The spec names the proxy, the control run, the lessons to carry, create, revise or pin, an
+optional screen (a few sensitive sites with a fabrication-rise limit), the proof (jury or
+critic kind), and an optional notification url (`CAMPAIGN_NOTIFY_URL` also works). State
+lives in `runs/<name>/campaign.json`; the same command resumes a stopped campaign. On
+Windows start it detached, since a proof runs for hours.
+
+Promoted lessons and live learned sites move from the dev proxy to production as one
+signed bundle:
+
+```bash
+node tools/rollout.js export --proxy http://localhost:3000 --out rollout.json
+node tools/rollout.js show rollout.json
+node tools/rollout.js import rollout.json --production
+```
+
+Production accepts a bundle only when its `ROLLOUT_PUBLIC_KEY` is the dev proxy's ledger
+key. `tools/sites.js ledger` verifies the chain and, when the proxy signs its ledger, every
+row's signature against the published key or one saved with `--public-key`.

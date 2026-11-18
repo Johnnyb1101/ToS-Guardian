@@ -1,5 +1,6 @@
 const R = require('../tools/reflect-lib');
 const J = require('../tools/jury-lib');
+const crypto = require('crypto');
 
 let passed = 0;
 let failed = 0;
@@ -55,7 +56,7 @@ function juryRaw(over = {}) {
 }
 function artifact(domain, sample, over = {}) {
   return {
-    domain, sample, split: 'work', docType: 'financial',
+    domain, sample, split: 'work', textHash: crypto.createHash('sha256').update(domain).digest('hex'), docType: 'financial',
     analyzer: { status: 'ok', model: 'claude-sonnet-4-6', analysisChars: 80000 },
     summary: '🧭 RISK LEVEL\nHigh',
     critic: { dataCollection: 'grounded', dataSelling: 'grounded', optOutRights: 'grounded', howToOptOut: 'grounded', autoRenewal: 'skipped', dataDeletion: 'grounded' },
@@ -66,7 +67,12 @@ function artifact(domain, sample, over = {}) {
   };
 }
 const manifest = { updatedAt: '2026-09-06T00:00:00.000Z', sites: {
-  'a.com': { textChars: 100000 }, 'b.com': { textChars: 300000 }, 'c.com': { textChars: 50000 }, 'idx.com': { textChars: 90000 }
+  'a.com': { split: 'work', textHash: artifact('a.com', 1).textHash, textChars: 100000 },
+  'b.com': { split: 'work', textHash: artifact('b.com', 1).textHash, textChars: 300000 },
+  'c.com': { split: 'work', textHash: artifact('c.com', 1).textHash, textChars: 50000 },
+  'idx.com': { split: 'work', textHash: artifact('idx.com', 1).textHash, textChars: 90000 },
+  'err.com': { split: 'work', textHash: artifact('err.com', 1).textHash, textChars: 0 },
+  'amazon.com': { split: 'holdout', textHash: artifact('amazon.com', 1).textHash, textChars: 100000 }
 } };
 const artifacts = [
   artifact('a.com', 1),
@@ -94,6 +100,20 @@ ok('spot-check is absent when there are no marks', findings.spotcheck === null);
 
 const withMarks = R.reflectRun({ artifacts, manifest, juror: 'anthropic', marks: { v: 1, sites: { 'a.com.1': { sections: { dataCollection: { items: { 0: 'supported' }, completeness: 'missing' } }, risk: 'High', bottomLineFair: true } } } });
 ok('spot-check agreement is folded in when marks exist', withMarks.spotcheck && withMarks.spotcheck.marked === 1 && withMarks.spotcheck.accuracyAgreement === 1);
+
+const holdout = artifact('amazon.com', 1, { split: 'holdout', jury: { anthropic: { raw: juryRaw({ fabrications: ['visit amazon.com/privacy'] }) } } });
+const workOnly = R.reflectRun({ artifacts: [artifact('a.com', 1), holdout], manifest, juror: 'anthropic' });
+ok('holdout is excluded from every learning aggregate', workOnly.totals.artifacts === 1 && workOnly.totals.graded === 1 && workOnly.fabrications.total === 0 && Object.keys(workOnly.score.bySplit).join() === 'work');
+ok('reflection records each work input and validation exclusion', workOnly.provenance.scope === 'work-only' && workOnly.provenance.inputs.length === 1 && workOnly.provenance.inputs[0].domain === 'a.com' && /^[a-f0-9]{64}$/.test(workOnly.provenance.inputs[0].artifactHash) && workOnly.provenance.excluded[0].domain === 'amazon.com');
+const rejects = fn => { try { fn(); return false; } catch (_) { return true; } };
+ok('missing and unknown artifact splits are rejected', rejects(() => R.reflectRun({ artifacts: [artifact('a.com', 1, { split: undefined })], manifest })) && rejects(() => R.reflectRun({ artifacts: [artifact('a.com', 1, { split: 'other' })], manifest })));
+ok('missing manifest split is rejected', rejects(() => R.reflectRun({ artifacts: [artifact('a.com', 1)], manifest: { ...manifest, sites: { ...manifest.sites, 'a.com': { textHash: manifest.sites['a.com'].textHash } } } })));
+ok('historical holdout cannot be relabeled as work by artifact or manifest', rejects(() => R.reflectRun({ artifacts: [artifact('amazon.com', 1)], manifest })) && rejects(() => R.reflectRun({ artifacts: [holdout], manifest: { ...manifest, sites: { ...manifest.sites, 'amazon.com': { ...manifest.sites['amazon.com'], split: 'work' } } } })));
+ok('work input must match the manifest text hash', rejects(() => R.reflectRun({ artifacts: [artifact('a.com', 1, { textHash: 'f'.repeat(64) })], manifest })));
+ok('duplicate artifacts are rejected before aggregation', rejects(() => R.reflectRun({ artifacts: [artifact('a.com', 1), artifact('a.com', 1)], manifest })));
+ok('run evaluation set is enforced when present', rejects(() => R.reflectRun({ artifacts: [artifact('a.com', 1)], manifest, evaluationSet: [{ domain: 'a.com', split: 'work', docType: 'financial', textHash: artifact('a.com', 1).textHash, samples: [2] }] })));
+ok('complete run evaluation set is recorded', R.reflectRun({ artifacts: [artifact('a.com', 1)], manifest, evaluationSet: [{ domain: 'a.com', split: 'work', docType: 'financial', textHash: artifact('a.com', 1).textHash, samples: [1] }] }).provenance.evaluationSetHash.length === 64);
+ok('validation declaration is accepted and excluded from learning', R.reflectRun({ artifacts: [holdout], manifest, evaluationSet: [{ domain: 'amazon.com', split: 'validation', docType: 'financial', textHash: holdout.textHash, samples: [1] }] }).provenance.excluded.length === 1);
 
 const md = R.renderFindings(findings);
 ok('findings render with every section', ['## Score', '## Sections', '## Fabricated specifics', '## Omissions by theme', '## Evaluator against the jury', '## Critic against the jury', '## Risk level', '## Coverage'].every(h => md.includes(h)));

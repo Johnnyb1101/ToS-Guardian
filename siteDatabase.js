@@ -49,7 +49,7 @@ const STATIC_SITES = {
 // lookupSite(pageUrl)
 // Priority: (1) STATIC_SITES, (2) Supabase via proxy, (3) null → Fetcher guesses
 // ---------------------------------------------------------------------------
-async function lookupSite(pageUrl) {
+async function lookupSite(pageUrl, releaseToken = null) {
   try {
     // Key by registrable domain (eTLD+1) so a learned site is found from ANY of its
     // subdomains — e.g. signup.acorns.com / oak.acorns.com resolve to acorns.com's
@@ -73,7 +73,8 @@ async function lookupSite(pageUrl) {
     }
 
     try {
-      const response = await proxyFetch(`${PROXY_URL}/site/${encodeURIComponent(hostname)}`);
+      const response = await proxyFetch(`${PROXY_URL}/site/${encodeURIComponent(hostname)}`,
+        releaseToken ? { headers: { 'X-Release-Token': releaseToken } } : {});
       if (response.status === 429) {
         console.warn(`[SiteDB] Rate limited for ${hostname}`);
         return null;

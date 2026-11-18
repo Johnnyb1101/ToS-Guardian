@@ -1,0 +1,186 @@
+'use strict';
+// Explicit localhost fixture only. Requires existing PG17 and OpenSSL binaries.
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),net=require('node:net');
+const {spawnSync,spawn}=require('node:child_process');
+const C=require('../tools/final-corpus-lib'),G=require('../tools/governance-transition'),S=require('../tools/sites-lib');
+const {createController,PURPOSE,EVENT_PURPOSE}=require('../release-control/controller');
+const {createTransport}=require('../release-control/transport');
+const {makeRelease}=require('./final-test-fixtures');
+const [pgBin,scratch,proxy,openssl,artifactArgument,supabaseCli]=process.argv.slice(2);
+const artifactDirectory=artifactArgument && artifactArgument!=='-'?artifactArgument:null;
+const preflightOnly=process.argv.includes('--preflight-only');
+if(![pgBin,scratch,proxy,openssl].every(p=>p&&path.isAbsolute(p)))throw Error('Explicit absolute PG bin, scratch, proxy and OpenSSL paths required');
+if(process.platform!=='win32')throw Error('This portable tool harness is Windows-specific');
+fs.mkdirSync(scratch,{recursive:true});
+const dir=fs.mkdtempSync(path.join(scratch,'controller-db-')),data=path.join(dir,'data');
+const bin=n=>path.join(pgBin,n+'.exe'),password=crypto.randomBytes(32).toString('base64url');
+const env=Object.fromEntries(Object.entries(process.env).filter(([k])=>!/^PG/i.test(k)));
+Object.assign(env,{PGUSER:'postgres',PGPASSWORD:password,PGDATABASE:'postgres',PGHOST:'127.0.0.1',PGCONNECT_TIMEOUT:'5',PGSSLMODE:'verify-full',PGSSLROOTCERT:path.join(dir,'server.crt'),PGOPTIONS:'-c tos.isolated_rehearsal=yes -c statement_timeout=15000 -c lock_timeout=10000'});
+function run(exe,args,options={}) {const r=spawnSync(exe,args,{env,encoding:'utf8',windowsHide:true,timeout:30000,maxBuffer:32000000,...options});if(r.error)throw r.error;return r;}
+function pass(r,label){assert.equal(r.status,0,label+': '+r.stderr);return String(r.stdout||'').trim();}
+const quote=x=>"'"+String(x).replace(/'/g,"''")+"'",json=x=>quote(C.canonicalJson(x))+'::jsonb';
+function sql(q,{user='postgres',fail=false,db='tos_governance_lab',pw=password}={}) {const file=path.join(dir,'query-'+crypto.randomUUID()+'.sql');fs.writeFileSync(file,q);let r;try{r=run(bin('psql'),['-X','-w','-q','-A','-t','-v','ON_ERROR_STOP=1','-d',db,'-f',file],{env:{...env,PGUSER:user,PGPASSWORD:pw}});}finally{fs.unlinkSync(file);}if(fail){assert.notEqual(r.status,0,'unexpected SQL success: '+q);return r.stderr;}return pass(r,q.slice(0,70));}
+function asyncSql(q,user='tos_release_controller'){return new Promise((resolve,reject)=>{const p=spawn(bin('psql'),['-X','-w','-q','-A','-t','-v','ON_ERROR_STOP=1','-d','tos_governance_lab'],{env:{...env,PGUSER:user},windowsHide:true});let out='',err='';p.stdout.on('data',x=>out+=x);p.stderr.on('data',x=>err+=x);p.on('error',reject);p.on('close',code=>code?reject(Error(err)):resolve(out.trim()));p.stdin.end(q);});}
+async function availablePort(){const s=net.createServer();await new Promise((r,j)=>s.once('error',j).listen(0,'127.0.0.1',r));const port=s.address().port;await new Promise(r=>s.close(r));return port;}
+let running=false,port,passed=0;
+function ok(label){passed++;console.log('PASS '+label);}
+(async()=>{try{
+  for(const name of ['psql','initdb','pg_ctl'])assert.match(pass(run(bin(name),['--version']),name),/17\.11/);
+  pass(run(openssl,['req','-x509','-newkey','rsa:2048','-nodes','-keyout',path.join(dir,'server.key'),'-out',path.join(dir,'server.crt'),'-days','1','-subj','/CN=localhost','-addext','subjectAltName=DNS:localhost,IP:127.0.0.1']), 'ephemeral certificate');
+  const pwfile=path.join(dir,'pwfile');fs.writeFileSync(pwfile,password+'\n');
+  try{pass(run(bin('initdb'),['-D',data,'-U','postgres','--auth-local=scram-sha-256','--auth-host=scram-sha-256','--pwfile='+pwfile,'--no-locale','--encoding=UTF8']),'initdb');}finally{fs.unlinkSync(pwfile);}
+  fs.writeFileSync(path.join(data,'TOS_DISPOSABLE_REHEARSAL'),'governance-control-v1');
+  fs.appendFileSync(path.join(data,'postgresql.conf'),`\nssl=on\nssl_cert_file='${path.join(dir,'server.crt').replaceAll('\\','/')}'\nssl_key_file='${path.join(dir,'server.key').replaceAll('\\','/')}'\n`);
+  port=await availablePort();env.PGPORT=String(port);
+  const log=fs.openSync(path.join(dir,'startup.log'),'w');
+  try{pass(run(bin('pg_ctl'),['-D',data,'-l',path.join(dir,'postgres.log'),'-o',`-h 127.0.0.1 -p ${port}`,'-w','start'],{stdio:['ignore',log,log]}),'start');running=true;}finally{fs.closeSync(log);}
+  assert.equal(fs.readFileSync(path.join(data,'TOS_DISPOSABLE_REHEARSAL'),'utf8'),'governance-control-v1');
+  const identity=JSON.parse(sql("select json_build_object('data',current_setting('data_directory'),'version',current_setting('server_version_num'),'host',host(inet_server_addr()),'port',inet_server_port(),'ssl',(select ssl from pg_stat_ssl where pid=pg_backend_pid()));",{db:'postgres'}));
+  assert.equal(fs.realpathSync(identity.data),fs.realpathSync(data));assert.equal(identity.version,'170011');assert.equal(identity.host,'127.0.0.1');assert.equal(identity.port,port);assert.equal(identity.ssl,true);
+  sql('create database tos_governance_lab;',{db:'postgres'});
+  sql(`create role anon login password ${quote(password)};create role authenticated login password ${quote(password)};create role service_role login bypassrls password ${quote(password)};create role runtime_app login password ${quote(password)};create table public.analyses(id int,domain text,created_at timestamptz);create table public.learning_guard(key text,value jsonb);create table public.site_database(domain text,is_static boolean);`);
+  sql(fs.readFileSync(path.join(proxy,'migrations/0006_release_activation.sql'),'utf8'));
+  sql(fs.readFileSync(path.join(proxy,'migrations/20261030040050_baseline_bootstrap.sql'),'utf8'));
+  // Seed the actual legacy direct-write and halt routes before installing the fence.
+  sql("select public.set_learning_release_halt('positive',false);",{user:'service_role'});
+  ok('actual legacy service_role halt route exposed before fencing');
+  const migration=fs.readFileSync(path.join(__dirname,'../release-control/supabase/migrations/20261117230320_separated_release_control.sql'),'utf8');
+  const catalog=sql(fs.readFileSync(path.join(__dirname,'../release-control/catalog.sql'),'utf8'));
+  const pins={expected_database:'tos_governance_lab',expected_installer_role:'postgres',expected_server_version_num:identity.version,reviewed_catalog_hash:catalog};
+  const installerSettings=values=>Object.entries(values).map(([key,value])=>`set tos.${key}=${quote(value)};`).join('');
+  const noInstallation=()=>{assert.equal(sql("select count(*) from pg_roles where rolname like 'tos_release_%'"),'0');assert.equal(sql("select count(*) from pg_namespace where nspname='tos_release_control'"),'0');};
+  assert.match(sql(migration,{fail:true}),/installer database pin/);noInstallation();
+  for(const [key,reason] of [['expected_database',/installer database pin/],['expected_installer_role',/installer role pin/],['expected_server_version_num',/server version pin/],['reviewed_catalog_hash',/unreviewed catalog/]]){
+    const missing={...pins};delete missing[key];
+    assert.match(sql(installerSettings(missing)+migration,{fail:true}),reason);noInstallation();
+    const wrong={...pins,[key]:key==='expected_server_version_num'?'170000':key==='reviewed_catalog_hash'?'0'.repeat(64):'wrong_installer_pin'};
+    assert.match(sql(installerSettings(wrong)+migration,{fail:true}),reason);noInstallation();
+  }
+  assert.match(sql(installerSettings(pins)+'set role service_role;'+migration,{fail:true}),/installer role pin/);noInstallation();
+  ok('missing/wrong database, installer, exact version and catalog pins plus SET ROLE fail before DDL');
+  sql(installerSettings(pins)+migration);
+  // Fixture admin ceremony: provisioning changes rolpassword from null to masked.
+  // Final matrix runs only after this final catalog is pinned. No runtime repin API exists.
+  sql(`alter role tos_release_controller password ${quote(password)};update tos_release_control.catalog_pin set hash=tos_release_control.measure_catalog();`);
+  if(supabaseCli){
+    assert.ok(path.isAbsolute(supabaseCli));
+    const url=`postgresql://postgres:${encodeURIComponent(password)}@127.0.0.1:${port}/tos_governance_lab?sslmode=verify-full&sslrootcert=${encodeURIComponent(path.join(dir,'server.crt'))}`;
+    const advisors=run(supabaseCli,['db','advisors','--db-url',url,'--type','security','--fail-on','error','--workdir',path.resolve(__dirname,'../release-control')],{env:{...env,SUPABASE_TELEMETRY_DISABLED:'1',SUPABASE_NO_UPDATE_NOTIFIER:'1',DO_NOT_TRACK:'1'}});
+    const safe=(String(advisors.stdout||'')+'\n'+String(advisors.stderr||'')).replaceAll(password,'[EPHEMERAL-REDACTED]').replaceAll(encodeURIComponent(password),'[EPHEMERAL-REDACTED]');
+    fs.writeFileSync(path.join(dir,'security-advisors.log'),safe);
+    assert.equal(advisors.status,0,'Local security advisor failed; see redacted security-advisors.log');
+    ok('Supabase local security advisors completed');
+  }
+  if(preflightOnly){console.log(JSON.stringify({passed,preflightOnly:true,productionApplied:false,labOnly:true,evidenceDirectory:dir}));return;}
+  const transport=createTransport({psql:bin('psql'),host:'127.0.0.1',port,database:'tos_governance_lab',user:'tos_release_controller',password,rootCertificate:path.join(dir,'server.crt')});
+  assert.equal(transport.rpc('read_state',['missing']),null);
+  assert.throws(()=>createTransport({psql:bin('psql'),host:'127.0.0.1',port,database:'tos_governance_lab',user:'service_role',password,rootCertificate:path.join(dir,'server.crt')}),/Restricted/);
+  assert.throws(()=>createTransport({psql:bin('psql'),host:'127.0.0.1',port,database:'tos_governance_lab',user:'tos_release_controller',password:'wrong',rootCertificate:path.join(dir,'server.crt')}).rpc('read_state',['missing']),/failed/);
+  assert.throws(()=>createTransport({psql:bin('psql'),host:'127.0.0.1',port,database:'tos_governance_lab',user:'tos_release_controller',password,rootCertificate:__filename}).rpc('read_state',['missing']),/failed/);
+  const wrongHost=run(bin('psql'),['-X','-w','-q','-A','-t','-c','select 1'],{env:{...env,PGHOST:'not-the-certificate.invalid',PGHOSTADDR:'127.0.0.1'}});
+  assert.notEqual(wrongHost.status,0);assert.match(wrongHost.stderr,/does not match host name/);
+  assert.throws(()=>transport.rpc('execute_sql',['select 1']),/Unknown/);
+  ok('TLS verify-full controller login, wrong password and narrow RPC transport');
+  const tables=['public.learning_releases','public.learning_active_releases','public.learning_release_events','public.learning_release_consumptions','tos_release_control.registry','tos_release_control.events','tos_release_control.consumptions','tos_release_control.catalog_pin'];
+  const actors=['anon','authenticated','service_role','runtime_app','tos_release_controller'];let denials=0;
+  const columns=Object.fromEntries(tables.map(table=>[table,sql(`select attname from pg_attribute where attrelid=${quote(table)}::regclass and attnum>0 and not attisdropped order by attnum limit 1`)]));
+  for(const actor of actors){for(const table of tables){for(const op of [`insert into ${table} default values`,`delete from ${table}`,`truncate ${table}`,`update ${table} set ${columns[table]}=${columns[table]} where false`]){assert.match(sql(op,{user:actor,fail:true}),/permission denied/);denials++;}}
+    for(const q of ['set role tos_release_owner','grant tos_release_owner to runtime_app','create function public.attack() returns int language sql as $$select 1$$','create table tos_release_control.attack(id int)']){assert.match(sql(q,{user:actor,fail:true}),/permission denied|must have|not permitted/);denials++;}
+    for(const q of ["select public.set_learning_release_halt('positive',true)","select public.prepare_learning_release('{}','{}')","select public.activate_learning_release('positive','{}','{}','{}','x','{}',1,'x','{}','{}')"]){assert.match(sql(q,{user:actor,fail:true}),/permission denied/);denials++;}
+    if(actor!=='tos_release_controller')for(const q of ["select tos_release_control.read_state('x')","select tos_release_control.adopt('{}','{}','{}','{}')","select tos_release_control.activate('{}','{}','{}','{}')"]){assert.match(sql(q,{user:actor,fail:true}),/permission denied/);denials++;}
+    if(actor!=='tos_release_controller'){assert.match(sql('set role tos_release_controller',{user:actor,fail:true}),/permission denied/);denials++;}
+  }
+  for(const q of ["select tos_release_control.measure_catalog()","select tos_release_control.assert_catalog()","select tos_release_control.activate_validated('x','{}','{}','{}','x','{}',1,'x','{}','{}')"]){assert.match(sql(q,{user:'tos_release_controller',fail:true}),/permission denied/);denials++;}
+  assert.equal(sql("select count(*) from pg_auth_members m where roleid in(select oid from pg_roles where rolname in('tos_release_owner','tos_release_controller'));"),'0');
+  ok(`final installed independent LOGIN denial matrix: ${denials} denials`);
+  const pair=()=>crypto.generateKeyPairSync('ed25519'),owner=pair(),online=pair(),pem=k=>k.export({type:'spki',format:'pem'});
+  const hash=C.hashText,manifest=(name,seed)=>C.seal({files:[{path:name,bytes:1,sha256:hash(seed)}]});
+  function release(seed){const r=makeRelease([]);r.config.policy.versions.serverPipeline=hash(seed);r.config.policy.cache={shared:'disabled'};r.configHash=S.releaseConfigHash(r.config);return r;}
+  const actual=artifactDirectory?JSON.parse(fs.readFileSync(path.join(artifactDirectory,'controller-inputs.json'),'utf8')):null;
+  const baseline=actual?actual.baseline:release('old'),candidate=actual?actual.candidate:release('new'),migrationManifest=actual?actual.migrationManifest:manifest('migrations/test.sql','migration');
+  if(!actual)for(const r of [baseline,candidate]){r.config.policy.versions.migrationManifest=migrationManifest.hash;r.configHash=S.releaseConfigHash(r.config);}
+  const buildArtifacts=Object.fromEntries(['baseline','candidate'].map(arm=>[arm,actual?fs.readFileSync(path.join(artifactDirectory,actual[arm+'ArtifactFile'])):Buffer.from(arm+' artifact fixture')]));
+  const measureVerifier=actual?()=>require('../tools/maintenance-artifact-manifest').verifyExecution({extension:path.resolve(__dirname,'..'),proxy},actual.verifierMeasurement).hash:()=>hash('verifier');
+  const destination={environment:'lab',projectId:'fixture',serviceId:'fixture',databaseId:'fixture'};
+  const active={generation:1,configHash:baseline.configHash,headHash:hash('head'),halted:false,governanceEpoch:0,governanceRegistryId:'fixture',governanceHeadHash:hash('gov-head'),installedVerifierHash:hash('old-verifier'),installedMigrationManifestHash:hash('old-migrations')};
+  const buildManifest=(name,seed,arm)=>C.seal({files:[{path:'artifacts/release-build',bytes:buildArtifacts[arm].length,sha256:crypto.createHash('sha256').update(buildArtifacts[arm]).digest('hex')},...(actual?actual[arm+'SourceManifest']:manifest(name,seed)).files].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0)});
+  const plan=G.preparePlan({destination,active,baseline,candidate,baselineManifest:buildManifest('old.js','old','baseline'),candidateManifest:buildManifest('new.js','new','candidate'),migrationManifest,standardDocumentHash:actual?actual.standardDocumentHash:hash('standard'),verifierHash:measureVerifier(),ownerKeyFingerprint:crypto.createHash('sha256').update(owner.publicKey.export({type:'spki',format:'der'})).digest('hex')});
+  function seed(){sql(`delete from tos_release_control.consumptions;delete from tos_release_control.events;delete from tos_release_control.registry;delete from public.learning_release_consumptions;delete from public.learning_release_events;delete from public.learning_active_releases where environment='lab';delete from public.learning_releases;insert into public.learning_releases(config_hash,release) values(${quote(baseline.configHash)},${json(baseline)});insert into public.learning_active_releases values('lab',1,${quote(baseline.configHash)},${quote(active.headHash)},false);insert into tos_release_control.registry(environment,destination,state) values('lab',${json(destination)},${json(Object.fromEntries(Object.entries(active).filter(([k])=>!['generation','configHash','headHash','halted'].includes(k))))});`);}
+  const controller=createController({transport,trustedOwnerKey:pem(owner.publicKey),onlinePublicKeys:[pem(online.publicKey)],destination,reviewedPlan:plan,measureVerifier});
+  const sign=(payload,purpose,key=owner.privateKey)=>({payload,signature:crypto.sign(null,Buffer.from(purpose+C.canonicalJson(payload)),key).toString('base64')});
+  const envelope=(id='controller_fixture_adoption_0001',ms=60000)=>sign(G.payloadFor(plan,{authorizationId:id,issuedAt:new Date(Date.now()-1000).toISOString(),expiresAt:new Date(Date.now()+ms).toISOString()}),G.PURPOSE);
+  seed();const good=envelope();const bad=JSON.parse(JSON.stringify(good));bad.signature=Buffer.alloc(64).toString('base64');await assert.rejects(controller.adopt(bad),/signature/);assert.equal(sql('select count(*) from tos_release_control.events'),'0');
+  assert.equal((await controller.adopt(good)).status,'adopted');assert.equal(sql("select generation from public.learning_active_releases where environment='lab'"),'1');assert.equal((await controller.adopt(good)).status,'already-applied');
+  ok('real owner verifier reaches SQL adoption; generation unchanged; exact replay durable');
+  seed();const {hash:ph,...body}=plan;const query=e=>`select tos_release_control.adopt(${json(e)},${quote(C.canonicalJson(e))},${json(plan)},${quote(C.canonicalJson(body))});`;
+  const races=await Promise.allSettled([asyncSql(query(envelope('fixture_race_authorization_0001'))),asyncSql(query(envelope('fixture_race_authorization_0002')))]);assert.equal(races.filter(x=>x.status==='fulfilled').length,1);assert.equal(sql('select count(*) from tos_release_control.events'),'1');
+  ok('concurrent adoption serializes with exactly one committed authorization');
+  // Hypothetical observed evidence is signed with fresh ephemeral TEST identities.
+  // It exercises the full acceptance contract; it is not real evaluation evidence.
+  const F=require('../tools/maintenance-final-evidence');
+  const fixture=require('./maintenance-final-fixtures').makeFinalFixture({mode:'observed',baselineRelease:baseline,candidateRelease:candidate,buildArtifacts});
+  const evidenceContext={protocol:fixture.protocol,evidence:fixture.evidence,attachments:fixture.context.attachments};
+  const maintenanceController=createController({transport,trustedOwnerKey:pem(owner.publicKey),onlinePublicKeys:[pem(online.publicKey)],trustedReviewers:fixture.context.trustedReviewers,destination,reviewedPlan:plan,measureVerifier});
+  const report=F.validateFinalEvidence(fixture.protocol,fixture.evidence,{...fixture.context,now:new Date().toISOString()});
+  assert.equal(report.promotionEligible,true,report.reasons.join('; '));
+  function activation(id='controller_fixture_activation_01'){
+    const current=transport.rpc('read_state',['lab']).active;
+    const authorization=sign({v:2,kind:'release-activation',authorizationId:id,action:'activate',environment:'lab',configHash:candidate.configHash,expectedGeneration:current.generation,expectedConfigHash:current.configHash,expectedHeadHash:current.headHash,issuedAt:new Date(Date.now()-1000).toISOString(),expiresAt:new Date(Date.now()+60000).toISOString(),evidence:F.authorizationEvidence(report)},S.AUTHORIZATION_PURPOSE);
+    const body={v:2,kind:'release-activated',environment:'lab',generation:current.generation+1,previousConfigHash:current.configHash,configHash:candidate.configHash,prevHash:current.headHash,authorizationId:id,authorizationHash:C.digest(authorization),createdAt:new Date().toISOString()};
+    const event={body,hash:C.digest(body),publicKey:pem(online.publicKey)};event.signature=crypto.sign(null,Buffer.from(EVENT_PURPOSE+event.hash),online.privateKey).toString('base64');
+    const controlEnvelope=sign({v:1,kind:'maintenance-control',authorizationId:id,issuedAt:authorization.payload.issuedAt,expiresAt:authorization.payload.expiresAt,destination,expected:current,planHash:plan.hash,authorizationHash:C.digest(authorization),releaseHash:C.digest(candidate),eventHash:event.hash},PURPOSE);
+    return {controlEnvelope,authorization,release:candidate,event};
+  }
+  seed();await controller.adopt(envelope());
+  const request=activation();
+  const broken={...evidenceContext,attachments:{...evidenceContext.attachments}};delete broken.attachments[Object.keys(broken.attachments)[0]];
+  await assert.rejects(maintenanceController.activate(request,broken),/evidence|Evidence/);
+  assert.equal(sql("select generation from public.learning_active_releases where environment='lab'"),'1');
+  const fault=activation('controller_atomic_failure_0001');
+  sql(`insert into tos_release_control.events values('controller_atomic_failure_0001','lab',${quote(hash('fixture-induced-postpublication-conflict'))},'{}');`);
+  await assert.rejects(maintenanceController.activate(fault,evidenceContext),/failed/);
+  assert.equal(sql("select generation from public.learning_active_releases where environment='lab'"),'1');
+  assert.equal(sql('select count(*) from public.learning_release_events'),'0');
+  assert.equal(sql('select count(*) from public.learning_release_consumptions'),'0');
+  assert.equal(sql('select count(*) from tos_release_control.consumptions'),'1');
+  sql("delete from tos_release_control.events where authorization_id='controller_atomic_failure_0001';");
+  ok('failure after inner publication rolls back pointer, release event and both consumption effects');
+  assert.equal((await maintenanceController.activate(request,evidenceContext)).status,'activated');
+  assert.equal(sql("select generation from public.learning_active_releases where environment='lab'"),'2');
+  const future=createController({transport,trustedOwnerKey:pem(owner.publicKey),onlinePublicKeys:[pem(online.publicKey)],trustedReviewers:fixture.context.trustedReviewers,destination,reviewedPlan:plan,measureVerifier,now:()=>new Date(Date.now()+86400000).toISOString()});
+  assert.equal((await future.activate(request,evidenceContext)).status,'already-applied');
+  const changed=JSON.parse(JSON.stringify(request));changed.event.signature='tampered';await assert.rejects(maintenanceController.activate(changed,evidenceContext),/failed/);
+  assert.equal(sql('select count(*) from tos_release_control.consumptions'),'2');
+  ok('complete signed evidence→owner authorization→separated controller→SQL activation; tampering fails; expired exact replay recovers');
+  seed();await controller.adopt(envelope());
+  const req1=activation('controller_race_activation_0001'),req2=activation('controller_race_activation_0002');
+  const activations=await Promise.allSettled([maintenanceController.activate(req1,evidenceContext),maintenanceController.activate(req2,evidenceContext)]);
+  assert.equal(activations.filter(x=>x.status==='fulfilled').length,1);assert.equal(sql("select generation from public.learning_active_releases where environment='lab'"),'2');
+  ok('competing maintenance authorizations serialize with one activation and no partial consumption');
+  seed();const expired=envelope('fixture_expired_authorization_01',-1);await assert.rejects(controller.adopt(expired),/expired/);assert.equal(sql('select count(*) from tos_release_control.events'),'0');
+  const locker=asyncSql("begin;select generation from public.learning_active_releases where environment='lab' for update;select pg_sleep(3);commit;",'postgres').then(()=>({ok:true}),error=>({error}));
+  let observedLock=false;
+  for(let i=0;i<20;i++){await new Promise(resolve=>setTimeout(resolve,20));if(sql("select count(*) from pg_stat_activity where application_name='psql' and wait_event='PgSleep'")!=='0'){observedLock=true;break;}}
+  if(!observedLock)await locker;
+  assert.equal(observedLock,true);
+  const lockedEnvelope=envelope('fixture_lock_expiry_auth_0001',1000);
+  assert.equal(G.verifyEnvelope(lockedEnvelope,plan,{trustedOwnerKey:pem(owner.publicKey),onlinePublicKeys:[pem(online.publicKey)],destination,active,reviewedPlanHash:plan.hash,reviewedVerifierHash:plan.verifierHash,reviewedStandardHash:plan.standardDocumentHash,consumedAuthorizationIds:[],now:new Date().toISOString()}).valid,true);
+  await assert.rejects(asyncSql(query(lockedEnvelope)),/expired/);assert.equal((await locker).ok,true);
+  assert.equal(sql('select count(*) from tos_release_control.events'),'0');
+  ok('approval expiry after a real row-lock wait leaves no event or consumption');
+  sql("create function public.unreviewed() returns int language sql as $$select 1$$;");assert.throws(()=>transport.rpc('read_state',['lab']),/failed/);sql('drop function public.unreviewed();');
+  sql("alter table public.learning_releases alter column created_at set default '2000-01-01'::timestamptz;");assert.throws(()=>transport.rpc('read_state',['lab']),/failed/);sql('alter table public.learning_releases alter column created_at set default now();');
+  ok('expired request rolls back; unreviewed catalog changes fence all controller reads');
+  console.log(JSON.stringify({passed,denials,productionApplied:false,productionReady:false,labOnly:true,maintenanceActivationTested:true,evaluationEvidence:'hypothetical-fixtures-only',actualArtifactBindings:!!actual,baselineConfigHash:baseline.configHash,candidateConfigHash:candidate.configHash,verifierHash:plan.verifierHash,evidenceDirectory:dir}));
+}finally{
+  if(running){pass(run(bin('pg_ctl'),['-D',data,'-m','fast','-w','stop']),'stop');running=false;}
+  if(port)await new Promise((resolve,reject)=>{const s=net.connect({host:'127.0.0.1',port});s.once('connect',()=>{s.destroy();reject(Error('Disposable port remains open'));});s.once('error',resolve);});
+  for(const name of ['server.key','server.crt']){const p=path.join(dir,name);if(fs.existsSync(p))fs.unlinkSync(p);}
+  if(fs.existsSync(path.join(data,'TOS_DISPOSABLE_REHEARSAL'))){
+    const resolved=fs.realpathSync(data),root=fs.realpathSync(scratch);
+    assert.equal(resolved,path.resolve(data));assert.ok(resolved.startsWith(root+path.sep));
+    assert.equal(fs.readFileSync(path.join(resolved,'TOS_DISPOSABLE_REHEARSAL'),'utf8'),'governance-control-v1');
+    fs.rmSync(resolved,{recursive:true,maxRetries:3,retryDelay:100});
+  }
+  console.log('Disposable PostgreSQL stopped; port closed; ephemeral TLS keys and marked data removed');
+}})().catch(e=>{console.error(e);process.exitCode=1;});

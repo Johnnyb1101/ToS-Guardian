@@ -1,7 +1,9 @@
 'use strict';
 
+const crypto = require('crypto');
 const { SECTIONS, RISK_LEVELS, normalizeVerdict, parseJuryJson, scoreVerdict, riskDistance, criticAgreement, summarizeRun } = require('./jury-lib');
 const { computeAgreement } = require('./spotcheck-lib');
+const { splitFor } = require('./reference-lib');
 
 const FABRICATION_PATTERNS = Object.freeze([
   ['email', /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/],
@@ -124,7 +126,80 @@ function pushExample(list, example, cap = 4) {
   if (list.length < cap) list.push(example);
 }
 
-function reflectRun({ artifacts, manifest, marks, juror = 'anthropic', meta = {} }) {
+function inputProvenance(artifact, juror) {
+  const jury = artifact.jury && artifact.jury[juror];
+  return {
+    domain: artifact.domain,
+    sample: artifact.sample,
+    runId: artifact.runId || null,
+    split: artifact.split,
+    textHash: artifact.textHash,
+    artifactHash: crypto.createHash('sha256').update(JSON.stringify(artifact)).digest('hex'),
+    juryModel: jury && jury.model || null
+  };
+}
+
+function selectWorkArtifacts(artifacts, manifest, juror, evaluationSet) {
+  if (!Array.isArray(artifacts) || !manifest || !manifest.sites || typeof manifest.sites !== 'object') throw new Error('Artifacts and a reference manifest are required');
+  let declared = null;
+  if (evaluationSet !== undefined) {
+    if (!Array.isArray(evaluationSet)) throw new Error('run evaluationSet must be an array');
+    declared = new Map();
+    for (const site of evaluationSet) {
+      const declaredSplit = site && site.split === 'validation' ? 'holdout' : site && site.split;
+      if (!site || typeof site.domain !== 'string' || declared.has(site.domain) || !['work', 'holdout'].includes(declaredSplit) || declaredSplit !== splitFor(site.domain) ||
+          typeof site.textHash !== 'string' || !/^[a-f0-9]{64}$/.test(site.textHash) || !Array.isArray(site.samples) || !site.samples.every(n => Number.isInteger(n) && n > 0)) {
+        throw new Error('run evaluationSet has an invalid or conflicting site declaration');
+      }
+      declared.set(site.domain, site);
+    }
+  }
+  const included = [];
+  const excluded = [];
+  const seen = new Set();
+  for (const artifact of artifacts) {
+    const domain = artifact && artifact.domain;
+    if (typeof domain !== 'string' || !domain || !Number.isInteger(artifact.sample) || artifact.sample < 1) throw new Error('Artifact domain and sample are required');
+    const id = `${domain}#${artifact.sample}`;
+    if (seen.has(id)) throw new Error(`${id}: duplicate artifact`);
+    seen.add(id);
+    if (artifact.split !== 'work' && artifact.split !== 'holdout') throw new Error(`${domain}#${artifact.sample}: missing or unknown artifact split`);
+    const pinnedSplit = splitFor(domain);
+    if (artifact.split !== pinnedSplit) throw new Error(`${domain}#${artifact.sample}: artifact split disagrees with the pinned reference split`);
+    const entry = manifest.sites[domain];
+    if (!entry || entry.split !== pinnedSplit) throw new Error(`${domain}#${artifact.sample}: manifest split disagrees with the pinned reference split`);
+    if (declared) {
+      const site = declared.get(domain);
+      const declaredSplit = site && site.split === 'validation' ? 'holdout' : site && site.split;
+      if (!site || declaredSplit !== artifact.split || site.textHash !== artifact.textHash || !site.samples.includes(artifact.sample) || site.docType !== artifact.docType) {
+        throw new Error(`${domain}#${artifact.sample}: artifact disagrees with the run evaluationSet`);
+      }
+    }
+    if (artifact.split === 'holdout') {
+      excluded.push({ domain, sample: artifact.sample, split: 'holdout', reason: 'validation-only' });
+      continue;
+    }
+    if (typeof artifact.textHash !== 'string' || !/^[a-f0-9]{64}$/.test(artifact.textHash) || artifact.textHash !== entry.textHash) {
+      throw new Error(`${domain}#${artifact.sample}: work artifact text hash does not match the manifest`);
+    }
+    included.push(artifact);
+  }
+  return {
+    artifacts: included,
+    provenance: {
+      v: 1, scope: 'work-only', split: 'work',
+      manifestUpdatedAt: manifest.updatedAt || null,
+      manifestHash: crypto.createHash('sha256').update(JSON.stringify(manifest)).digest('hex'),
+      evaluationSetHash: evaluationSet === undefined ? null : crypto.createHash('sha256').update(JSON.stringify(evaluationSet)).digest('hex'),
+      inputs: included.map(artifact => inputProvenance(artifact, juror)),
+      excluded
+    }
+  };
+}
+
+function reflectRun({ artifacts, manifest, marks, juror = 'anthropic', meta = {}, evaluationSet }) {
+  const selected = selectWorkArtifacts(artifacts, manifest, juror, evaluationSet);
+  artifacts = selected.artifacts;
   const sites = manifest && manifest.sites ? manifest.sites : {};
   const graded = [];
   const notApplicable = {};
@@ -290,6 +365,7 @@ function reflectRun({ artifacts, manifest, marks, juror = 'anthropic', meta = {}
     runId: meta.runId || null,
     generatedAt: new Date().toISOString(),
     juror,
+    provenance: selected.provenance,
     snapshot: {
       gitCommit: meta.gitCommit || null,
       manifestUpdatedAt: manifest && manifest.updatedAt ? manifest.updatedAt : null,
@@ -332,6 +408,8 @@ function num(v, digits = 1) {
 function renderFindings(f) {
   const lines = [];
   lines.push(`# Reflection — ${f.runId || 'run'}`);
+  lines.push('');
+  lines.push(`Learning inputs: ${f.provenance.inputs.length} work artifact(s); ${f.provenance.excluded.length} validation artifact(s) excluded. Input hashes and split decisions are recorded in findings.json.`);
   lines.push('');
   lines.push(`Snapshot: code ${f.snapshot.gitCommit ? f.snapshot.gitCommit.slice(0, 10) : 'unknown'}, manifest ${f.snapshot.manifestUpdatedAt || 'unknown'}, analyzer ${f.snapshot.analyzerModels.join(', ') || 'none'}, jury ${f.snapshot.juryModels.join(', ') || 'none'} (${f.juror}). ${f.snapshot.sites} sites, ${num(f.snapshot.samples)} samples each, ${f.totals.graded} graded verdicts, total cost $${num(f.totals.cost.total, 2)}.`);
   lines.push('');
@@ -406,4 +484,4 @@ function renderFindings(f) {
   return lines.join('\n');
 }
 
-module.exports = { FABRICATION_PATTERNS, OMISSION_THEMES, THEME_SECTIONS, classifyFabrication, omissionTheme, reflectRun, renderFindings };
+module.exports = { FABRICATION_PATTERNS, OMISSION_THEMES, THEME_SECTIONS, classifyFabrication, omissionTheme, selectWorkArtifacts, reflectRun, renderFindings };

@@ -30,6 +30,38 @@ Respond in ONLY this JSON format, no other text:
 // (nothing to check, or no model/key configured); or `{ failed: true }` when it WAS
 // attempted but couldn't produce a verdict (no response / unparseable / error). The
 // orchestrator treats the last case as fail-safe — confidence is capped, never Strong.
+// the model sometimes fences its JSON or follows it with prose, so take the
+// first balanced object (fence contents preferred) instead of first-to-last brace
+function extractCriticJson(text) {
+  const source = String(text || '');
+  const fence = source.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidates = fence ? [fence[1], source] : [source];
+  for (const candidate of candidates) {
+    const start = candidate.indexOf('{');
+    if (start === -1) continue;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < candidate.length; i++) {
+      const ch = candidate[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') inString = true;
+      else if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) return candidate.slice(start, i + 1).replace(/,\s*([}\]])/g, '$1');
+      }
+    }
+  }
+  const greedy = source.match(/\{[\s\S]*\}/);
+  return greedy ? greedy[0] : null;
+}
+
 async function runCritic(analysisSummary, sourceText, provenance = null) {
   if (!analysisSummary || !sourceText) return null;
 
@@ -62,8 +94,13 @@ ${trimmedSource}`;
     let writeReceipt = null;
     let criticModel = '';
     let criticUsage = null;
+    let criticLessonsHash = '';
+    let criticConfigHash = '';
 
     if (provider === 'anthropic' || provider === 'openai') {
+      if (provenance && !validReleasePin(provenance)) {
+        return { failed: true, _reason: 'invalid-release-pin' };
+      }
       // Relay through the proxy — no API key in the browser (audit refactor #5).
       // NOT escalated: the critic always runs on the provider's default (cheap)
       // model, which the proxy's llmRelay.js model map keeps in sync with
@@ -76,6 +113,11 @@ ${trimmedSource}`;
           provider,
           analysisSummary,
           sourceText: trimmedSource,
+          clientPolicyHash: await clientPolicyHash(),
+          ...(provenance?.configHash ? {
+            configHash: provenance.configHash,
+            releaseToken: provenance.releaseToken
+          } : {}),
           ...(provenance?.analysisReceipt && provenance?.providerAnalysis && provenance?.cacheContext
             ? {
                 analysisReceipt: provenance.analysisReceipt,
@@ -101,10 +143,17 @@ ${trimmedSource}`;
         const code = typeof data.error === 'string' ? data.error.slice(0, 60) : 'unknown';
         return { failed: true, _reason: `relay-error:${response.status}:${code}` };
       }
+      if (!/^[a-f0-9]{64}$/.test(data.configHash) ||
+          (provenance?.configHash && data.configHash !== provenance.configHash)) {
+        console.warn('[Critic] Relay returned an invalid or inconsistent release hash');
+        return { failed: true, _reason: 'release-mismatch' };
+      }
       responseText = data.text;
+      criticConfigHash = data.configHash;
       stopReason = data.stopReason; // "end_turn" | "max_tokens" | "stop" | "length" | ...
       writeReceipt = data.writeReceipt || null;
       criticModel = typeof data.model === 'string' ? data.model : '';
+      criticLessonsHash = typeof data.lessonsHash === 'string' ? data.lessonsHash : '';
       criticUsage = data.usage && typeof data.usage === 'object' ? data.usage : null;
     }
 
@@ -135,7 +184,8 @@ ${trimmedSource}`;
       return { failed: true, _reason: 'no-response' };
     }
 
-    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    const extracted = extractCriticJson(responseText);
+    const jsonMatch = extracted ? [extracted] : null;
     if (!jsonMatch) {
       // Diagnostic (observability only): capture WHY extraction failed so the next
       // occurrence tells us truncation ("max_tokens"/"length" + no closing brace) vs a
@@ -153,7 +203,13 @@ ${trimmedSource}`;
       return { failed: true, _reason: 'unparseable' };
     }
 
-    const verdict = JSON.parse(jsonMatch[0]);
+    let verdict;
+    try {
+      verdict = JSON.parse(jsonMatch[0]);
+    } catch (parseError) {
+      console.warn(`[Critic] JSON did not parse (${parseError.message}) — stop_reason: ${stopReason || 'unknown'}, len: ${String(responseText).length}`);
+      return { failed: true, _reason: 'unparseable' };
+    }
 
     const validVerdicts = ['grounded', 'unsupported', 'vague', 'skipped'];
     const fields = ['dataCollection', 'dataSelling', 'optOutRights', 'howToOptOut', 'autoRenewal', 'dataDeletion'];
@@ -188,10 +244,12 @@ ${trimmedSource}`;
 
     applyDeterministicGrounding(verdict, analysisSummary, sourceText);
     verdict._writeReceipt = writeReceipt;
+    verdict._configHash = criticConfigHash;
     // For the episode log (learning loop, phase 0); underscore-prefixed like
     // _writeReceipt so the verdict fields stay the six section names.
     verdict._model = criticModel;
     verdict._usage = criticUsage;
+    verdict._lessonsHash = criticLessonsHash;
     verdict._stopReason = typeof stopReason === 'string' ? stopReason : '';
 
     const unsupported = fields.filter(f => verdict[f] === 'unsupported').length;

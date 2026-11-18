@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blinded human review</title>
+<style>
+  :root { color-scheme: light dark; font: 15px/1.45 system-ui, sans-serif; }
+  body { margin: 0; background: #f4f4f0; color: #202520; }
+  header { padding: 1rem 1.5rem; background: #183c33; color: white; }
+  h1 { margin: 0; font-size: 1.25rem; }
+  header p { margin: .25rem 0 0; font-size: .9rem; }
+  main { max-width: 1450px; margin: auto; padding: 1rem; }
+  nav { display: flex; gap: .5rem; align-items: center; margin-bottom: 1rem; }
+  button, select, textarea, input { font: inherit; }
+  button, select { border: 1px solid #80978c; border-radius: .3rem; padding: .4rem .65rem; background: white; color: #17241c; }
+  button { cursor: pointer; }
+  button.primary { background: #245847; color: white; }
+  .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  .pane, .form { border: 1px solid #cbd4cb; border-radius: .5rem; background: white; padding: 1rem; min-width: 0; }
+  h2 { margin: 0 0 .5rem; font-size: 1rem; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.5 ui-monospace, Consolas, monospace; max-height: 55vh; overflow: auto; margin: 0; }
+  .form { margin-top: 1rem; }
+  form { display: grid; gap: .6rem; }
+  label { display: grid; gap: .2rem; font-weight: 600; }
+  textarea { box-sizing: border-box; width: 100%; border: 1px solid #a9b6ab; border-radius: .3rem; padding: .5rem; min-height: 4rem; }
+  .hint, #status { color: #536156; font-size: .9rem; }
+  #history { list-style: none; padding: 0; }
+  #history li { border-top: 1px solid #d9e1d9; padding: .5rem 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  @media (max-width: 800px) { .columns { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header><h1>Blinded human review</h1><p>Compare the exact displayed source and summary. Arm, configuration, and automated judgments are withheld here; the source or summary may reveal the site. The local workspace owner can access the private binding file.</p></header>
+<main>
+  <nav><button id="prev" type="button">Previous</button><select id="picker" aria-label="Review item"></select><button id="next" type="button">Next</button><span id="status" role="status"></span></nav>
+  <div class="columns"><section class="pane"><h2>Source shown to the analyzer</h2><pre id="source"></pre></section><section class="pane"><h2>Summary to review</h2><pre id="summary"></pre></section></div>
+  <section class="form"><h2>Record a judgment</h2><p class="hint">For a claim, quote the exact summary text. For an omission, describe what the summary left out. Every judgment needs an exact source quote. Supported means the stated finding is supported; unsupported means it is not; unsure remains unresolved.</p>
+    <form id="reviewForm">
+      <label>Finding type<select name="finding"><option value="claim">Claim in summary</option><option value="omission">Possible omission</option></select></label>
+      <label>Judgment<select name="verdict"><option value="supported">Supported</option><option value="unsupported">Unsupported</option><option value="unsure">Unsure</option></select></label>
+      <label>Claim quote or omitted matter<textarea name="subject" maxlength="2000" required></textarea></label>
+      <label>Exact source evidence<textarea name="sourceEvidence" maxlength="2000" required></textarea></label>
+      <label>Reason or unresolved question<textarea name="note" maxlength="2000"></textarea></label>
+      <button class="primary" type="submit">Append judgment</button>
+    </form>
+    <h2>Saved attempts for this item</h2><ol id="history"></ol>
+  </section>
+</main>
+<script>
+'use strict';
+let state;
+let index = 0;
+const byId = id => document.getElementById(id);
+function render() {
+  const item = state.package.items[index];
+  if (!item) return;
+  byId('picker').value = item.itemId;
+  byId('source').textContent = item.analysisSource;
+  byId('summary').textContent = item.summary;
+  byId('history').replaceChildren();
+  for (const attempt of state.attempts.filter(record => record.itemId === item.itemId)) {
+    const row = document.createElement('li');
+    row.textContent = `Attempt ${attempt.attempt}: ${attempt.finding}, ${attempt.verdict}\n${attempt.subject}\nEvidence: ${attempt.sourceEvidence}${attempt.note ? '\nNote: ' + attempt.note : ''}`;
+    byId('history').append(row);
+  }
+  byId('status').textContent = `${index + 1} of ${state.package.items.length}`;
+}
+async function load() {
+  const response = await fetch('/api/state', { cache: 'no-store' });
+  if (!response.ok) throw new Error('Could not load review package');
+  state = await response.json();
+  const picker = byId('picker');
+  for (let i = 0; i < state.package.items.length; i++) {
+    const option = document.createElement('option');
+    option.value = state.package.items[i].itemId;
+    option.textContent = `Item ${i + 1}`;
+    picker.append(option);
+  }
+  render();
+}
+byId('prev').addEventListener('click', () => { index = Math.max(0, index - 1); render(); });
+byId('next').addEventListener('click', () => { index = Math.min(state.package.items.length - 1, index + 1); render(); });
+byId('picker').addEventListener('change', event => { index = state.package.items.findIndex(item => item.itemId === event.target.value); render(); });
+byId('reviewForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = new FormData(form);
+  const body = { itemId: state.package.items[index].itemId, finding: data.get('finding'), verdict: data.get('verdict'), subject: data.get('subject'), sourceEvidence: data.get('sourceEvidence'), note: data.get('note') };
+  byId('status').textContent = 'Saving…';
+  try {
+    const response = await fetch('/api/attempts', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Review-Token': state.token }, body: JSON.stringify(body) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.reason || result.error || 'Save failed');
+    const selected = body.itemId;
+    await loadState();
+    index = state.package.items.findIndex(item => item.itemId === selected);
+    render();
+    form.reset();
+  } catch (error) { byId('status').textContent = error.message; }
+});
+async function loadState() {
+  const response = await fetch('/api/state', { cache: 'no-store' });
+  if (!response.ok) throw new Error('Could not reload review state');
+  state = await response.json();
+}
+load().catch(error => { byId('status').textContent = error.message; });
+</script>
+</body>
+</html>

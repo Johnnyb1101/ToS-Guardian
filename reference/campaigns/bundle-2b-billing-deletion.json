@@ -1,0 +1,33 @@
+{
+  "name": "bundle-2b-billing-deletion",
+  "proxy": "http://127.0.0.1:3001",
+  "control": "treat-bundle1",
+  "lessons": {
+    "carry": { "run": "baseline-1", "ids": ["L013", "L015", "L017", "L019", "L021", "L023"] },
+    "revise": [
+      {
+        "run": "baseline-1",
+        "candidateId": "L005",
+        "id": "L005b",
+        "after": "proof-bundle2",
+        "text": "In AUTO-RENEWAL & BILLING, when the document says there is no automatic renewal, name only the other charges it expressly authorizes, such as fees, damage claims, or price changes, in the document's own words; if it names none, say the document names no other charges. Never add an amount, deadline, or charge the document does not state."
+      },
+      {
+        "run": "baseline-1",
+        "candidateId": "L008",
+        "id": "L008b",
+        "after": "proof-bundle2",
+        "text": "In DATA DELETION RIGHTS, give the retention period, the data that survives a deletion request, and any limit to certain residents only when the document states them, in its own words; where the document is silent on one of these, say it does not say. Never name a state, law, period, or exemption the document does not print."
+      }
+    ]
+  },
+  "screen": {
+    "sites": ["ebay.com", "lendingclub.com", "substack.com", "coursera.org", "google.com", "discover.com", "foxnews.com", "sofi.com", "linkedin.com", "nytimes.com"],
+    "samples": 3,
+    "budget": 10,
+    "maxFabricationRise": 0.25,
+    "maxScoreDrop": 5
+  },
+  "proof": { "kind": "jury", "samples": 3, "budget": 42 },
+  "delayMs": 6000
+}

@@ -34,10 +34,10 @@ function reflect(runDir, opts = {}) {
   const meta = loadJson(path.join(runDir, 'run.json')) || {};
   const marks = loadJson(path.join(runDir, 'spotcheck', 'marks.json'));
   const findings = lib.reflectRun({
-    artifacts, manifest, marks, juror,
+    artifacts, manifest, marks, juror, evaluationSet: meta.evaluationSet,
     meta: { runId: meta.runId || path.basename(runDir), proxy: meta.proxy, startedAt: meta.startedAt, gitCommit: gitCommit(path.resolve(__dirname, '..')) }
   });
-  const outDir = path.join(runDir, 'reflect');
+  const outDir = path.join(runDir, 'step1a', 'reflect');
   fs.mkdirSync(outDir, { recursive: true });
   fs.writeFileSync(path.join(outDir, 'findings.json'), JSON.stringify(findings, null, 2) + '\n', 'utf8');
   const markdown = lib.renderFindings(findings);
