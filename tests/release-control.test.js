@@ -1,0 +1,47 @@
+'use strict';
+const assert=require('node:assert/strict'),crypto=require('node:crypto'),path=require('node:path'),fs=require('node:fs');
+const C=require('../tools/final-corpus-lib'),G=require('../tools/governance-transition');
+const {createController}=require('../release-control/controller');
+const {createTransport}=require('../release-control/transport');
+const fixture=require('./maintenance-final-fixtures').makeFinalFixture({mode:'observed'});
+const pair=()=>crypto.generateKeyPairSync('ed25519'),owner=pair(),online=pair(),pem=k=>k.export({type:'spki',format:'pem'});
+const manifest=n=>C.seal({files:[{path:n,bytes:1,sha256:C.hashText(n)}]});
+const baseline=fixture.builds.baseline.release,candidate=JSON.parse(JSON.stringify(fixture.builds.candidate.release));
+const migrationManifest=manifest('migration.sql');candidate.config.policy.versions.migrationManifest=migrationManifest.hash;candidate.configHash=require('../tools/sites-lib').releaseConfigHash(candidate.config);
+const destination={environment:'test',projectId:'fixture',serviceId:'fixture',databaseId:'fixture'};
+const active={generation:1,configHash:baseline.configHash,headHash:C.hashText('head'),halted:false,governanceEpoch:0,governanceRegistryId:'fixture',governanceHeadHash:C.hashText('gov'),installedVerifierHash:C.hashText('old-verifier'),installedMigrationManifestHash:C.hashText('old-migration')};
+const buildManifest=(name,arm)=>C.seal({files:[{path:'artifacts/release-build',bytes:fixture.builds[arm].artifact.bytes,sha256:fixture.builds[arm].artifact.sha256},...manifest(name).files]});
+const plan=G.preparePlan({destination,active,baseline,candidate,baselineManifest:buildManifest('old.js','baseline'),candidateManifest:buildManifest('new.js','candidate'),migrationManifest,standardDocumentHash:C.hashText('standard'),verifierHash:C.hashText('verifier'),ownerKeyFingerprint:crypto.createHash('sha256').update(owner.publicKey.export({type:'spki',format:'der'})).digest('hex')});
+let calls=0;const config={transport:{rpc(){calls++;throw Error('unexpected database dispatch');}},trustedOwnerKey:pem(owner.publicKey),onlinePublicKeys:[pem(online.publicKey)],trustedReviewers:fixture.context.trustedReviewers,destination,reviewedPlan:plan,measureVerifier:()=>C.hashText('changed')};
+const controller=createController(config);
+const payload=G.payloadFor(plan,{authorizationId:'fixture_unit_adoption_0001',issuedAt:new Date(Date.now()-1000).toISOString(),expiresAt:new Date(Date.now()+60000).toISOString()});
+const signed={payload,signature:crypto.sign(null,Buffer.from(G.message(payload)),owner.privateKey).toString('base64')};
+(async()=>{
+ await assert.rejects(controller.adopt(signed),/Measured controller closure changed/);assert.equal(calls,0);
+ await assert.rejects(controller.adopt({...signed,signature:'invalid'}),/signature/);assert.equal(calls,0);
+ await assert.rejects(controller.activate({},{}),/Evidence cannot supply reviewer trust/);assert.equal(calls,0);
+ assert.throws(()=>createController({...config,onlinePublicKeys:[pem(owner.publicKey)]}),/Independent/);
+ assert.throws(()=>createController({...config,destination:{...destination,databaseId:'wrong'}}),/destination/);
+ const {hash:ignored,...body}=plan;const missingArtifact=C.seal({...body,candidateManifest:manifest('new.js')});
+ assert.throws(()=>createController({...config,reviewedPlan:missingArtifact}),/artifact descriptors/);
+ const inventory=fs.readFileSync(path.join(__dirname,'../release-control/catalog.sql'),'utf8').replace(/^--.*$/mg,'').trim().replace(/;$/,'');
+ const forward=fs.readFileSync(path.join(__dirname,'../release-control/supabase/migrations/20261117230320_separated_release_control.sql'),'utf8');
+ assert.equal(forward.split(inventory).length,3,'preflight and runtime inventory SQL must match reviewed source');
+ const t={psql:process.execPath,host:'127.0.0.1',port:5432,database:'fixture',user:'tos_release_controller',password:'fixture',rootCertificate:__filename};
+ assert.throws(()=>createTransport({...t,user:'service_role'}),/Restricted/);
+ assert.throws(()=>createTransport({...t,host:'localhost sslmode=disable'}),/endpoint/);
+ assert.throws(()=>createTransport({...t,rootCertificate:path.basename(__filename)}),/certificate/);
+ assert.throws(()=>createTransport(t).rpc('arbitrary_sql',['drop table x']),/Unknown/);
+ const cp=require('node:child_process'),spawn=cp.spawnSync,moduleId=require.resolve('../release-control/transport');let dispatched;
+ try{
+  cp.spawnSync=(executable,args,options)=>{dispatched={executable,args,options};return {status:0,stdout:'null'};};delete require.cache[moduleId];
+  const fixed={...t},isolated=require('../release-control/transport').createTransport(fixed);fixed.psql='changed-after-construction';
+  isolated.rpc('read_state',["x';\\! untrusted"]);
+  assert.equal(dispatched.executable,process.execPath);
+  assert.equal(dispatched.options.env.PGSSLMODE,'verify-full');assert.equal(dispatched.options.env.PGGSSENCMODE,'disable');
+  assert.equal(dispatched.options.env.PGSSLCERTMODE,'disable');assert.equal(dispatched.options.env.PGSSLMINPROTOCOLVERSION,'TLSv1.2');
+  assert.equal(dispatched.options.env.PGSERVICE,undefined);assert.equal(dispatched.options.env.PGSERVICEFILE,undefined);
+  assert.ok(dispatched.args.includes('-X'));assert.ok(!dispatched.options.input.includes('untrusted'));
+ }finally{cp.spawnSync=spawn;delete require.cache[moduleId];}
+ console.log('PASS controller measurement/key/destination/trust failures before dispatch; fixed TLS transport inputs and RPC allowlist');
+})().catch(e=>{console.error(e);process.exitCode=1;});

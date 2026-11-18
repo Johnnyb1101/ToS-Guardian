@@ -166,5 +166,30 @@ ok('a bundle summary names the complete config and destination', lib.summarizeBu
   }
 }
 
+{
+  const F = require('../tools/maintenance-final-evidence');
+  const { makeFinalFixture } = require('./maintenance-final-fixtures');
+  const fixture = makeFinalFixture({ mode: 'observed' });
+  const maintenanceReport = F.validateFinalEvidence(fixture.protocol, fixture.evidence, fixture.context);
+  const maintenanceRelease = fixture.builds.candidate.release;
+  const maintenancePayload = { ...payload, configHash: maintenanceRelease.configHash,
+    issuedAt: '2026-11-17T11:00:00.000Z', expiresAt: '2026-11-17T13:00:00.000Z', evidence: F.authorizationEvidence(maintenanceReport) };
+  const maintenanceAuthorization = { payload: maintenancePayload,
+    signature: crypto.sign(null, Buffer.from(lib.AUTHORIZATION_PURPOSE + lib.strictCanonicalJson(maintenancePayload)), owner.privateKey).toString('base64') };
+  const maintenanceEvidence = { protocol: fixture.protocol, evidence: fixture.evidence, attachments: fixture.context.attachments, trustedReviewers: fixture.context.trustedReviewers };
+  const options = { now: new Date(fixture.context.now), maintenanceEvidence };
+  ok('hypothetical signed maintenance-final verifies only by recomputing independently pinned evidence with fixture bytes', lib.checkAuthorization(maintenanceAuthorization, maintenanceRelease, ownerKey, options).valid);
+  ok('maintenance-final cannot activate from a signed success summary without full verified evidence', !lib.checkAuthorization(maintenanceAuthorization, maintenanceRelease, ownerKey, { now: options.now }).valid);
+  const fixtureOnly = makeFinalFixture();
+  ok('offline fixture records cannot authorize a maintenance-final activation', !lib.checkAuthorization(maintenanceAuthorization, maintenanceRelease, ownerKey, { now: options.now, maintenanceEvidence: { protocol: fixtureOnly.protocol, evidence: fixtureOnly.evidence, ...fixtureOnly.context } }).valid);
+  const changedSummary = { ...maintenancePayload, evidence: { ...maintenancePayload.evidence, evidenceHash: 'a'.repeat(64) } };
+  const signedChangedSummary = { payload: changedSummary, signature: crypto.sign(null, Buffer.from(lib.AUTHORIZATION_PURPOSE + lib.strictCanonicalJson(changedSummary)), owner.privateKey).toString('base64') };
+  ok('owner signature cannot substitute a different maintenance-final report hash', !lib.checkAuthorization(signedChangedSummary, maintenanceRelease, ownerKey, options).valid);
+  const aliasedRegistry = { ...fixture.context.trustedReviewers, human: { ...fixture.context.trustedReviewers.human, publicKey: ownerKey } };
+  ok('maintenance reviewers cannot reuse the independent owner approval key', /owner approval key must be independent/.test(lib.checkAuthorization(maintenanceAuthorization, maintenanceRelease, ownerKey, { ...options, maintenanceEvidence: { ...maintenanceEvidence, trustedReviewers: aliasedRegistry } }).reason));
+  fixture.context.attachments[fixture.builds.candidate.artifact.sha256] = Buffer.from('tampered fixture build');
+  ok('changed build bytes invalidate a previously signed maintenance-final summary', !lib.checkAuthorization(maintenanceAuthorization, maintenanceRelease, ownerKey, options).valid);
+}
+
 console.log(`\nSummary: ${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

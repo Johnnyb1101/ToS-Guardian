@@ -218,7 +218,7 @@ async function fetchRelease(proxyUrl, configHash, fetchImpl = fetch) {
   return release;
 }
 
-function checkAuthorization(authorization, release, approvalKey, { environment = null, active = null, now = new Date() } = {}) {
+function checkAuthorization(authorization, release, approvalKey, { environment = null, active = null, now = new Date(), maintenanceEvidence = null } = {}) {
   const releaseCheck = checkRelease(release);
   if (!releaseCheck.valid) return releaseCheck;
   if (!approvalKey) return { valid: false, reason: 'independent approval key is required' };
@@ -234,7 +234,21 @@ function checkAuthorization(authorization, release, approvalKey, { environment =
   const expires = Date.parse(p.expiresAt);
   if (typeof p.issuedAt !== 'string' || typeof p.expiresAt !== 'string' || !Number.isFinite(issued) || !Number.isFinite(expires) || issued > new Date(now).getTime() || expires <= new Date(now).getTime() || expires <= issued) return { valid: false, reason: 'authorization expired or not yet valid' };
   const evidence = p.evidence;
-  if (!evidence || evidence.phase !== 'step2-final' || evidence.configHash !== release.configHash || evidence.evaluationPassed !== true || evidence.promotionEligible !== true || evidence.diagnosticOnly !== false || ['evidenceHash', 'protocolHash', 'corpusHash'].some(key => !isHash(evidence[key]))) return { valid: false, reason: 'diagnostic evidence cannot authorize release activation' };
+  if (!evidence || !['step2-final', 'maintenance-final'].includes(evidence.phase) || evidence.configHash !== release.configHash || evidence.evaluationPassed !== true || evidence.promotionEligible !== true || evidence.diagnosticOnly !== false || ['evidenceHash', 'protocolHash', 'corpusHash'].some(key => !isHash(evidence[key]))) return { valid: false, reason: 'diagnostic evidence cannot authorize release activation' };
+  if (evidence.phase === 'maintenance-final') {
+    try {
+      if (!maintenanceEvidence) throw Error('maintenance-final requires the complete evidence and external trust context');
+      const M = require('./maintenance-final-evidence');
+      const { protocol, evidence: records, attachments, trustedReviewers } = maintenanceEvidence;
+      for (const role of ['human', 'judge', 'scope', 'code']) {
+        const key = trustedReviewers?.[protocol?.reviewers?.[role]]?.publicKey;
+        if (!key || samePublicKey(approvalKey, key)) throw Error('owner approval key must be independent of maintenance quality and code reviewers');
+      }
+      const report = M.validateFinalEvidence(protocol, records, { attachments, trustedReviewers, now: new Date(now).toISOString() });
+      const expected = M.authorizationEvidence(report);
+      if (strictCanonicalJson(expected) !== strictCanonicalJson(evidence)) throw Error('maintenance-final authorization does not bind the recomputed report');
+    } catch (error) { return { valid: false, reason: error.message }; }
+  }
   const payloadKeys = ['v', 'kind', 'authorizationId', 'action', 'environment', 'configHash', 'expectedGeneration', 'expectedConfigHash', 'expectedHeadHash', 'issuedAt', 'expiresAt', 'evidence'];
   if (Object.keys(p).some(key => !payloadKeys.includes(key)) || Object.keys(evidence).some(key => !['phase', 'configHash', 'evidenceHash', 'protocolHash', 'corpusHash', 'evaluationPassed', 'promotionEligible', 'diagnosticOnly'].includes(key)) || Object.keys(authorization).some(key => !['payload', 'signature'].includes(key))) return { valid: false, reason: 'unknown authorization fields' };
   let message;
