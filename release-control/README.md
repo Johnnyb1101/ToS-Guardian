@@ -61,6 +61,17 @@ against an administrator or an exhaustive audit of every PostgreSQL extension,
 foreign service, provider-managed component, or dynamic SQL effect. Review the
 catalog contents and external dependencies before any future production proposal.
 
+On managed PostgreSQL 17, the non-superuser installer needs database ownership,
+authority to create the two release roles, and read access to the catalog pin
+after removing owner access. The managed fixture models that read access with
+`pg_read_all_data` and `BYPASSRLS`. The installer takes temporary
+owner-role access and briefly grants the owner `CREATE` on `public` to transfer
+the release tables. The forward migrations also use temporary owner access.
+The transaction removes these privileges and verifies the catalog in its final
+state before committing. PostgreSQL retains its automatic `ADMIN` membership
+for the role creator. This trusted installer can administer the roles, while
+ordinary application roles and the controller remain outside the owner role.
+
 Adoption locks authorization ID, registry and the real active-release row. It
 requires the exact unhalted generation/head/configuration and epoch zero, stores
 the approved plan, and advances governance only. It does not activate the candidate.
@@ -124,6 +135,12 @@ directory, the harness uses synthetic build inputs. The optional Supabase CLI
 runs security advisors against the disposable database. Use `-` to supply the
 CLI with synthetic build inputs. `--preflight-only` stops after installation and
 catalog checks (and advisors if supplied), before activation testing.
+`--managed-installer` runs all three migrations through a separate non-superuser
+`postgres` login with the observed managed role memberships and public schema
+ownership. It checks that an installation failure rolls back and that temporary
+owner access is gone after every migration. The bootstrap fixture account handles
+test data and ephemeral credentials. Provider-specific event triggers and
+extension behavior require a separate managed-platform rehearsal.
 
 The harness creates a unique marked scratch cluster, binds TCP to loopback only,
 and disables Unix sockets. It uses separate ephemeral SCRAM passwords and checks

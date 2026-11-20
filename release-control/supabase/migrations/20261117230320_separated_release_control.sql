@@ -1,13 +1,19 @@
 -- Forward migration artifact. Installation needs separately reviewed installer pins.
 -- This artifact has only been applied in the disposable local rehearsal.
 BEGIN;
+SET LOCAL search_path = pg_catalog, pg_temp;
 DO $$ BEGIN
  IF current_setting('tos.expected_database',true) IS DISTINCT FROM current_database() THEN RAISE EXCEPTION 'missing or mismatched installer database pin'; END IF;
  IF current_setting('tos.expected_installer_role',true) IS DISTINCT FROM session_user OR current_user IS DISTINCT FROM session_user THEN RAISE EXCEPTION 'missing or mismatched installer role pin'; END IF;
  IF current_setting('tos.expected_server_version_num',true) IS DISTINCT FROM current_setting('server_version_num') OR current_setting('server_version_num')::int/10000<>17 THEN RAISE EXCEPTION 'missing or mismatched supported server version pin'; END IF;
  IF EXISTS(SELECT 1 FROM pg_roles WHERE rolname like 'tos_release_%') OR EXISTS(SELECT 1 FROM pg_namespace WHERE nspname='tos_release_control') THEN RAISE EXCEPTION 'preexisting controller objects'; END IF;
 END $$;
-DO $preflight$ DECLARE measured text; BEGIN select encode(sha256(convert_to(jsonb_build_object(
+-- Check the reviewed inventory before any DDL. Keep the exact query in a
+-- session-private view so later checks measure the same catalog under locks
+-- and after the installer's temporary membership is removed.
+DO $catalog$
+DECLARE
+  inventory_sql CONSTANT text := $inventory$select encode(sha256(convert_to(jsonb_build_object(
  'version', current_setting('server_version_num'),
  'roles',(select jsonb_agg(to_jsonb(x) order by x.oid) from pg_roles x),
  'memberships',(select coalesce(jsonb_agg(to_jsonb(x) order by x.oid),'[]'::jsonb) from pg_auth_members x),
@@ -30,8 +36,22 @@ DO $preflight$ DECLARE measured text; BEGIN select encode(sha256(convert_to(json
  'foreignTables',(select coalesce(jsonb_agg(to_jsonb(x) order by x.ftrelid),'[]'::jsonb) from pg_foreign_table x),
  'extensions',(select jsonb_agg(to_jsonb(x) order by x.oid) from pg_extension x),
  'constraints',(select jsonb_agg(to_jsonb(x) order by x.oid) from pg_constraint x where connamespace not in(select oid from pg_namespace where nspname ~ '^pg_|^information_schema$'))
-)::text,'UTF8')),'hex') INTO measured; IF coalesce(current_setting('tos.reviewed_catalog_hash',true),'')<>measured THEN RAISE EXCEPTION 'unreviewed catalog'; END IF; IF EXISTS(SELECT 1 FROM pg_foreign_table) THEN RAISE EXCEPTION 'foreign tables require a separate supported dependency audit'; END IF; END $preflight$;
+)::text,'UTF8')),'hex')$inventory$;
+  measured text;
+BEGIN
+  EXECUTE inventory_sql INTO STRICT measured;
+  IF current_setting('tos.reviewed_catalog_hash', true) IS DISTINCT FROM measured THEN
+    RAISE EXCEPTION 'unreviewed catalog';
+  END IF;
+  IF EXISTS (SELECT FROM pg_foreign_table) THEN
+    RAISE EXCEPTION 'foreign tables require a separate supported dependency audit';
+  END IF;
+  EXECUTE 'CREATE TEMPORARY VIEW pg_temp.tos_installer_catalog (hash) WITH (security_invoker=true) AS ' || inventory_sql;
+END $catalog$;
+-- Apply the self-grant only to the NOLOGIN owner, never to the controller.
+SET LOCAL createrole_self_grant = 'set,inherit';
 CREATE ROLE tos_release_owner NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+SET LOCAL createrole_self_grant = '';
 CREATE ROLE tos_release_controller LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 DO $$ BEGIN EXECUTE format('REVOKE CREATE,TEMPORARY ON DATABASE %I FROM PUBLIC',current_database()); END $$;
@@ -73,11 +93,13 @@ ALTER TABLE tos_release_control.events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tos_release_control.consumptions ENABLE ROW LEVEL SECURITY;
 
 RESET ROLE;
-GRANT USAGE ON SCHEMA public TO tos_release_owner;
+-- The new owner needs CREATE on public only while receiving these tables.
+GRANT USAGE,CREATE ON SCHEMA public TO tos_release_owner;
 ALTER TABLE public.learning_releases OWNER TO tos_release_owner;
 ALTER TABLE public.learning_active_releases OWNER TO tos_release_owner;
 ALTER TABLE public.learning_release_events OWNER TO tos_release_owner;
 ALTER TABLE public.learning_release_consumptions OWNER TO tos_release_owner;
+REVOKE CREATE ON SCHEMA public FROM tos_release_owner;
 GRANT SELECT,UPDATE ON public.learning_guard,public.site_database TO tos_release_owner;
 GRANT EXECUTE ON FUNCTION public.prepare_learning_release(jsonb,text) TO tos_release_owner;
 -- Revoke explicit table AND column grants, including nonstandard runtime identities.
@@ -378,5 +400,39 @@ REVOKE ALL ON ALL FUNCTIONS IN SCHEMA tos_release_control FROM PUBLIC;
 GRANT USAGE ON SCHEMA tos_release_control TO tos_release_controller;
 GRANT EXECUTE ON FUNCTION tos_release_control.read_state(text),tos_release_control.read_committed(text,text,text),tos_release_control.adopt(jsonb,text,jsonb,text),tos_release_control.activate(jsonb,text,jsonb,text) TO tos_release_controller;
 RESET ROLE;
-INSERT INTO tos_release_control.catalog_pin VALUES(true,tos_release_control.measure_catalog());
+-- The catalog includes role memberships. Measure the final privilege state
+-- in a subtransaction, restore ownership long enough to write the pin, then
+-- remove the grant for good and verify the stored and actual hashes together.
+DO $finalize_pin$
+DECLARE
+  managed boolean := NOT (SELECT rolsuper FROM pg_roles WHERE rolname = session_user);
+  final_hash text;
+BEGIN
+  IF managed THEN
+    BEGIN
+      REVOKE tos_release_owner FROM CURRENT_USER GRANTED BY CURRENT_USER;
+      SELECT hash INTO STRICT final_hash FROM pg_temp.tos_installer_catalog;
+      RAISE SQLSTATE 'ZMF01' USING MESSAGE = 'restore temporary installer membership';
+    EXCEPTION WHEN SQLSTATE 'ZMF01' THEN
+      NULL; -- The transaction state rolls back. The local variable retains the measurement.
+    END;
+  ELSE
+    SELECT hash INTO STRICT final_hash FROM pg_temp.tos_installer_catalog;
+  END IF;
+  IF final_hash IS NULL OR final_hash !~ '^[0-9a-f]{64}$' THEN
+    RAISE EXCEPTION 'invalid final catalog measurement';
+  END IF;
+
+  SET LOCAL ROLE tos_release_owner;
+  INSERT INTO tos_release_control.catalog_pin (singleton, hash) VALUES (true, final_hash);
+  RESET ROLE;
+  IF managed THEN
+    REVOKE tos_release_owner FROM CURRENT_USER GRANTED BY CURRENT_USER;
+  END IF;
+  IF (SELECT hash FROM pg_temp.tos_installer_catalog) IS DISTINCT FROM final_hash OR
+     (SELECT hash FROM tos_release_control.catalog_pin WHERE singleton) IS DISTINCT FROM final_hash THEN
+    RAISE EXCEPTION 'installed catalog drift';
+  END IF;
+END $finalize_pin$;
+DROP VIEW pg_temp.tos_installer_catalog;
 COMMIT;
