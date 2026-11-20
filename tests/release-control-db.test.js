@@ -6,39 +6,55 @@ const C=require('../tools/final-corpus-lib'),G=require('../tools/governance-tran
 const {createController,PURPOSE,EVENT_PURPOSE}=require('../release-control/controller');
 const {createTransport}=require('../release-control/transport');
 const {makeRelease}=require('./final-test-fixtures');
-const [pgBin,scratch,proxy,openssl,artifactArgument,supabaseCli]=process.argv.slice(2);
+const args=process.argv.slice(2);
+const preflightOnly=args.includes('--preflight-only');
+const [pgBin,scratchPath,proxy,openssl,artifactArgument,supabaseCli,...extra]=args.filter(arg=>arg!=='--preflight-only');
 const artifactDirectory=artifactArgument && artifactArgument!=='-'?artifactArgument:null;
-const preflightOnly=process.argv.includes('--preflight-only');
-if(![pgBin,scratch,proxy,openssl].every(p=>p&&path.isAbsolute(p)))throw Error('Explicit absolute PG bin, scratch, proxy and OpenSSL paths required');
-if(process.platform!=='win32')throw Error('This portable tool harness is Windows-specific');
-fs.mkdirSync(scratch,{recursive:true});
+const requiredPaths=[pgBin,scratchPath,proxy,openssl];
+if(extra.length||!requiredPaths.every(p=>p&&path.isAbsolute(p)) || (artifactDirectory&&!path.isAbsolute(artifactDirectory)) || (supabaseCli&&!path.isAbsolute(supabaseCli)))throw Error('Explicit absolute PG bin, scratch, proxy and OpenSSL paths required; optional paths must also be absolute');
+if(!['win32','linux'].includes(process.platform))throw Error('This test harness supports Windows and Linux only');
+const linux=process.platform==='linux';
+if(linux&&process.getuid()===0)throw Error('Run the PostgreSQL rehearsal as a non-root user');
+fs.mkdirSync(scratchPath,{recursive:true});
+const scratch=fs.realpathSync(scratchPath);
 const dir=fs.mkdtempSync(path.join(scratch,'controller-db-')),data=path.join(dir,'data');
-const bin=n=>path.join(pgBin,n+'.exe'),password=crypto.randomBytes(32).toString('base64url');
+if(linux&&(fs.statSync(dir).mode&0o077)!==0)throw Error('Linux rehearsal requires private native filesystem storage');
+const bin=n=>path.join(pgBin,linux?n:n+'.exe');
+const appRoles=['anon','authenticated','service_role','runtime_app'];
+const controllerRole='tos_release_controller';
+const passwords=Object.fromEntries(['postgres',...appRoles,controllerRole].map(role=>[role,crypto.randomBytes(32).toString('base64url')]));
+const redact=text=>Object.values(passwords).reduce((s,pw)=>s.replaceAll(pw,'[EPHEMERAL-REDACTED]'),String(text||''));
 const env=Object.fromEntries(Object.entries(process.env).filter(([k])=>!/^PG/i.test(k)));
-Object.assign(env,{PGUSER:'postgres',PGPASSWORD:password,PGDATABASE:'postgres',PGHOST:'127.0.0.1',PGCONNECT_TIMEOUT:'5',PGSSLMODE:'verify-full',PGSSLROOTCERT:path.join(dir,'server.crt'),PGOPTIONS:'-c tos.isolated_rehearsal=yes -c statement_timeout=15000 -c lock_timeout=10000'});
+if(linux)env.LC_ALL='C';
+Object.assign(env,{PGUSER:'postgres',PGPASSWORD:passwords.postgres,PGDATABASE:'postgres',PGHOST:'127.0.0.1',PGCONNECT_TIMEOUT:'5',PGSSLMODE:'verify-full',PGSSLROOTCERT:path.join(dir,'server.crt'),PGGSSENCMODE:'disable',PGSSLCERTMODE:'disable',PGCLIENTENCODING:'UTF8',PGOPTIONS:'-c tos.isolated_rehearsal=yes -c statement_timeout=15000 -c lock_timeout=10000'});
 function run(exe,args,options={}) {const r=spawnSync(exe,args,{env,encoding:'utf8',windowsHide:true,timeout:30000,maxBuffer:32000000,...options});if(r.error)throw r.error;return r;}
-function pass(r,label){assert.equal(r.status,0,label+': '+r.stderr);return String(r.stdout||'').trim();}
+function pass(r,label){assert.equal(r.status,0,redact(label+': '+r.stderr));return String(r.stdout||'').trim();}
 const quote=x=>"'"+String(x).replace(/'/g,"''")+"'",json=x=>quote(C.canonicalJson(x))+'::jsonb';
-function sql(q,{user='postgres',fail=false,db='tos_governance_lab',pw=password}={}) {const file=path.join(dir,'query-'+crypto.randomUUID()+'.sql');fs.writeFileSync(file,q);let r;try{r=run(bin('psql'),['-X','-w','-q','-A','-t','-v','ON_ERROR_STOP=1','-d',db,'-f',file],{env:{...env,PGUSER:user,PGPASSWORD:pw}});}finally{fs.unlinkSync(file);}if(fail){assert.notEqual(r.status,0,'unexpected SQL success: '+q);return r.stderr;}return pass(r,q.slice(0,70));}
-function asyncSql(q,user='tos_release_controller'){return new Promise((resolve,reject)=>{const p=spawn(bin('psql'),['-X','-w','-q','-A','-t','-v','ON_ERROR_STOP=1','-d','tos_governance_lab'],{env:{...env,PGUSER:user},windowsHide:true});let out='',err='';p.stdout.on('data',x=>out+=x);p.stderr.on('data',x=>err+=x);p.on('error',reject);p.on('close',code=>code?reject(Error(err)):resolve(out.trim()));p.stdin.end(q);});}
+function sql(q,{user='postgres',fail=false,db='tos_governance_lab',pw=passwords[user]}={}) {const file=path.join(dir,'query-'+crypto.randomUUID()+'.sql');fs.writeFileSync(file,q,{mode:0o600});let r;try{r=run(bin('psql'),['-X','-w','-q','-A','-t','-v','ON_ERROR_STOP=1','-d',db,'-f',file],{env:{...env,PGUSER:user,PGPASSWORD:pw}});}finally{fs.unlinkSync(file);}if(fail){assert.notEqual(r.status,0,'unexpected SQL success: '+redact(q));return redact(r.stderr);}return pass(r,redact(q).slice(0,70));}
+function asyncSql(q,user=controllerRole){return new Promise((resolve,reject)=>{const p=spawn(bin('psql'),['-X','-w','-q','-A','-t','-v','ON_ERROR_STOP=1','-d','tos_governance_lab'],{env:{...env,PGUSER:user,PGPASSWORD:passwords[user]},windowsHide:true});let out='',err='';p.stdout.on('data',x=>out+=x);p.stderr.on('data',x=>err+=x);p.on('error',reject);p.on('close',code=>code?reject(Error(redact(err))):resolve(out.trim()));p.stdin.end(q);});}
 async function availablePort(){const s=net.createServer();await new Promise((r,j)=>s.once('error',j).listen(0,'127.0.0.1',r));const port=s.address().port;await new Promise(r=>s.close(r));return port;}
-let running=false,port,passed=0;
+let attemptedStart=false,port,passed=0;
 function ok(label){passed++;console.log('PASS '+label);}
 (async()=>{try{
-  for(const name of ['psql','initdb','pg_ctl'])assert.match(pass(run(bin(name),['--version']),name),/17\.11/);
+  for(const name of ['postgres','psql','initdb','pg_ctl'])assert.match(pass(run(bin(name),['--version']),name),/\b17\.11(?:\s|$)/);
   pass(run(openssl,['req','-x509','-newkey','rsa:2048','-nodes','-keyout',path.join(dir,'server.key'),'-out',path.join(dir,'server.crt'),'-days','1','-subj','/CN=localhost','-addext','subjectAltName=DNS:localhost,IP:127.0.0.1']), 'ephemeral certificate');
-  const pwfile=path.join(dir,'pwfile');fs.writeFileSync(pwfile,password+'\n');
+  if(linux){
+    fs.chmodSync(path.join(dir,'server.key'),0o600);
+    assert.equal(fs.statSync(path.join(dir,'server.key')).mode&0o077,0);
+  }
+  const pwfile=path.join(dir,'pwfile');fs.writeFileSync(pwfile,passwords.postgres+'\n',{mode:0o600});
   try{pass(run(bin('initdb'),['-D',data,'-U','postgres','--auth-local=scram-sha-256','--auth-host=scram-sha-256','--pwfile='+pwfile,'--no-locale','--encoding=UTF8']),'initdb');}finally{fs.unlinkSync(pwfile);}
   fs.writeFileSync(path.join(data,'TOS_DISPOSABLE_REHEARSAL'),'governance-control-v1');
-  fs.appendFileSync(path.join(data,'postgresql.conf'),`\nssl=on\nssl_cert_file='${path.join(dir,'server.crt').replaceAll('\\','/')}'\nssl_key_file='${path.join(dir,'server.key').replaceAll('\\','/')}'\n`);
+  fs.appendFileSync(path.join(data,'postgresql.conf'),"\nssl=on\nssl_cert_file='../server.crt'\nssl_key_file='../server.key'\nunix_socket_directories=''\n");
   port=await availablePort();env.PGPORT=String(port);
   const log=fs.openSync(path.join(dir,'startup.log'),'w');
-  try{pass(run(bin('pg_ctl'),['-D',data,'-l',path.join(dir,'postgres.log'),'-o',`-h 127.0.0.1 -p ${port}`,'-w','start'],{stdio:['ignore',log,log]}),'start');running=true;}finally{fs.closeSync(log);}
+  try{attemptedStart=true;pass(run(bin('pg_ctl'),['-D',data,'-l',path.join(dir,'postgres.log'),'-o',`-h 127.0.0.1 -p ${port}`,'-w','-t','20','start'],{stdio:['ignore',log,log]}),'start');}finally{fs.closeSync(log);}
   assert.equal(fs.readFileSync(path.join(data,'TOS_DISPOSABLE_REHEARSAL'),'utf8'),'governance-control-v1');
   const identity=JSON.parse(sql("select json_build_object('data',current_setting('data_directory'),'version',current_setting('server_version_num'),'host',host(inet_server_addr()),'port',inet_server_port(),'ssl',(select ssl from pg_stat_ssl where pid=pg_backend_pid()));",{db:'postgres'}));
   assert.equal(fs.realpathSync(identity.data),fs.realpathSync(data));assert.equal(identity.version,'170011');assert.equal(identity.host,'127.0.0.1');assert.equal(identity.port,port);assert.equal(identity.ssl,true);
   sql('create database tos_governance_lab;',{db:'postgres'});
-  sql(`create role anon login password ${quote(password)};create role authenticated login password ${quote(password)};create role service_role login bypassrls password ${quote(password)};create role runtime_app login password ${quote(password)};create table public.analyses(id int,domain text,created_at timestamptz);create table public.learning_guard(key text,value jsonb);create table public.site_database(domain text,is_static boolean);`);
+  for(const role of appRoles)sql(`create role ${role} login${role==='service_role'?' bypassrls':''} password ${quote(passwords[role])};`);
+  sql('create table public.analyses(id int,domain text,created_at timestamptz);create table public.learning_guard(key text,value jsonb);create table public.site_database(domain text,is_static boolean);');
   sql(fs.readFileSync(path.join(proxy,'migrations/0006_release_activation.sql'),'utf8'));
   sql(fs.readFileSync(path.join(proxy,'migrations/20261030040050_baseline_bootstrap.sql'),'utf8'));
   // Seed the actual legacy direct-write and halt routes before installing the fence.
@@ -61,28 +77,31 @@ function ok(label){passed++;console.log('PASS '+label);}
   sql(installerSettings(pins)+migration);
   // Fixture admin ceremony: provisioning changes rolpassword from null to masked.
   // Final matrix runs only after this final catalog is pinned. No runtime repin API exists.
-  sql(`alter role tos_release_controller password ${quote(password)};update tos_release_control.catalog_pin set hash=tos_release_control.measure_catalog();`);
+  sql(`alter role tos_release_controller password ${quote(passwords[controllerRole])};update tos_release_control.catalog_pin set hash=tos_release_control.measure_catalog();`);
   if(supabaseCli){
-    assert.ok(path.isAbsolute(supabaseCli));
-    const url=`postgresql://postgres:${encodeURIComponent(password)}@127.0.0.1:${port}/tos_governance_lab?sslmode=verify-full&sslrootcert=${encodeURIComponent(path.join(dir,'server.crt'))}`;
-    const advisors=run(supabaseCli,['db','advisors','--db-url',url,'--type','security','--fail-on','error','--workdir',path.resolve(__dirname,'../release-control')],{env:{...env,SUPABASE_TELEMETRY_DISABLED:'1',SUPABASE_NO_UPDATE_NOTIFIER:'1',DO_NOT_TRACK:'1'}});
-    const safe=(String(advisors.stdout||'')+'\n'+String(advisors.stderr||'')).replaceAll(password,'[EPHEMERAL-REDACTED]').replaceAll(encodeURIComponent(password),'[EPHEMERAL-REDACTED]');
+    const url=`postgresql://postgres@127.0.0.1:${port}/tos_governance_lab?sslmode=verify-full&sslrootcert=${encodeURIComponent(path.join(dir,'server.crt'))}`;
+    const advisors=run(supabaseCli,['db','advisors','--db-url',url,'--type','security','--fail-on','error','--workdir',path.resolve(__dirname,'../release-control')],{env:{...env,SUPABASE_DB_PASSWORD:passwords.postgres,SUPABASE_TELEMETRY_DISABLED:'1',SUPABASE_NO_UPDATE_NOTIFIER:'1',DO_NOT_TRACK:'1'}});
+    const safe=redact(String(advisors.stdout||'')+'\n'+String(advisors.stderr||''));
     fs.writeFileSync(path.join(dir,'security-advisors.log'),safe);
     assert.equal(advisors.status,0,'Local security advisor failed; see redacted security-advisors.log');
     ok('Supabase local security advisors completed');
   }
   if(preflightOnly){console.log(JSON.stringify({passed,preflightOnly:true,productionApplied:false,labOnly:true,evidenceDirectory:dir}));return;}
-  const transport=createTransport({psql:bin('psql'),host:'127.0.0.1',port,database:'tos_governance_lab',user:'tos_release_controller',password,rootCertificate:path.join(dir,'server.crt')});
+  const controllerConnection={psql:bin('psql'),host:'127.0.0.1',port,database:'tos_governance_lab',user:controllerRole,password:passwords[controllerRole],rootCertificate:path.join(dir,'server.crt')};
+  const transport=createTransport(controllerConnection);
   assert.equal(transport.rpc('read_state',['missing']),null);
-  assert.throws(()=>createTransport({psql:bin('psql'),host:'127.0.0.1',port,database:'tos_governance_lab',user:'service_role',password,rootCertificate:path.join(dir,'server.crt')}),/Restricted/);
-  assert.throws(()=>createTransport({psql:bin('psql'),host:'127.0.0.1',port,database:'tos_governance_lab',user:'tos_release_controller',password:'wrong',rootCertificate:path.join(dir,'server.crt')}).rpc('read_state',['missing']),/failed/);
-  assert.throws(()=>createTransport({psql:bin('psql'),host:'127.0.0.1',port,database:'tos_governance_lab',user:'tos_release_controller',password,rootCertificate:__filename}).rpc('read_state',['missing']),/failed/);
+  assert.throws(()=>createTransport({...controllerConnection,user:'service_role',password:passwords.service_role}),/Restricted/);
+  assert.throws(()=>createTransport({...controllerConnection,password:'wrong'}).rpc('read_state',['missing']),/failed/);
+  assert.throws(()=>createTransport({...controllerConnection,rootCertificate:__filename}).rpc('read_state',['missing']),/failed/);
   const wrongHost=run(bin('psql'),['-X','-w','-q','-A','-t','-c','select 1'],{env:{...env,PGHOST:'not-the-certificate.invalid',PGHOSTADDR:'127.0.0.1'}});
   assert.notEqual(wrongHost.status,0);assert.match(wrongHost.stderr,/does not match host name/);
   assert.throws(()=>transport.rpc('execute_sql',['select 1']),/Unknown/);
   ok('TLS verify-full controller login, wrong password and narrow RPC transport');
+  assert.match(sql('select current_user',{user:controllerRole,pw:passwords.service_role,fail:true}),/password authentication failed/);
+  assert.match(sql('select current_user',{user:'service_role',pw:passwords[controllerRole],fail:true}),/password authentication failed/);
+  ok('application and controller passwords cannot be exchanged');
   const tables=['public.learning_releases','public.learning_active_releases','public.learning_release_events','public.learning_release_consumptions','tos_release_control.registry','tos_release_control.events','tos_release_control.consumptions','tos_release_control.catalog_pin'];
-  const actors=['anon','authenticated','service_role','runtime_app','tos_release_controller'];let denials=0;
+  const actors=[...appRoles,controllerRole];let denials=0;
   const columns=Object.fromEntries(tables.map(table=>[table,sql(`select attname from pg_attribute where attrelid=${quote(table)}::regclass and attnum>0 and not attisdropped order by attnum limit 1`)]));
   for(const actor of actors){for(const table of tables){for(const op of [`insert into ${table} default values`,`delete from ${table}`,`truncate ${table}`,`update ${table} set ${columns[table]}=${columns[table]} where false`]){assert.match(sql(op,{user:actor,fail:true}),/permission denied/);denials++;}}
     for(const q of ['set role tos_release_owner','grant tos_release_owner to runtime_app','create function public.attack() returns int language sql as $$select 1$$','create table tos_release_control.attack(id int)']){assert.match(sql(q,{user:actor,fail:true}),/permission denied|must have|not permitted/);denials++;}
@@ -173,7 +192,11 @@ function ok(label){passed++;console.log('PASS '+label);}
   ok('expired request rolls back; unreviewed catalog changes fence all controller reads');
   console.log(JSON.stringify({passed,denials,productionApplied:false,productionReady:false,labOnly:true,maintenanceActivationTested:true,evaluationEvidence:'hypothetical-fixtures-only',actualArtifactBindings:!!actual,baselineConfigHash:baseline.configHash,candidateConfigHash:candidate.configHash,verifierHash:plan.verifierHash,evidenceDirectory:dir}));
 }finally{
-  if(running){pass(run(bin('pg_ctl'),['-D',data,'-m','fast','-w','stop']),'stop');running=false;}
+  if(attemptedStart){
+    const status=run(bin('pg_ctl'),['-D',data,'status']);
+    if(status.status===0)pass(run(bin('pg_ctl'),['-D',data,'-m','fast','-w','-t','20','stop']),'stop');
+    else assert.equal(status.status,3,'Could not confirm the disposable PostgreSQL process is stopped');
+  }
   if(port)await new Promise((resolve,reject)=>{const s=net.connect({host:'127.0.0.1',port});s.once('connect',()=>{s.destroy();reject(Error('Disposable port remains open'));});s.once('error',resolve);});
   for(const name of ['server.key','server.crt']){const p=path.join(dir,name);if(fs.existsSync(p))fs.unlinkSync(p);}
   if(fs.existsSync(path.join(data,'TOS_DISPOSABLE_REHEARSAL'))){

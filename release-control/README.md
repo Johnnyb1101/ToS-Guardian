@@ -81,12 +81,29 @@ rejects rollback actions; a later application rollback needs a separately review
 current-standard artifact and recovery design under the current epoch.
 Never restore legacy grants or lower governance epoch as an operational rollback.
 
-Run `tests/release-control-db.test.js` with explicit absolute existing PG17 bin,
-scratch, proxy source and native OpenSSL paths. It creates a unique marked scratch
-cluster, binds loopback only, uses ephemeral SCRAM credentials and TLS certificates,
-checks data directory/version/address/TLS and its unique local marker, checks all
-missing/wrong installer pins before DDL, applies the actual archived release and
-bootstrap SQL, then the forward SQL, and runs the final installed denial matrix.
+Run `tests/release-control-db.test.js` on Windows or Linux with explicit absolute
+paths for the PostgreSQL 17.11 bin directory, scratch directory, proxy source and
+native OpenSSL executable. On Linux, run as a non-root user and use scratch on a
+native filesystem that enforces Unix permissions. For WSL, use storage inside the
+distro. The same command takes the platform's native paths:
+
+```text
+node tests/release-control-db.test.js <pg-bin> <scratch> <proxy-source> <openssl> [artifact-directory|-] [supabase-cli]
+```
+
+The optional artifact directory must contain verifier inputs measured for the
+actual source bytes and Node executable on this platform. With no artifact
+directory, the harness uses synthetic build inputs. The optional Supabase CLI
+runs security advisors against the disposable database. Use `-` to supply the
+CLI with synthetic build inputs. `--preflight-only` stops after installation and
+catalog checks (and advisors if supplied), before activation testing.
+
+The harness creates a unique marked scratch cluster, binds TCP to loopback only,
+and disables Unix sockets. It uses separate ephemeral SCRAM passwords and checks
+that the application and controller credentials cannot be exchanged. It verifies
+data directory, version, address and TLS, checks all missing or wrong installer
+pins before DDL, applies the archived release and bootstrap SQL and the forward
+SQL, then runs the final installed denial matrix.
 The harness never accepts a database URL, host or port from the caller; it always
 creates its own disposable loopback cluster. Lab restrictions belong to this
 harness, so rehearsal and a separately approved future installation use identical
