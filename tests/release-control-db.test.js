@@ -107,6 +107,24 @@ function ok(label){passed++;console.log('PASS '+label);}
     ok('recovery migration requires installer pins and the reviewed previous installation');
     return measured;
   }
+  const archiveLimitMigration=fs.readFileSync(path.join(__dirname,'../release-control/supabase/migrations/20261120173728_expand_build_archive_limit.sql'),'utf8');
+  const recoverDefinition=()=>sql("select pg_get_functiondef('tos_release_control.recover(jsonb,text,jsonb,text)'::regprocedure)");
+  function installArchiveLimit(recoveryCatalog){
+    const priorDefinition=recoverDefinition();
+    const archivePins={...pins,reviewed_catalog_hash:recoveryCatalog};
+    const badPins={...archivePins,reviewed_catalog_hash:previousCatalog};
+    assert.match(sql(installerSettings(badPins)+archiveLimitMigration,{fail:true}),/unreviewed catalog/);
+    assert.equal(recoverDefinition(),priorDefinition);
+    assert.equal(measureCatalog(),recoveryCatalog);
+    assert.ok(priorDefinition.includes('BETWEEN 1 AND 64000000'));
+    sql(installerSettings(archivePins)+archiveLimitMigration);
+    assert.equal(recoverDefinition(),priorDefinition.replace('BETWEEN 1 AND 64000000','BETWEEN 1 AND 268435456'));
+    const measured=measureCatalog();
+    assert.notEqual(measured,recoveryCatalog);
+    assert.equal(sql('select hash from tos_release_control.catalog_pin'),measured);
+    ok('forward migration requires reviewed catalog and changes only the recovery archive bound');
+    return measured;
+  }
   function runAdvisors(){
     if(!supabaseCli)return;
     const url=`postgresql://postgres@127.0.0.1:${port}/tos_governance_lab?sslmode=verify-full&sslrootcert=${encodeURIComponent(path.join(dir,'server.crt'))}`;
@@ -117,7 +135,7 @@ function ok(label){passed++;console.log('PASS '+label);}
     ok('Supabase local security advisors completed');
   }
   if(preflightOnly){
-    installRecovery();
+    installArchiveLimit(installRecovery());
     runAdvisors();
     console.log(JSON.stringify({passed,preflightOnly:true,productionApplied:false,labOnly:true,evidenceDirectory:dir}));
     return;
@@ -162,15 +180,30 @@ function ok(label){passed++;console.log('PASS '+label);}
   assert.equal(sql('select count(*) from tos_release_control.events'),'0');
   assert.equal(sql('select count(*) from tos_release_control.consumptions'),'0');
   ok('adopting a recovery plan requires database support');
-  const oldAdoption=envelope('base_only_fixture_adoption_0001');
-  assert.equal((await controller.adopt(oldAdoption)).status,'adopted');
+  const smallBuild=arm=>manifest('artifacts/release-build',arm+' legacy installer fixture');
+  const oldPlan=G.preparePlan({...planInput,baselineManifest:smallBuild('baseline'),candidateManifest:smallBuild('candidate')});
+  const oldController=createController({...controllerConfig,reviewedPlan:oldPlan});
+  const oldAdoption=envelope('base_only_fixture_adoption_0001',60000,oldPlan);
+  assert.equal((await oldController.adopt(oldAdoption)).status,'adopted');
   assert.match(sql(installerSettings(recoveryPins)+recoveryMigration,{fail:true}),/recovery must be installed before adoption/);
   recoveryNotInstalled();
-  assert.equal((await controller.adopt(oldAdoption)).status,'already-applied');
+  assert.equal((await oldController.adopt(oldAdoption)).status,'already-applied');
   ok('installer refuses an adopted database without changing its catalog or durable adoption');
   seed();
-  const installedRecoveryCatalog=installRecovery();
+  const recoveryCatalog=installRecovery();
   assert.equal(transport.rpc('read_state',['lab']).recoveryVersion,1);
+  const largeRecoveryManifest=C.seal({files:[{path:'artifacts/release-build',...recoveryArtifact,bytes:64000001}]});
+  const largeArchivePlan=G.preparePlan({...planInput,recovery:{release:recoveryRelease,manifest:largeRecoveryManifest}});
+  const largeArchiveController=createController({...controllerConfig,reviewedPlan:largeArchivePlan});
+  const beforeArchiveMigration=transport.rpc('read_state',['lab']);
+  assert.equal(beforeArchiveMigration.buildArchiveMaxBytes,undefined);
+  const largeAdoption=envelope('archive_limit_required_fixture_0001',60000,largeArchivePlan);
+  await assert.rejects(largeArchiveController.adopt(largeAdoption),/Build archive limit migration must be installed/);
+  assert.deepEqual(transport.rpc('read_state',['lab']),beforeArchiveMigration);
+  assert.equal(sql('select count(*) from tos_release_control.consumptions'),'0');
+  ok('large-archive adoption waits for installed database support');
+  const installedRecoveryCatalog=installArchiveLimit(recoveryCatalog);
+  assert.equal(transport.rpc('read_state',['lab']).buildArchiveMaxBytes,268435456);
   runAdvisors();
 
   assert.equal(transport.rpc('read_state',['missing']),null);
@@ -366,6 +399,8 @@ function ok(label){passed++;console.log('PASS '+label);}
     assert.deepEqual(afterRecovery[table].filter(row=>row[key]!==value),beforeRecovery[table],table);
   }
   assert.deepEqual(JSON.parse(sql(`select release from public.learning_releases where config_hash=${quote(recoveryRelease.configHash)}`,{user:'service_role'})),recoveryRelease);
+  assert.equal(measureCatalog(),installedRecoveryCatalog);
+  assert.match(sql(installerSettings({...pins,reviewed_catalog_hash:installedRecoveryCatalog})+archiveLimitMigration,{fail:true}),/build archive limit must be installed before adoption/);
   assert.equal(measureCatalog(),installedRecoveryCatalog);
   const restartedController=createController({...recoveryConfig,transport:createTransport(controllerConnection),now:()=>new Date(Date.now()+86400000).toISOString()});
   assert.deepEqual(await restartedController.recover(committedRequest,approvedRecovery.context),{...recoveredResult,status:'already-applied'});

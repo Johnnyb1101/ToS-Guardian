@@ -4,18 +4,23 @@ const crypto=require('node:crypto'),fs=require('node:fs'),path=require('node:pat
 const {canonicalJson,digest,seal}=require('./final-corpus-lib');
 const {checkRelease}=require('./sites-lib');
 const {localPath}=require('./maintenance-local-path');
+const {MAX_BUILD_BYTES}=require('./maintenance-final-evidence');
 const PURPOSE='tos-guardian.governance-transition.v3\n';
 const HASH=/^[a-f0-9]{64}$/;
+const BUILD_ARCHIVE='artifacts/release-build';
+const MAX_FILE_BYTES=64000000;
 const RESULTS=Object.freeze({transitionReady:false,adoptionAllowed:false,productionReady:false,productionApplied:false,releasePromotionEligible:false});
 const ALLOWED_DIFFS=['policy.versions.serverPipeline','policy.versions.storageSchema','policy.versions.baselineSchema','policy.versions.migrationManifest'];
 function exact(v,keys,label){canonicalJson(v);if(!v||typeof v!=='object'||Array.isArray(v)||JSON.stringify(Object.keys(v).sort())!==JSON.stringify([...keys].sort()))throw Error('Invalid '+label+' fields');}
 function hash(v,label){if(typeof v!=='string'||!HASH.test(v))throw Error('Invalid '+label);}
 function identifier(v,label){if(typeof v!=='string'||!/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$/.test(v))throw Error('Invalid '+label);}
 function relative(v){if(typeof v!=='string'||!v||v.length>240||!/^[A-Za-z0-9._/-]+$/.test(v)||v.split('/').some(p=>!p||p==='.'||p==='..'))throw Error('Invalid manifest path');}
+// Ordered manifests are the SQL migration inventory, not a build bundle.
+function fileLimit(name,ordered){return !ordered&&name===BUILD_ARCHIVE?MAX_BUILD_BYTES:MAX_FILE_BYTES;}
 function checkManifest(m,ordered=false){
  exact(m,['files','hash'],'manifest');if(!Array.isArray(m.files)||!m.files.length||m.files.length>10000)throw Error('Invalid manifest files');
  const names=[];
- for(const f of m.files){exact(f,['path','sha256','bytes'],'manifest file');relative(f.path);hash(f.sha256,'file digest');if(!Number.isSafeInteger(f.bytes)||f.bytes<0||f.bytes>64000000)throw Error('Invalid file size');names.push(f.path);}
+ for(const f of m.files){exact(f,['path','sha256','bytes'],'manifest file');relative(f.path);hash(f.sha256,'file digest');if(!Number.isSafeInteger(f.bytes)||f.bytes<0||f.bytes>fileLimit(f.path,ordered))throw Error('Invalid file size');names.push(f.path);}
  if(new Set(names.map(n=>n.toLowerCase())).size!==names.length)throw Error('Duplicate manifest paths');
  if(!ordered&&JSON.stringify(names)!==JSON.stringify([...names].sort()))throw Error('Unsorted source manifest');
  if(m.hash!==digest({files:m.files}))throw Error('Manifest hash mismatch');
@@ -23,7 +28,32 @@ function checkManifest(m,ordered=false){
 function captureManifest(directory,paths,{ordered=false}={}){
  if(!Array.isArray(paths))throw Error('Paths required');
  const root=localPath(directory), names=ordered?[...paths]:[...paths].sort();
- const files=names.map(name=>{relative(name);const p=localPath(path.join(root,...name.split('/')));const fd=fs.openSync(p,'r');try{const st=fs.fstatSync(fd);if(!st.isFile()||st.size>64000000)throw Error('Not a bounded regular file');const bytes=fs.readFileSync(fd);return {path:name,sha256:crypto.createHash('sha256').update(bytes).digest('hex'),bytes:bytes.length};}finally{fs.closeSync(fd);}});
+ const files=names.map(name=>{
+  relative(name);
+  const file=localPath(path.join(root,...name.split('/')));
+  const fd=fs.openSync(file,'r');
+  try{
+   const before=fs.fstatSync(fd);
+   const limit=fileLimit(name,ordered);
+   if(!before.isFile()||before.size>limit)throw Error('Not a bounded regular file');
+   if(limit===MAX_FILE_BYTES){
+    const bytes=fs.readFileSync(fd);
+    return {path:name,sha256:crypto.createHash('sha256').update(bytes).digest('hex'),bytes:bytes.length};
+   }
+   const digest=crypto.createHash('sha256'),buffer=Buffer.alloc(1024*1024);
+   let bytes=0;
+   for(;;){
+    const count=fs.readSync(fd,buffer,0,Math.min(buffer.length,limit-bytes+1),null);
+    if(count===0)break;
+    bytes+=count;
+    if(bytes>limit)throw Error('Build archive grew beyond its limit during capture');
+    digest.update(buffer.subarray(0,count));
+   }
+   const after=fs.fstatSync(fd);
+   if(bytes!==before.size||bytes!==after.size||after.mtimeMs!==before.mtimeMs||after.ctimeMs!==before.ctimeMs)throw Error('Build archive changed during capture');
+   return {path:name,sha256:digest.digest('hex'),bytes};
+  }finally{fs.closeSync(fd);}
+ });
  const m=seal({files});checkManifest(m,ordered);return m;
 }
 function rejectSeparatorKeys(value){if(value&&typeof value==='object'){for(const key of Object.keys(value)){if(key.includes('.'))throw Error('Configuration separator keys are forbidden');rejectSeparatorKeys(value[key]);}}}
@@ -68,7 +98,7 @@ function validatePlan(plan){
   if(release.configHash===plan.baseline.configHash||changes.length!==1||changes[0]!=='policy.versions.serverPipeline')throw Error('Recovery must be a distinct release changing only the candidate serverPipeline');
   checkManifest(manifest);
   const buildDigests=[plan.baselineManifest,plan.candidateManifest,manifest].map(source=>{
-   const build=source.files.find(file=>file.path==='artifacts/release-build');
+   const build=source.files.find(file=>file.path===BUILD_ARCHIVE);
    if(!build||build.bytes===0)throw Error('Each recovery plan manifest requires a nonempty artifacts/release-build');
    return build.sha256;
   });
@@ -112,4 +142,4 @@ function verifyEnvelope(envelope,plan,context){
   return {valid:true,envelopeIntegrityVerified:true,...RESULTS,authorizationHash:digest(envelope),planHash:plan.hash,limitations:['Only caller-supplied snapshot and consumed-ID view checked; no atomic consumption','No database privilege isolation or anti-downgrade enforcement','Manifests bind declared/captured bytes, not deployed provenance or completeness','No report passes, signing, production migration, deployment or activation']};
  }catch(e){return {valid:false,envelopeIntegrityVerified:false,...RESULTS,reason:e.message};}
 }
-module.exports={PURPOSE,RESULTS,captureManifest,checkManifest,differences,preparePlan,validatePlan,payloadFor,message,verifyEnvelope};
+module.exports={PURPOSE,RESULTS,MAX_FILE_BYTES,MAX_BUILD_BYTES,captureManifest,checkManifest,differences,preparePlan,validatePlan,payloadFor,message,verifyEnvelope};

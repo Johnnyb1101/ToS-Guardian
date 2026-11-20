@@ -121,6 +121,43 @@ test('recovery rejects malformed release, fields and missing or empty build arti
   assert.throws(()=>G.preparePlan(i));
  }
 });
+test('only the reserved build archive can use the 256 MiB limit',()=>{
+ const file=(name,bytes)=>C.seal({files:[{path:name,bytes,sha256:C.hashText('fixture')}]});
+ const reserved='artifacts/release-build';
+ assert.doesNotThrow(()=>G.checkManifest(file(reserved,268435456)));
+ assert.throws(()=>G.checkManifest(file(reserved,268435457)),/Invalid file size/);
+ assert.throws(()=>G.checkManifest(file(reserved,64000001),true),/Invalid file size/);
+ for(const name of ['a.js','artifacts/release-build.txt','artifacts/Release-Build']){
+  assert.doesNotThrow(()=>G.checkManifest(file(name,64000000)));
+  assert.throws(()=>G.checkManifest(file(name,64000001)),/Invalid file size/);
+ }
+});
 if(process.platform==='win32')test('local file capture checks actual bytes and changed contents',()=>{const root=fs.mkdtempSync(path.join(os.tmpdir(),'governance-fixture-'));try{fs.writeFileSync(path.join(root,'a.js'),'first');const a=G.captureManifest(root,['a.js']);fs.writeFileSync(path.join(root,'a.js'),'second');const b=G.captureManifest(root,['a.js']);assert.notEqual(a.hash,b.hash);assert.throws(()=>G.captureManifest(root,['../escape']));}finally{fs.rmSync(path.join(root,'a.js'));fs.rmdirSync(root);}});
 else test('filesystem capture fails closed off Windows',()=>assert.throws(()=>G.captureManifest('/tmp',['a.js']),/Windows/));
+if(process.platform==='win32')test('large build capture hashes every byte and preserves the ordinary file cap',()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'governance-archive-fixture-'));
+ const directory=path.join(root,'artifacts');
+ const archive=path.join(directory,'release-build'), ordinary=path.join(root,'large.js');
+ fs.mkdirSync(directory);
+ try{
+  const size=64000001;
+  fs.writeFileSync(archive,'');
+  fs.truncateSync(archive,size);
+  fs.writeFileSync(ordinary,'');
+  fs.truncateSync(ordinary,size);
+  const empty=Buffer.alloc(size);
+  assert.deepEqual(G.captureManifest(root,['artifacts/release-build']).files,[{
+   path:'artifacts/release-build',bytes:size,sha256:crypto.createHash('sha256').update(empty).digest('hex'),
+  }]);
+  assert.throws(()=>G.captureManifest(root,['large.js']),/bounded regular file/);
+  const fd=fs.openSync(archive,'r+');
+  try{fs.writeSync(fd,Buffer.from([1]),0,1,size-1);}finally{fs.closeSync(fd);}
+  empty[size-1]=1;
+  assert.equal(G.captureManifest(root,['artifacts/release-build']).files[0].sha256,crypto.createHash('sha256').update(empty).digest('hex'));
+ }finally{
+  for(const file of [archive,ordinary])if(fs.existsSync(file))fs.unlinkSync(file);
+  fs.rmdirSync(directory);
+  fs.rmdirSync(root);
+ }
+});
 console.log(n+' governance integrity test groups passed; ephemeral fixture signatures only');
