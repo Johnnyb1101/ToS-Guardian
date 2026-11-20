@@ -45,7 +45,8 @@ function checkActive(a){
  hash(a.configHash,'active configuration');hash(a.headHash,'active head');identifier(a.governanceRegistryId,'governance registry');for(const k of ['governanceHeadHash','installedVerifierHash','installedMigrationManifestHash'])hash(a[k],k);
 }
 function validatePlan(plan){
- exact(plan,['v','kind','destination','active','nextGovernanceEpoch','fromStandard','toStandard','standardDocumentHash','verifierHash','ownerKeyFingerprint','baseline','candidate','baselineManifest','candidateManifest','migrationManifest','policyDiff','hash'],'plan');
+ const optionalFields=plan&&Object.hasOwn(plan,'recovery')?['recovery']:[];
+ exact(plan,['v','kind','destination','active','nextGovernanceEpoch','fromStandard','toStandard','standardDocumentHash','verifierHash','ownerKeyFingerprint','baseline','candidate','baselineManifest','candidateManifest','migrationManifest','policyDiff','hash',...optionalFields],'plan');
  if(plan.v!==1||plan.kind!=='governance-transition-plan'||plan.nextGovernanceEpoch!==1||plan.fromStandard!=='step2-final/v2'||plan.toStandard!=='maintenance-final/v1')throw Error('Unsupported governance transition');
  checkDestination(plan.destination);checkActive(plan.active);
  hash(plan.standardDocumentHash,'standard document');hash(plan.verifierHash,'verifier');hash(plan.ownerKeyFingerprint,'owner key fingerprint');
@@ -54,11 +55,31 @@ function validatePlan(plan){
  checkManifest(plan.baselineManifest);checkManifest(plan.candidateManifest);checkManifest(plan.migrationManifest,true);if(plan.candidate.config.policy.versions.migrationManifest!==plan.migrationManifest.hash)throw Error('Candidate migration manifest binding mismatch');
  const diff=differences(plan.baseline.config,plan.candidate.config);
  if(!diff.includes('policy.versions.serverPipeline')||diff.some(p=>!ALLOWED_DIFFS.includes(p))||canonicalJson(plan.policyDiff)!==canonicalJson(diff))throw Error('Forbidden or inaccurate configuration diff');
+ if(Object.hasOwn(plan,'recovery')){
+  if(plan.active.generation>Number.MAX_SAFE_INTEGER-2)throw Error('Insufficient release generations for adoption and recovery');
+  exact(plan.recovery,['release','manifest'],'recovery');
+  const {release,manifest}=plan.recovery;
+  const checked=checkRelease(release);
+  if(!checked.valid)throw Error('Invalid recovery release: '+checked.reason);
+  rejectSeparatorKeys(release.config);
+  hash(release.config.policy.versions.serverPipeline,'recovery serverPipeline');
+  if(release.config.policy.cache?.shared!=='disabled')throw Error('Recovery requires disabled shared cache');
+  const changes=differences(plan.candidate.config,release.config);
+  if(release.configHash===plan.baseline.configHash||changes.length!==1||changes[0]!=='policy.versions.serverPipeline')throw Error('Recovery must be a distinct release changing only the candidate serverPipeline');
+  checkManifest(manifest);
+  const buildDigests=[plan.baselineManifest,plan.candidateManifest,manifest].map(source=>{
+   const build=source.files.find(file=>file.path==='artifacts/release-build');
+   if(!build||build.bytes===0)throw Error('Each recovery plan manifest requires a nonempty artifacts/release-build');
+   return build.sha256;
+  });
+  if(new Set(buildDigests).size!==buildDigests.length)throw Error('Recovery plan requires three distinct release-build digests');
+ }
  const {hash:h,...body}=plan;if(h!==digest(body))throw Error('Plan hash mismatch');
  return plan;
 }
 function preparePlan(input){
- exact(input,['destination','active','standardDocumentHash','verifierHash','ownerKeyFingerprint','baseline','candidate','baselineManifest','candidateManifest','migrationManifest'],'plan input');
+ const optionalFields=input&&Object.hasOwn(input,'recovery')?['recovery']:[];
+ exact(input,['destination','active','standardDocumentHash','verifierHash','ownerKeyFingerprint','baseline','candidate','baselineManifest','candidateManifest','migrationManifest',...optionalFields],'plan input');
  const p=seal({v:1,kind:'governance-transition-plan',...input,nextGovernanceEpoch:1,fromStandard:'step2-final/v2',toStandard:'maintenance-final/v1',policyDiff:differences(input.baseline.config,input.candidate.config)});
  validatePlan(p);return p;
 }

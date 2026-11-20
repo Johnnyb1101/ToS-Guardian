@@ -15,17 +15,19 @@ use an immutable separately installed source tree and a measured executable; the
 measurement callback is a trusted installation dependency, not evidence supplied
 by a release requester. `tools/maintenance-artifact-manifest.js` supplies byte and
 actual Node executable measurements. Include the controller, complete transitive
-verifier imports, vendor files, and this SQL in that reviewed inventory. Both signed
-source manifests must contain `artifacts/release-build`, the byte length and SHA-256
-of the complete build artifact. Activation compares both evidence artifact hashes
-and byte lengths to these signed descriptors. Completeness
+verifier imports, vendor files, and both control migrations in that reviewed
+inventory. Every build manifest used for publication must contain
+`artifacts/release-build`, the byte length and SHA-256 of the complete build
+artifact. Publication compares the two evidence artifact hashes and byte lengths
+to the signed descriptors. Completeness
 requires review; hashing a supplied list does not establish completeness.
 
 `transport.js` accepts an explicit restricted database login, password, trusted CA
 file and psql executable. It sets `sslmode=verify-full`, disables GSS encryption
 negotiation and ambient client certificate use, has no Data API fallback,
 does not inherit PG service/connection settings, disables psql startup files, and
-only dispatches four fixed RPC signatures. Arguments are UTF-8 hex encoded.
+dispatches only the fixed state, receipt, adoption, activation and recovery RPCs.
+Arguments are UTF-8 hex encoded.
 Deployment must separately pin/protect psql, libpq and their native dependencies,
 CA roots, network destination, installation files and credential provisioning.
 These files are not a production service supervisor or secret-store integration.
@@ -72,14 +74,33 @@ private copy of the legacy validation/publication transaction with maintenance
 evidence semantics. Release generation increments once. Events, consumptions and
 pointers commit atomically; expiry is checked after waits and publication.
 
-Exact committed retries recover the durable result even after expiry. Changed
-content under the same authorization ID fails. Failure before commit rolls back.
-Failure after commit is recovered by exact replay, never resetting the epoch.
-Legacy activation, baseline bootstrap and old rollback APIs remain fenced. This
-implementation permits only the adopted first maintenance pair and explicitly
-rejects rollback actions; a later application rollback needs a separately reviewed
-current-standard artifact and recovery design under the current epoch.
-Never restore legacy grants or lower governance epoch as an operational rollback.
+The optional recovery migration must be installed before adoption, using all four
+installer pins. Its catalog pin must match the independently reviewed, already
+pinned catalog of the installed separated controller. The migration adds only a
+restricted recovery RPC and measures the resulting catalog in the same transaction.
+
+The initial adoption plan may bind one recovery build with its own exact release
+configuration and complete artifact manifest. Its recovery edge starts at the
+activated candidate, uses the same database schema and migration inventory,
+and allows only a change to the server pipeline fingerprint. A recovery attempt
+needs fresh independent owner authorization, a recovery-specific control
+signature, and full maintenance-final evidence for the candidate-to-recovery
+pair. It publishes the declared backup as the next generation in epoch one.
+Plans without a recovery declaration continue to support the initial activation.
+
+Exact committed retries return the stored result even after expiry. Changed
+content under the same authorization ID fails. A failed transaction leaves the
+active pointer, events and consumed authorizations intact. If the response is
+lost after commit, reconcile by submitting the exact request again. The epoch
+and prior audit history are retained. Legacy activation, bootstrap and rollback
+routes remain fenced.
+
+For a later operator cutover, close user ingress and drain all old proxy instances
+before switching the active release. Unexpired session pins can still reach a
+surviving old proxy. Reopen ingress only after the intended image is serving the
+matching active release. Rehearse these hosting steps separately with both exact
+images. The local database tests exercise the publication contract with fixture
+backup artifacts and fixture signatures.
 
 Run `tests/release-control-db.test.js` on Windows or Linux with explicit absolute
 paths for the PostgreSQL 17.11 bin directory, scratch directory, proxy source and
@@ -102,8 +123,8 @@ The harness creates a unique marked scratch cluster, binds TCP to loopback only,
 and disables Unix sockets. It uses separate ephemeral SCRAM passwords and checks
 that the application and controller credentials cannot be exchanged. It verifies
 data directory, version, address and TLS, checks all missing or wrong installer
-pins before DDL, applies the archived release and bootstrap SQL and the forward
-SQL, then runs the final installed denial matrix.
+pins before DDL, applies the archived release and bootstrap SQL and both forward
+migrations, then runs the final installed denial matrix and recovery tests.
 The harness never accepts a database URL, host or port from the caller; it always
 creates its own disposable loopback cluster. Lab restrictions belong to this
 harness, so rehearsal and a separately approved future installation use identical
