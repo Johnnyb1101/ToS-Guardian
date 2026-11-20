@@ -1,7 +1,7 @@
 'use strict';
 const assert=require('node:assert/strict'),crypto=require('node:crypto'),path=require('node:path'),fs=require('node:fs');
 const C=require('../tools/final-corpus-lib'),G=require('../tools/governance-transition');
-const {createController}=require('../release-control/controller');
+const {createController,RECOVERY_PURPOSE}=require('../release-control/controller');
 const {createTransport}=require('../release-control/transport');
 const fixture=require('./maintenance-final-fixtures').makeFinalFixture({mode:'observed'});
 const pair=()=>crypto.generateKeyPairSync('ed25519'),owner=pair(),online=pair(),pem=k=>k.export({type:'spki',format:'pem'});
@@ -20,6 +20,35 @@ const signed={payload,signature:crypto.sign(null,Buffer.from(G.message(payload))
  await assert.rejects(controller.adopt(signed),/Measured controller closure changed/);assert.equal(calls,0);
  await assert.rejects(controller.adopt({...signed,signature:'invalid'}),/signature/);assert.equal(calls,0);
  await assert.rejects(controller.activate({},{}),/Evidence cannot supply reviewer trust/);assert.equal(calls,0);
+ const evidenceContext={protocol:fixture.protocol,evidence:fixture.evidence,attachments:fixture.context.attachments};
+ await assert.rejects(controller.recover({},evidenceContext),/No recovery release was declared/);assert.equal(calls,0);
+ const recoveryRelease=structuredClone(candidate);
+ recoveryRelease.config.policy.versions.serverPipeline=C.hashText('separate recovery runtime');
+ recoveryRelease.configHash=require('../tools/sites-lib').releaseConfigHash(recoveryRelease.config);
+ const recoveryPlan=G.preparePlan({
+  destination,active,baseline,candidate,baselineManifest:plan.baselineManifest,candidateManifest:plan.candidateManifest,
+  migrationManifest,standardDocumentHash:plan.standardDocumentHash,verifierHash:plan.verifierHash,
+  ownerKeyFingerprint:plan.ownerKeyFingerprint,recovery:{release:recoveryRelease,manifest:manifest('artifacts/release-build')},
+ });
+ const adoption=G.payloadFor(recoveryPlan,{authorizationId:'fixture_recovery_adoption_001',issuedAt:payload.issuedAt,expiresAt:payload.expiresAt});
+ const recoveryCalls=[];
+ const recovery=createController({...config,reviewedPlan:recoveryPlan,measureVerifier:()=>recoveryPlan.verifierHash,transport:{rpc(name){
+  recoveryCalls.push(name);
+  if(name==='read_committed')return null;
+  if(name==='read_state')return {destination,active};
+  throw Error('unexpected publication');
+ }}});
+ const signedAdoption={payload:adoption,signature:crypto.sign(null,Buffer.from(G.message(adoption)),owner.privateKey).toString('base64')};
+ await assert.rejects(recovery.adopt(signedAdoption),/Recovery migration must be installed/);
+ assert.deepEqual(recoveryCalls,['read_committed','read_state']);
+ for(const invalid of [{destination:{...destination,databaseId:'wrong'}},{planHash:C.hashText('other plan')}]) {
+  const control={kind:'maintenance-recovery',destination,planHash:recoveryPlan.hash,...invalid};
+  const envelope={payload:control,signature:crypto.sign(null,Buffer.from(RECOVERY_PURPOSE+C.canonicalJson(control)),owner.privateKey).toString('base64')};
+  await assert.rejects(recovery.recover({
+   controlEnvelope:envelope,authorization:{},release:recoveryRelease,event:{body:{}},
+  },evidenceContext),/destination or plan mismatch/);
+ }
+ assert.deepEqual(recoveryCalls,['read_committed','read_state'],'a different destination or plan must not read a receipt');
  assert.throws(()=>createController({...config,onlinePublicKeys:[pem(owner.publicKey)]}),/Independent/);
  assert.throws(()=>createController({...config,destination:{...destination,databaseId:'wrong'}}),/destination/);
  const {hash:ignored,...body}=plan;const missingArtifact=C.seal({...body,candidateManifest:manifest('new.js')});

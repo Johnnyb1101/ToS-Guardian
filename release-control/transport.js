@@ -3,7 +3,13 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const RPC = Object.freeze({ read_state: ['text'], read_committed: ['text','text','text'], adopt: ['jsonb','text','jsonb','text'], activate: ['jsonb','text','jsonb','text'] });
+const RPC = Object.freeze({
+  read_state: ['text'],
+  read_committed: ['text','text','text'],
+  adopt: ['jsonb','text','jsonb','text'],
+  activate: ['jsonb','text','jsonb','text'],
+  recover: ['jsonb','text','jsonb','text'],
+});
 function createTransport(config) {
   if (!config || !path.isAbsolute(config.psql || '') || !fs.statSync(config.psql).isFile()) throw Error('Explicit psql executable required');
   if (!/^[a-zA-Z0-9.-]+$/.test(config.host || '') || !Number.isInteger(config.port) || config.port < 1 || config.port > 65535) throw Error('Invalid database endpoint');

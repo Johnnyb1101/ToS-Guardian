@@ -3,7 +3,7 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),net=require('node:net');
 const {spawnSync,spawn}=require('node:child_process');
 const C=require('../tools/final-corpus-lib'),G=require('../tools/governance-transition'),S=require('../tools/sites-lib');
-const {createController,PURPOSE,EVENT_PURPOSE}=require('../release-control/controller');
+const {createController,PURPOSE,RECOVERY_PURPOSE,EVENT_PURPOSE}=require('../release-control/controller');
 const {createTransport}=require('../release-control/transport');
 const {makeRelease}=require('./final-test-fixtures');
 const args=process.argv.slice(2);
@@ -66,7 +66,8 @@ function ok(label){passed++;console.log('PASS '+label);}
   const installerSettings=values=>Object.entries(values).map(([key,value])=>`set tos.${key}=${quote(value)};`).join('');
   const noInstallation=()=>{assert.equal(sql("select count(*) from pg_roles where rolname like 'tos_release_%'"),'0');assert.equal(sql("select count(*) from pg_namespace where nspname='tos_release_control'"),'0');};
   assert.match(sql(migration,{fail:true}),/installer database pin/);noInstallation();
-  for(const [key,reason] of [['expected_database',/installer database pin/],['expected_installer_role',/installer role pin/],['expected_server_version_num',/server version pin/],['reviewed_catalog_hash',/unreviewed catalog/]]){
+  const pinChecks=[['expected_database',/installer database pin/],['expected_installer_role',/installer role pin/],['expected_server_version_num',/server version pin/],['reviewed_catalog_hash',/unreviewed catalog/]];
+  for(const [key,reason] of pinChecks){
     const missing={...pins};delete missing[key];
     assert.match(sql(installerSettings(missing)+migration,{fail:true}),reason);noInstallation();
     const wrong={...pins,[key]:key==='expected_server_version_num'?'170000':key==='reviewed_catalog_hash'?'0'.repeat(64):'wrong_installer_pin'};
@@ -78,7 +79,36 @@ function ok(label){passed++;console.log('PASS '+label);}
   // Fixture admin ceremony: provisioning changes rolpassword from null to masked.
   // Final matrix runs only after this final catalog is pinned. No runtime repin API exists.
   sql(`alter role tos_release_controller password ${quote(passwords[controllerRole])};update tos_release_control.catalog_pin set hash=tos_release_control.measure_catalog();`);
-  if(supabaseCli){
+  const recoveryMigration=fs.readFileSync(path.join(__dirname,'../release-control/supabase/migrations/20261120161406_maintenance_recovery.sql'),'utf8');
+  const measureCatalog=()=>sql('select tos_release_control.measure_catalog()');
+  const previousCatalog=measureCatalog();
+  const recoveryPins={...pins,reviewed_catalog_hash:previousCatalog};
+  function recoveryNotInstalled(){
+    assert.equal(sql("select to_regprocedure('tos_release_control.recover(jsonb,text,jsonb,text)') is null"),'t');
+    assert.equal(sql('select hash from tos_release_control.catalog_pin'),previousCatalog);
+    assert.equal(measureCatalog(),previousCatalog);
+  }
+  for(const [key,reason] of pinChecks){
+    const missing={...recoveryPins};
+    delete missing[key];
+    assert.match(sql(installerSettings(missing)+recoveryMigration,{fail:true}),reason);
+    recoveryNotInstalled();
+    const wrong={...recoveryPins,[key]:key==='expected_server_version_num'?'170000':key==='reviewed_catalog_hash'?catalog:'wrong_installer_pin'};
+    assert.match(sql(installerSettings(wrong)+recoveryMigration,{fail:true}),reason);
+    recoveryNotInstalled();
+  }
+  assert.match(sql(installerSettings(recoveryPins)+'set role service_role;'+recoveryMigration,{fail:true}),/installer role pin/);
+  recoveryNotInstalled();
+  function installRecovery(){
+    sql(installerSettings(recoveryPins)+recoveryMigration);
+    const measured=measureCatalog();
+    assert.notEqual(measured,previousCatalog);
+    assert.equal(sql('select hash from tos_release_control.catalog_pin'),measured);
+    ok('recovery migration requires installer pins and the reviewed previous installation');
+    return measured;
+  }
+  function runAdvisors(){
+    if(!supabaseCli)return;
     const url=`postgresql://postgres@127.0.0.1:${port}/tos_governance_lab?sslmode=verify-full&sslrootcert=${encodeURIComponent(path.join(dir,'server.crt'))}`;
     const advisors=run(supabaseCli,['db','advisors','--db-url',url,'--type','security','--fail-on','error','--workdir',path.resolve(__dirname,'../release-control')],{env:{...env,SUPABASE_DB_PASSWORD:passwords.postgres,SUPABASE_TELEMETRY_DISABLED:'1',SUPABASE_NO_UPDATE_NOTIFIER:'1',DO_NOT_TRACK:'1'}});
     const safe=redact(String(advisors.stdout||'')+'\n'+String(advisors.stderr||''));
@@ -86,9 +116,63 @@ function ok(label){passed++;console.log('PASS '+label);}
     assert.equal(advisors.status,0,'Local security advisor failed; see redacted security-advisors.log');
     ok('Supabase local security advisors completed');
   }
-  if(preflightOnly){console.log(JSON.stringify({passed,preflightOnly:true,productionApplied:false,labOnly:true,evidenceDirectory:dir}));return;}
+  if(preflightOnly){
+    installRecovery();
+    runAdvisors();
+    console.log(JSON.stringify({passed,preflightOnly:true,productionApplied:false,labOnly:true,evidenceDirectory:dir}));
+    return;
+  }
   const controllerConnection={psql:bin('psql'),host:'127.0.0.1',port,database:'tos_governance_lab',user:controllerRole,password:passwords[controllerRole],rootCertificate:path.join(dir,'server.crt')};
   const transport=createTransport(controllerConnection);
+  const pair=()=>crypto.generateKeyPairSync('ed25519'),owner=pair(),online=pair(),pem=k=>k.export({type:'spki',format:'pem'});
+  const hash=C.hashText,manifest=(name,seed)=>C.seal({files:[{path:name,bytes:1,sha256:hash(seed)}]});
+  function release(seed){const r=makeRelease([]);r.config.policy.versions.serverPipeline=hash(seed);r.config.policy.cache={shared:'disabled'};r.configHash=S.releaseConfigHash(r.config);return r;}
+  const actual=artifactDirectory?JSON.parse(fs.readFileSync(path.join(artifactDirectory,'controller-inputs.json'),'utf8')):null;
+  const baseline=actual?actual.baseline:release('old'),candidate=actual?actual.candidate:release('new'),migrationManifest=actual?actual.migrationManifest:manifest('migrations/test.sql','migration');
+  if(!actual)for(const r of [baseline,candidate]){r.config.policy.versions.migrationManifest=migrationManifest.hash;r.configHash=S.releaseConfigHash(r.config);}
+  const buildArtifacts=Object.fromEntries(['baseline','candidate'].map(arm=>[arm,actual?fs.readFileSync(path.join(artifactDirectory,actual[arm+'ArtifactFile'])):Buffer.from(arm+' artifact fixture')]));
+  const measureVerifier=actual?()=>require('../tools/maintenance-artifact-manifest').verifyExecution({extension:path.resolve(__dirname,'..'),proxy},actual.verifierMeasurement).hash:()=>hash('verifier');
+  const destination={environment:'lab',projectId:'fixture',serviceId:'fixture',databaseId:'fixture'};
+  const active={generation:1,configHash:baseline.configHash,headHash:hash('head'),halted:false,governanceEpoch:0,governanceRegistryId:'fixture',governanceHeadHash:hash('gov-head'),installedVerifierHash:hash('old-verifier'),installedMigrationManifestHash:hash('old-migrations')};
+  const buildManifest=(name,seed,arm)=>C.seal({files:[{path:'artifacts/release-build',bytes:buildArtifacts[arm].length,sha256:crypto.createHash('sha256').update(buildArtifacts[arm]).digest('hex')},...(actual?actual[arm+'SourceManifest']:manifest(name,seed)).files].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0)});
+  const planInput={destination,active,baseline,candidate,baselineManifest:buildManifest('old.js','old','baseline'),candidateManifest:buildManifest('new.js','new','candidate'),migrationManifest,standardDocumentHash:actual?actual.standardDocumentHash:hash('standard'),verifierHash:measureVerifier(),ownerKeyFingerprint:crypto.createHash('sha256').update(owner.publicKey.export({type:'spki',format:'der'})).digest('hex')};
+  const plan=G.preparePlan(planInput);
+  function seed(){sql(`delete from tos_release_control.consumptions;delete from tos_release_control.events;delete from tos_release_control.registry;delete from public.learning_release_consumptions;delete from public.learning_release_events;delete from public.learning_active_releases where environment='lab';delete from public.learning_releases;insert into public.learning_releases(config_hash,release) values(${quote(baseline.configHash)},${json(baseline)});insert into public.learning_active_releases values('lab',1,${quote(baseline.configHash)},${quote(active.headHash)},false);insert into tos_release_control.registry(environment,destination,state) values('lab',${json(destination)},${json(Object.fromEntries(Object.entries(active).filter(([k])=>!['generation','configHash','headHash','halted'].includes(k))))});`);}
+  const controllerConfig={transport,trustedOwnerKey:pem(owner.publicKey),onlinePublicKeys:[pem(online.publicKey)],destination,measureVerifier};
+  const controller=createController({...controllerConfig,reviewedPlan:plan});
+  const sign=(payload,purpose,key=owner.privateKey)=>({payload,signature:crypto.sign(null,Buffer.from(purpose+C.canonicalJson(payload)),key).toString('base64')});
+  const envelope=(id='controller_fixture_adoption_0001',ms=60000,reviewedPlan=plan)=>sign(G.payloadFor(reviewedPlan,{authorizationId:id,issuedAt:new Date(Date.now()-1000).toISOString(),expiresAt:new Date(Date.now()+ms).toISOString()}),G.PURPOSE);
+
+  // Recovery bytes and every approval and observation are synthetic, including runs with an actual initial pair.
+  const recoveryBytes=Buffer.from('synthetic recovery build fixture');
+  const recoveryRelease=JSON.parse(C.canonicalJson(candidate));
+  recoveryRelease.config.policy.versions.serverPipeline=hash('synthetic recovery runtime fixture');
+  recoveryRelease.configHash=S.releaseConfigHash(recoveryRelease.config);
+  const recoveryArtifact={bytes:recoveryBytes.length,sha256:crypto.createHash('sha256').update(recoveryBytes).digest('hex')};
+  const recoveryManifest=C.seal({files:[{path:'artifacts/release-build',...recoveryArtifact}]});
+  const recoveryPlan=G.preparePlan({...planInput,recovery:{release:recoveryRelease,manifest:recoveryManifest}});
+
+  seed();
+  const beforeInstall=transport.rpc('read_state',['lab']);
+  assert.equal(beforeInstall.recoveryVersion,undefined);
+  const unsupportedController=createController({...controllerConfig,reviewedPlan:recoveryPlan});
+  const unsupportedAdoption=envelope('recovery_unsupported_adoption_0001',60000,recoveryPlan);
+  await assert.rejects(unsupportedController.adopt(unsupportedAdoption),/recovery.*(install|capability|version)/i);
+  assert.deepEqual(transport.rpc('read_state',['lab']),beforeInstall);
+  assert.equal(sql('select count(*) from tos_release_control.events'),'0');
+  assert.equal(sql('select count(*) from tos_release_control.consumptions'),'0');
+  ok('adopting a recovery plan requires database support');
+  const oldAdoption=envelope('base_only_fixture_adoption_0001');
+  assert.equal((await controller.adopt(oldAdoption)).status,'adopted');
+  assert.match(sql(installerSettings(recoveryPins)+recoveryMigration,{fail:true}),/recovery must be installed before adoption/);
+  recoveryNotInstalled();
+  assert.equal((await controller.adopt(oldAdoption)).status,'already-applied');
+  ok('installer refuses an adopted database without changing its catalog or durable adoption');
+  seed();
+  const installedRecoveryCatalog=installRecovery();
+  assert.equal(transport.rpc('read_state',['lab']).recoveryVersion,1);
+  runAdvisors();
+
   assert.equal(transport.rpc('read_state',['missing']),null);
   assert.throws(()=>createTransport({...controllerConnection,user:'service_role',password:passwords.service_role}),/Restricted/);
   assert.throws(()=>createTransport({...controllerConnection,password:'wrong'}).rpc('read_state',['missing']),/failed/);
@@ -106,28 +190,12 @@ function ok(label){passed++;console.log('PASS '+label);}
   for(const actor of actors){for(const table of tables){for(const op of [`insert into ${table} default values`,`delete from ${table}`,`truncate ${table}`,`update ${table} set ${columns[table]}=${columns[table]} where false`]){assert.match(sql(op,{user:actor,fail:true}),/permission denied/);denials++;}}
     for(const q of ['set role tos_release_owner','grant tos_release_owner to runtime_app','create function public.attack() returns int language sql as $$select 1$$','create table tos_release_control.attack(id int)']){assert.match(sql(q,{user:actor,fail:true}),/permission denied|must have|not permitted/);denials++;}
     for(const q of ["select public.set_learning_release_halt('positive',true)","select public.prepare_learning_release('{}','{}')","select public.activate_learning_release('positive','{}','{}','{}','x','{}',1,'x','{}','{}')"]){assert.match(sql(q,{user:actor,fail:true}),/permission denied/);denials++;}
-    if(actor!=='tos_release_controller')for(const q of ["select tos_release_control.read_state('x')","select tos_release_control.adopt('{}','{}','{}','{}')","select tos_release_control.activate('{}','{}','{}','{}')"]){assert.match(sql(q,{user:actor,fail:true}),/permission denied/);denials++;}
+    if(actor!=='tos_release_controller')for(const q of ["select tos_release_control.read_state('x')","select tos_release_control.adopt('{}','{}','{}','{}')","select tos_release_control.activate('{}','{}','{}','{}')","select tos_release_control.recover('{}','{}','{}','{}')"]){assert.match(sql(q,{user:actor,fail:true}),/permission denied/);denials++;}
     if(actor!=='tos_release_controller'){assert.match(sql('set role tos_release_controller',{user:actor,fail:true}),/permission denied/);denials++;}
   }
   for(const q of ["select tos_release_control.measure_catalog()","select tos_release_control.assert_catalog()","select tos_release_control.activate_validated('x','{}','{}','{}','x','{}',1,'x','{}','{}')"]){assert.match(sql(q,{user:'tos_release_controller',fail:true}),/permission denied/);denials++;}
   assert.equal(sql("select count(*) from pg_auth_members m where roleid in(select oid from pg_roles where rolname in('tos_release_owner','tos_release_controller'));"),'0');
   ok(`final installed independent LOGIN denial matrix: ${denials} denials`);
-  const pair=()=>crypto.generateKeyPairSync('ed25519'),owner=pair(),online=pair(),pem=k=>k.export({type:'spki',format:'pem'});
-  const hash=C.hashText,manifest=(name,seed)=>C.seal({files:[{path:name,bytes:1,sha256:hash(seed)}]});
-  function release(seed){const r=makeRelease([]);r.config.policy.versions.serverPipeline=hash(seed);r.config.policy.cache={shared:'disabled'};r.configHash=S.releaseConfigHash(r.config);return r;}
-  const actual=artifactDirectory?JSON.parse(fs.readFileSync(path.join(artifactDirectory,'controller-inputs.json'),'utf8')):null;
-  const baseline=actual?actual.baseline:release('old'),candidate=actual?actual.candidate:release('new'),migrationManifest=actual?actual.migrationManifest:manifest('migrations/test.sql','migration');
-  if(!actual)for(const r of [baseline,candidate]){r.config.policy.versions.migrationManifest=migrationManifest.hash;r.configHash=S.releaseConfigHash(r.config);}
-  const buildArtifacts=Object.fromEntries(['baseline','candidate'].map(arm=>[arm,actual?fs.readFileSync(path.join(artifactDirectory,actual[arm+'ArtifactFile'])):Buffer.from(arm+' artifact fixture')]));
-  const measureVerifier=actual?()=>require('../tools/maintenance-artifact-manifest').verifyExecution({extension:path.resolve(__dirname,'..'),proxy},actual.verifierMeasurement).hash:()=>hash('verifier');
-  const destination={environment:'lab',projectId:'fixture',serviceId:'fixture',databaseId:'fixture'};
-  const active={generation:1,configHash:baseline.configHash,headHash:hash('head'),halted:false,governanceEpoch:0,governanceRegistryId:'fixture',governanceHeadHash:hash('gov-head'),installedVerifierHash:hash('old-verifier'),installedMigrationManifestHash:hash('old-migrations')};
-  const buildManifest=(name,seed,arm)=>C.seal({files:[{path:'artifacts/release-build',bytes:buildArtifacts[arm].length,sha256:crypto.createHash('sha256').update(buildArtifacts[arm]).digest('hex')},...(actual?actual[arm+'SourceManifest']:manifest(name,seed)).files].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0)});
-  const plan=G.preparePlan({destination,active,baseline,candidate,baselineManifest:buildManifest('old.js','old','baseline'),candidateManifest:buildManifest('new.js','new','candidate'),migrationManifest,standardDocumentHash:actual?actual.standardDocumentHash:hash('standard'),verifierHash:measureVerifier(),ownerKeyFingerprint:crypto.createHash('sha256').update(owner.publicKey.export({type:'spki',format:'der'})).digest('hex')});
-  function seed(){sql(`delete from tos_release_control.consumptions;delete from tos_release_control.events;delete from tos_release_control.registry;delete from public.learning_release_consumptions;delete from public.learning_release_events;delete from public.learning_active_releases where environment='lab';delete from public.learning_releases;insert into public.learning_releases(config_hash,release) values(${quote(baseline.configHash)},${json(baseline)});insert into public.learning_active_releases values('lab',1,${quote(baseline.configHash)},${quote(active.headHash)},false);insert into tos_release_control.registry(environment,destination,state) values('lab',${json(destination)},${json(Object.fromEntries(Object.entries(active).filter(([k])=>!['generation','configHash','headHash','halted'].includes(k))))});`);}
-  const controller=createController({transport,trustedOwnerKey:pem(owner.publicKey),onlinePublicKeys:[pem(online.publicKey)],destination,reviewedPlan:plan,measureVerifier});
-  const sign=(payload,purpose,key=owner.privateKey)=>({payload,signature:crypto.sign(null,Buffer.from(purpose+C.canonicalJson(payload)),key).toString('base64')});
-  const envelope=(id='controller_fixture_adoption_0001',ms=60000)=>sign(G.payloadFor(plan,{authorizationId:id,issuedAt:new Date(Date.now()-1000).toISOString(),expiresAt:new Date(Date.now()+ms).toISOString()}),G.PURPOSE);
   seed();const good=envelope();const bad=JSON.parse(JSON.stringify(good));bad.signature=Buffer.alloc(64).toString('base64');await assert.rejects(controller.adopt(bad),/signature/);assert.equal(sql('select count(*) from tos_release_control.events'),'0');
   assert.equal((await controller.adopt(good)).status,'adopted');assert.equal(sql("select generation from public.learning_active_releases where environment='lab'"),'1');assert.equal((await controller.adopt(good)).status,'already-applied');
   ok('real owner verifier reaches SQL adoption; generation unchanged; exact replay durable');
@@ -137,18 +205,22 @@ function ok(label){passed++;console.log('PASS '+label);}
   // Hypothetical observed evidence is signed with fresh ephemeral TEST identities.
   // It exercises the full acceptance contract; it is not real evaluation evidence.
   const F=require('../tools/maintenance-final-evidence');
-  const fixture=require('./maintenance-final-fixtures').makeFinalFixture({mode:'observed',baselineRelease:baseline,candidateRelease:candidate,buildArtifacts});
+  const {makeFinalFixture}=require('./maintenance-final-fixtures');
+  const fixture=makeFinalFixture({mode:'observed',baselineRelease:baseline,candidateRelease:candidate,buildArtifacts});
   const evidenceContext={protocol:fixture.protocol,evidence:fixture.evidence,attachments:fixture.context.attachments};
   const maintenanceController=createController({transport,trustedOwnerKey:pem(owner.publicKey),onlinePublicKeys:[pem(online.publicKey)],trustedReviewers:fixture.context.trustedReviewers,destination,reviewedPlan:plan,measureVerifier});
   const report=F.validateFinalEvidence(fixture.protocol,fixture.evidence,{...fixture.context,now:new Date().toISOString()});
   assert.equal(report.promotionEligible,true,report.reasons.join('; '));
-  function activation(id='controller_fixture_activation_01'){
+  function publicationRequest({id,target,approvedReport,reviewedPlan,kind,purpose,action='activate'}){
     const current=transport.rpc('read_state',['lab']).active;
-    const authorization=sign({v:2,kind:'release-activation',authorizationId:id,action:'activate',environment:'lab',configHash:candidate.configHash,expectedGeneration:current.generation,expectedConfigHash:current.configHash,expectedHeadHash:current.headHash,issuedAt:new Date(Date.now()-1000).toISOString(),expiresAt:new Date(Date.now()+60000).toISOString(),evidence:F.authorizationEvidence(report)},S.AUTHORIZATION_PURPOSE);
-    const body={v:2,kind:'release-activated',environment:'lab',generation:current.generation+1,previousConfigHash:current.configHash,configHash:candidate.configHash,prevHash:current.headHash,authorizationId:id,authorizationHash:C.digest(authorization),createdAt:new Date().toISOString()};
+    const authorization=sign({v:2,kind:'release-activation',authorizationId:id,action,environment:'lab',configHash:target.configHash,expectedGeneration:current.generation,expectedConfigHash:current.configHash,expectedHeadHash:current.headHash,issuedAt:new Date(Date.now()-1000).toISOString(),expiresAt:new Date(Date.now()+60000).toISOString(),evidence:F.authorizationEvidence(approvedReport)},S.AUTHORIZATION_PURPOSE);
+    const body={v:2,kind:action==='rollback'?'release-rolled-back':'release-activated',environment:'lab',generation:current.generation+1,previousConfigHash:current.configHash,configHash:target.configHash,prevHash:current.headHash,authorizationId:id,authorizationHash:C.digest(authorization),createdAt:new Date().toISOString()};
     const event={body,hash:C.digest(body),publicKey:pem(online.publicKey)};event.signature=crypto.sign(null,Buffer.from(EVENT_PURPOSE+event.hash),online.privateKey).toString('base64');
-    const controlEnvelope=sign({v:1,kind:'maintenance-control',authorizationId:id,issuedAt:authorization.payload.issuedAt,expiresAt:authorization.payload.expiresAt,destination,expected:current,planHash:plan.hash,authorizationHash:C.digest(authorization),releaseHash:C.digest(candidate),eventHash:event.hash},PURPOSE);
-    return {controlEnvelope,authorization,release:candidate,event};
+    const controlEnvelope=sign({v:1,kind,authorizationId:id,issuedAt:authorization.payload.issuedAt,expiresAt:authorization.payload.expiresAt,destination,expected:current,planHash:reviewedPlan.hash,authorizationHash:C.digest(authorization),releaseHash:C.digest(target),eventHash:event.hash},purpose);
+    return {controlEnvelope,authorization,release:target,event};
+  }
+  function activation(id='controller_fixture_activation_01',reviewedPlan=plan){
+    return publicationRequest({id,target:candidate,approvedReport:report,reviewedPlan,kind:'maintenance-control',purpose:PURPOSE});
   }
   seed();await controller.adopt(envelope());
   const request=activation();
@@ -187,10 +259,132 @@ function ok(label){passed++;console.log('PASS '+label);}
   await assert.rejects(asyncSql(query(lockedEnvelope)),/expired/);assert.equal((await locker).ok,true);
   assert.equal(sql('select count(*) from tos_release_control.events'),'0');
   ok('approval expiry after a real row-lock wait leaves no event or consumption');
+
+  const recoveryFixture=makeFinalFixture({mode:'observed',baselineRelease:candidate,candidateRelease:recoveryRelease,buildArtifacts:{baseline:buildArtifacts.candidate,candidate:recoveryBytes}});
+  function recoveryEvidence(fixture){
+    const {protocol,evidence,context}=fixture;
+    const report=F.validateFinalEvidence(protocol,evidence,{...context,now:new Date().toISOString()});
+    assert.equal(report.promotionEligible,true,report.reasons.join('; '));
+    return {report,context:{protocol,evidence,attachments:context.attachments}};
+  }
+  const approvedRecovery=recoveryEvidence(recoveryFixture);
+  const {path:artifactPath,...candidateArtifact}=recoveryPlan.candidateManifest.files.find(file=>file.path==='artifacts/release-build');
+  assert.equal(artifactPath,'artifacts/release-build');
+  assert.deepEqual(recoveryFixture.builds.baseline.artifact,candidateArtifact);
+  assert.deepEqual(recoveryFixture.builds.candidate.artifact,recoveryArtifact);
+
+  const recoveryConfig={...controllerConfig,trustedReviewers:recoveryFixture.context.trustedReviewers,reviewedPlan:recoveryPlan};
+  const recoveryController=createController(recoveryConfig);
+  const firstEdgeController=createController({...recoveryConfig,trustedReviewers:fixture.context.trustedReviewers});
+  function recoveryRequest(id,overrides={}){
+    return publicationRequest({id,target:recoveryRelease,approvedReport:approvedRecovery.report,reviewedPlan:recoveryPlan,kind:'maintenance-recovery',purpose:RECOVERY_PURPOSE,...overrides});
+  }
+  function recordedState(){
+    const records=tables.map(table=>`${quote(table)},(select coalesce(jsonb_agg(to_jsonb(entry) order by to_jsonb(entry)),'[]'::jsonb) from ${table} entry)`);
+    return JSON.parse(sql(`select jsonb_build_object(${records.join(',')})`));
+  }
+
+  seed();
+  const recoveryAdoption=envelope('recovery_fixture_adoption_0001',60000,recoveryPlan);
+  assert.equal((await recoveryController.adopt(recoveryAdoption)).status,'adopted');
+  const firstEdgeState=recordedState();
+  const earlyRecovery=recoveryRequest('recovery_before_first_edge_0001');
+  await assert.rejects(recoveryController.recover(earlyRecovery,approvedRecovery.context),/outside adopted maintenance pair/i);
+  assert.deepEqual(recordedState(),firstEdgeState);
+  const firstEdge=activation('recovery_fixture_first_edge_0001',recoveryPlan);
+  await assert.rejects(recoveryController.recover(firstEdge,approvedRecovery.context),/owner signature/i);
+  assert.equal((await firstEdgeController.activate(firstEdge,evidenceContext)).status,'activated');
+  const recoverySource=transport.rpc('read_state',['lab']);
+  assert.equal(recoverySource.active.generation,active.generation+1);
+  assert.equal(recoverySource.active.configHash,candidate.configHash);
+  assert.equal(recoverySource.active.headHash,firstEdge.event.hash);
+
+  const beforeRecovery=recordedState();
+  await assert.rejects(recoveryController.recover(earlyRecovery,approvedRecovery.context),/envelope binding mismatch/i);
+  const wrongTarget=recoveryRequest('recovery_to_legacy_baseline_0001',{target:baseline});
+  await assert.rejects(recoveryController.recover(wrongTarget,approvedRecovery.context),/outside adopted maintenance pair/i);
+  const rollback=recoveryRequest('recovery_as_rollback_0001',{action:'rollback'});
+  await assert.rejects(recoveryController.recover(rollback,approvedRecovery.context),/forward publication/i);
+  const wrongRoute=recoveryRequest('recovery_in_activation_rpc_0001');
+  await assert.rejects(firstEdgeController.activate(wrongRoute,evidenceContext),/owner signature/i);
+  const staleSource=JSON.parse(C.canonicalJson(recoveryRelease));
+  staleSource.config.policy.versions.serverPipeline=hash('synthetic stale runtime fixture');
+  staleSource.configHash=S.releaseConfigHash(staleSource.config);
+  const staleFixture=makeFinalFixture({mode:'observed',baselineRelease:staleSource,candidateRelease:recoveryRelease,buildArtifacts:{baseline:buildArtifacts.baseline,candidate:recoveryBytes}});
+  const staleEvidence=recoveryEvidence(staleFixture);
+  const staleController=createController({...recoveryConfig,trustedReviewers:staleFixture.context.trustedReviewers});
+  const staleRequest=recoveryRequest('recovery_stale_evidence_0001',{approvedReport:staleEvidence.report});
+  await assert.rejects(staleController.recover(staleRequest,staleEvidence.context),/evidence build pair mismatch/i);
+  assert.deepEqual(recordedState(),beforeRecovery);
+  ok('recovery requires the activated candidate, a fresh matching snapshot and evidence, and its own forward approval');
+
+  const failedRecovery=recoveryRequest('recovery_atomic_failure_0001');
+  sql(`insert into tos_release_control.events values('recovery_atomic_failure_0001','lab',${quote(hash('synthetic recovery postpublication conflict'))},'{}');`);
+  const withConflict=recordedState();
+  await assert.rejects(recoveryController.recover(failedRecovery,approvedRecovery.context),/failed/);
+  assert.deepEqual(recordedState(),withConflict);
+  sql("delete from tos_release_control.events where authorization_id='recovery_atomic_failure_0001';");
+  assert.deepEqual(recordedState(),beforeRecovery);
+  ok('postpublication recovery failure rolls back the prepared build, pointer, audit and consumption writes');
+
+  // Dispatch both approvals through separate PostgreSQL sessions. Leave the committed reply with the test transport.
+  const recoveryRace=[recoveryRequest('recovery_fixture_race_0001'),recoveryRequest('recovery_fixture_race_0002')];
+  const lostReply='Synthetic loss of the committed recovery reply';
+  let recoveryDispatches=0;
+  let committedRecovery;
+  const racingTransport={async rpc(name,args){
+    if(name!=='recover')return transport.rpc(name,args);
+    recoveryDispatches++;
+    const [envelope,canonicalEnvelope,request,canonicalRequest]=args;
+    const result=JSON.parse(await asyncSql(`select tos_release_control.recover(${json(envelope)},${quote(canonicalEnvelope)},${json(request)},${quote(canonicalRequest)});`));
+    assert.equal(result.status,'recovered');
+    committedRecovery={authorizationId:envelope.payload.authorizationId,result};
+    throw Error(lostReply);
+  }};
+  const racingController=createController({...recoveryConfig,transport:racingTransport});
+  const outcomes=await Promise.allSettled(recoveryRace.map(request=>racingController.recover(request,approvedRecovery.context)));
+  assert.equal(recoveryDispatches,2);
+  assert.ok(outcomes.every(outcome=>outcome.status==='rejected'));
+  assert.equal(outcomes.filter(outcome=>outcome.reason.message===lostReply).length,1);
+  assert.match(outcomes.find(outcome=>outcome.reason.message!==lostReply).reason.message,/stale|candidate|release pair/i);
+  const {authorizationId:recoveredId,result:recoveredResult}=committedRecovery;
+  const committedRequest=recoveryRace.find(request=>request.authorization.payload.authorizationId===recoveredId);
+  assert.deepEqual(recoveredResult.event,committedRequest.event);
+  assert.deepEqual(transport.rpc('read_state',['lab']),{...recoverySource,active:{...recoverySource.active,generation:recoverySource.active.generation+1,configHash:recoveryRelease.configHash,headHash:committedRequest.event.hash}});
+  const afterRecovery=recordedState();
+  assert.deepEqual(afterRecovery['tos_release_control.registry'],beforeRecovery['tos_release_control.registry']);
+  assert.deepEqual(afterRecovery['tos_release_control.catalog_pin'],beforeRecovery['tos_release_control.catalog_pin']);
+  const additions={
+    'public.learning_releases':['config_hash',recoveryRelease.configHash],
+    'public.learning_release_events':['event_hash',committedRequest.event.hash],
+    'public.learning_release_consumptions':['authorization_id',recoveredId],
+    'tos_release_control.events':['authorization_id',recoveredId],
+    'tos_release_control.consumptions':['authorization_id',recoveredId]
+  };
+  for(const [table,[key,value]] of Object.entries(additions)){
+    assert.equal(afterRecovery[table].filter(row=>row[key]===value).length,1,table);
+    assert.deepEqual(afterRecovery[table].filter(row=>row[key]!==value),beforeRecovery[table],table);
+  }
+  assert.deepEqual(JSON.parse(sql(`select release from public.learning_releases where config_hash=${quote(recoveryRelease.configHash)}`,{user:'service_role'})),recoveryRelease);
+  assert.equal(measureCatalog(),installedRecoveryCatalog);
+  const restartedController=createController({...recoveryConfig,transport:createTransport(controllerConnection),now:()=>new Date(Date.now()+86400000).toISOString()});
+  assert.deepEqual(await restartedController.recover(committedRequest,approvedRecovery.context),{...recoveredResult,status:'already-applied'});
+  const otherDestination={...destination,databaseId:'other-fixture'};
+  const otherPlan=G.preparePlan({...planInput,destination:otherDestination,recovery:{release:recoveryRelease,manifest:recoveryManifest}});
+  const otherController=createController({...recoveryConfig,destination:otherDestination,reviewedPlan:otherPlan});
+  await assert.rejects(otherController.recover(committedRequest,approvedRecovery.context),/destination or plan mismatch/);
+  const alteredReplay={...committedRequest,event:{...committedRequest.event,signature:'tampered'}};
+  await assert.rejects(restartedController.recover(alteredReplay,approvedRecovery.context),/failed/);
+  const repeatedRecovery=recoveryRequest('recovery_after_recovery_0001');
+  await assert.rejects(recoveryController.recover(repeatedRecovery,approvedRecovery.context),/outside adopted maintenance pair/i);
+  assert.deepEqual(recordedState(),afterRecovery);
+  ok('competing approvals publish one recovery, preserve governance and immutable history, and replay the lost result after expiry');
+
   sql("create function public.unreviewed() returns int language sql as $$select 1$$;");assert.throws(()=>transport.rpc('read_state',['lab']),/failed/);sql('drop function public.unreviewed();');
   sql("alter table public.learning_releases alter column created_at set default '2000-01-01'::timestamptz;");assert.throws(()=>transport.rpc('read_state',['lab']),/failed/);sql('alter table public.learning_releases alter column created_at set default now();');
   ok('expired request rolls back; unreviewed catalog changes fence all controller reads');
-  console.log(JSON.stringify({passed,denials,productionApplied:false,productionReady:false,labOnly:true,maintenanceActivationTested:true,evaluationEvidence:'hypothetical-fixtures-only',actualArtifactBindings:!!actual,baselineConfigHash:baseline.configHash,candidateConfigHash:candidate.configHash,verifierHash:plan.verifierHash,evidenceDirectory:dir}));
+
+  console.log(JSON.stringify({passed,denials,productionApplied:false,productionReady:false,labOnly:true,maintenanceActivationTested:true,maintenanceRecoveryTested:true,evaluationEvidence:'hypothetical-fixtures-only',actualArtifactBindings:!!actual,recoveryArtifactBinding:'synthetic-fixture-only',baselineConfigHash:baseline.configHash,candidateConfigHash:candidate.configHash,verifierHash:plan.verifierHash,evidenceDirectory:dir}));
 }finally{
   if(attemptedStart){
     const status=run(bin('pg_ctl'),['-D',data,'status']);
