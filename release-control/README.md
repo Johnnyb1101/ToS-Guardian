@@ -15,11 +15,13 @@ use an immutable separately installed source tree and a measured executable; the
 measurement callback is a trusted installation dependency, not evidence supplied
 by a release requester. `tools/maintenance-artifact-manifest.js` supplies byte and
 actual Node executable measurements. Include the controller, complete transitive
-verifier imports, vendor files, and both control migrations in that reviewed
+verifier imports, vendor files, and all control migrations in that reviewed
 inventory. Every build manifest used for publication must contain
 `artifacts/release-build`, the byte length and SHA-256 of the complete build
 artifact. Publication compares the two evidence artifact hashes and byte lengths
-to the signed descriptors. Completeness
+to the signed descriptors. The reserved `artifacts/release-build` entry accepts
+complete archives up to 256 MiB. Ordinary files and ordered migration inventories
+retain the 64,000,000-byte file limit. Completeness
 requires review; hashing a supplied list does not establish completeness.
 
 `transport.js` accepts an explicit restricted database login, password, trusted CA
@@ -78,6 +80,10 @@ The optional recovery migration must be installed before adoption, using all fou
 installer pins. Its catalog pin must match the independently reviewed, already
 pinned catalog of the installed separated controller. The migration adds only a
 restricted recovery RPC and measures the resulting catalog in the same transaction.
+The archive limit migration follows it and must also be installed before adopting
+a plan with a larger archive. The controller checks for the installed limit before
+consuming such a plan. The migration retains the recovery function's grants and
+remeasures the reviewed catalog.
 
 The initial adoption plan may bind one recovery build with its own exact release
 configuration and complete artifact manifest. Its recovery edge starts at the
@@ -123,7 +129,7 @@ The harness creates a unique marked scratch cluster, binds TCP to loopback only,
 and disables Unix sockets. It uses separate ephemeral SCRAM passwords and checks
 that the application and controller credentials cannot be exchanged. It verifies
 data directory, version, address and TLS, checks all missing or wrong installer
-pins before DDL, applies the archived release and bootstrap SQL and both forward
+pins before DDL, applies the archived release and bootstrap SQL and the forward
 migrations, then runs the final installed denial matrix and recovery tests.
 The harness never accepts a database URL, host or port from the caller; it always
 creates its own disposable loopback cluster. Lab restrictions belong to this

@@ -23,6 +23,8 @@ function createController({transport, trustedOwnerKey, onlinePublicKeys, trusted
   G.validatePlan(plan);
   const artifacts={baseline:plan.baselineManifest.files.find(f=>f.path==='artifacts/release-build'),candidate:plan.candidateManifest.files.find(f=>f.path==='artifacts/release-build')};
   requireValid(artifacts.baseline && artifacts.candidate,'Signed complete build artifact descriptors required');
+  const recoveryArtifact=plan.recovery?.manifest.files.find(file=>file.path==='artifacts/release-build');
+  const needsArchiveLimit=[artifacts.baseline,artifacts.candidate,recoveryArtifact].some(file=>file && file.bytes>G.MAX_FILE_BYTES);
   const ownerFingerprint=keyFingerprint(trustedOwnerKey);
   requireValid(ownerFingerprint===plan.ownerKeyFingerprint && keys.length>0 && keys.every(k=>keyFingerprint(k)!==ownerFingerprint),'Independent pinned owner required');
   requireValid(equal(dest,plan.destination),'Pinned destination mismatch');
@@ -32,6 +34,10 @@ function createController({transport, trustedOwnerKey, onlinePublicKeys, trusted
     return transport.rpc('read_committed',[envelope.payload.authorizationId,C.canonicalJson(envelope),C.canonicalJson(request)]);
   }
   async function snapshot() { const state=await transport.rpc('read_state',[dest.environment]); requireValid(state && equal(state.destination,dest),'Measured database destination mismatch'); return state; }
+  function verifyInstalledSupport(state) {
+    requireValid(!plan.recovery || state.recoveryVersion===1,'Recovery migration must be installed before using a recovery plan');
+    requireValid(!needsArchiveLimit || state.buildArchiveMaxBytes===G.MAX_BUILD_BYTES,'Build archive limit migration must be installed before using a large build archive');
+  }
   async function publish(input, evidenceContext, recovery) {
       // Copy before any await so callers cannot change verified data before dispatch.
       const request=clone(input), envelope=request.controlEnvelope;
@@ -42,7 +48,7 @@ function createController({transport, trustedOwnerKey, onlinePublicKeys, trusted
       const source = recovery ? plan.candidate : plan.baseline;
       const target = recovery ? plan.recovery.release : plan.candidate;
       const sourceArtifact = recovery ? artifacts.candidate : artifacts.baseline;
-      const targetArtifact = recovery ? plan.recovery.manifest.files.find(file => file.path === 'artifacts/release-build') : artifacts.candidate;
+      const targetArtifact = recovery ? recoveryArtifact : artifacts.candidate;
       const maintenanceEvidence={protocol:clone(evidenceContext.protocol),evidence:clone(evidenceContext.evidence),attachments:Object.fromEntries(Object.entries(evidenceContext.attachments).map(([key,value])=>[key,Buffer.from(value)])),trustedReviewers:reviewers};
       requireValid(equal(Object.keys(request).sort(),['authorization','controlEnvelope','event','release']),'Unexpected activation request fields');
       request.canonicalAuthorization=C.canonicalJson(request.authorization);
@@ -53,7 +59,7 @@ function createController({transport, trustedOwnerKey, onlinePublicKeys, trusted
       requireValid(equal(envelope.payload.destination??null,dest) && envelope.payload.planHash===plan.hash,'Maintenance envelope destination or plan mismatch');
       const previous=await prior(envelope,request); if(previous)return previous;
       const state=await snapshot(), active=state.active, auth=request.authorization, release=request.release, p=envelope.payload;
-      requireValid(!plan.recovery || state.recoveryVersion===1,'Recovery migration must be installed before using a recovery plan');
+      verifyInstalledSupport(state);
       requireValid(active.governanceEpoch===1 && active.generation>=1 && active.halted===false,'Existing unhalted maintenance epoch required');
       requireValid(state.planHash===plan.hash && state.standardDocumentHash===plan.standardDocumentHash && active.installedVerifierHash===plan.verifierHash && active.installedMigrationManifestHash===plan.migrationManifest.hash,'Installed governance identity mismatch');
       const expected={v:1,kind,authorizationId:auth.payload.authorizationId,issuedAt:auth.payload.issuedAt,expiresAt:auth.payload.expiresAt,destination:dest,expected:active,planHash:plan.hash,authorizationHash:C.digest(auth),releaseHash:C.digest(release),eventHash:request.event.hash};
@@ -84,7 +90,7 @@ function createController({transport, trustedOwnerKey, onlinePublicKeys, trusted
       const {hash,...body}=plan;
       const previous=await prior(envelope,body); if(previous)return previous;
       const state=await snapshot();
-      requireValid(!plan.recovery || state.recoveryVersion===1,'Recovery migration must be installed before using a recovery plan');
+      verifyInstalledSupport(state);
       const verified=G.verifyEnvelope(envelope,plan,{trustedOwnerKey,onlinePublicKeys:keys,destination:dest,active:state.active,reviewedPlanHash:plan.hash,reviewedVerifierHash:plan.verifierHash,reviewedStandardHash:plan.standardDocumentHash,consumedAuthorizationIds:[],now:now()});
       requireValid(verified.valid,verified.reason); measure();
       return transport.rpc('adopt',[envelope,C.canonicalJson(envelope),plan,C.canonicalJson(body)]);
