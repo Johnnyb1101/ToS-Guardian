@@ -8,7 +8,9 @@ const {createTransport}=require('../release-control/transport');
 const {makeRelease}=require('./final-test-fixtures');
 const args=process.argv.slice(2);
 const preflightOnly=args.includes('--preflight-only');
-const [pgBin,scratchPath,proxy,openssl,artifactArgument,supabaseCli,...extra]=args.filter(arg=>arg!=='--preflight-only');
+const managedInstaller=args.includes('--managed-installer');
+const flags=new Set(['--preflight-only','--managed-installer']);
+const [pgBin,scratchPath,proxy,openssl,artifactArgument,supabaseCli,...extra]=args.filter(arg=>!flags.has(arg));
 const artifactDirectory=artifactArgument && artifactArgument!=='-'?artifactArgument:null;
 const requiredPaths=[pgBin,scratchPath,proxy,openssl];
 if(extra.length||!requiredPaths.every(p=>p&&path.isAbsolute(p)) || (artifactDirectory&&!path.isAbsolute(artifactDirectory)) || (supabaseCli&&!path.isAbsolute(supabaseCli)))throw Error('Explicit absolute PG bin, scratch, proxy and OpenSSL paths required; optional paths must also be absolute');
@@ -22,15 +24,33 @@ if(linux&&(fs.statSync(dir).mode&0o077)!==0)throw Error('Linux rehearsal require
 const bin=n=>path.join(pgBin,linux?n:n+'.exe');
 const appRoles=['anon','authenticated','service_role','runtime_app'];
 const controllerRole='tos_release_controller';
-const passwords=Object.fromEntries(['postgres',...appRoles,controllerRole].map(role=>[role,crypto.randomBytes(32).toString('base64url')]));
+const installer='postgres';
+const admin=managedInstaller?'fixture_bootstrap_admin':installer;
+const passwords=Object.fromEntries([...new Set([admin,installer,...appRoles,controllerRole,'authenticator'])].map(role=>[role,crypto.randomBytes(32).toString('base64url')]));
 const redact=text=>Object.values(passwords).reduce((s,pw)=>s.replaceAll(pw,'[EPHEMERAL-REDACTED]'),String(text||''));
 const env=Object.fromEntries(Object.entries(process.env).filter(([k])=>!/^PG/i.test(k)));
 if(linux)env.LC_ALL='C';
-Object.assign(env,{PGUSER:'postgres',PGPASSWORD:passwords.postgres,PGDATABASE:'postgres',PGHOST:'127.0.0.1',PGCONNECT_TIMEOUT:'5',PGSSLMODE:'verify-full',PGSSLROOTCERT:path.join(dir,'server.crt'),PGGSSENCMODE:'disable',PGSSLCERTMODE:'disable',PGCLIENTENCODING:'UTF8',PGOPTIONS:'-c tos.isolated_rehearsal=yes -c statement_timeout=15000 -c lock_timeout=10000'});
+Object.assign(env,{PGUSER:admin,PGPASSWORD:passwords[admin],PGDATABASE:'postgres',PGHOST:'127.0.0.1',PGCONNECT_TIMEOUT:'5',PGSSLMODE:'verify-full',PGSSLROOTCERT:path.join(dir,'server.crt'),PGGSSENCMODE:'disable',PGSSLCERTMODE:'disable',PGCLIENTENCODING:'UTF8',PGOPTIONS:'-c tos.isolated_rehearsal=yes -c statement_timeout=15000 -c lock_timeout=10000'});
 function run(exe,args,options={}) {const r=spawnSync(exe,args,{env,encoding:'utf8',windowsHide:true,timeout:30000,maxBuffer:32000000,...options});if(r.error)throw r.error;return r;}
 function pass(r,label){assert.equal(r.status,0,redact(label+': '+r.stderr));return String(r.stdout||'').trim();}
 const quote=x=>"'"+String(x).replace(/'/g,"''")+"'",json=x=>quote(C.canonicalJson(x))+'::jsonb';
-function sql(q,{user='postgres',fail=false,db='tos_governance_lab',pw=passwords[user]}={}) {const file=path.join(dir,'query-'+crypto.randomUUID()+'.sql');fs.writeFileSync(file,q,{mode:0o600});let r;try{r=run(bin('psql'),['-X','-w','-q','-A','-t','-v','ON_ERROR_STOP=1','-d',db,'-f',file],{env:{...env,PGUSER:user,PGPASSWORD:pw}});}finally{fs.unlinkSync(file);}if(fail){assert.notEqual(r.status,0,'unexpected SQL success: '+redact(q));return redact(r.stderr);}return pass(r,redact(q).slice(0,70));}
+function sql(q,{user=admin,fail=false,db='tos_governance_lab',pw=passwords[user],checkWarnings=false,continueOnError=false}={}) {
+  const file=path.join(dir,'query-'+crypto.randomUUID()+'.sql');
+  fs.writeFileSync(file,q,{mode:0o600});
+  let result;
+  try {
+    const errorMode=continueOnError?'ON_ERROR_STOP=0':'ON_ERROR_STOP=1';
+    result=run(bin('psql'),['-X','-w','-q','-A','-t','-v',errorMode,'-d',db,'-f',file],{env:{...env,PGUSER:user,PGPASSWORD:pw}});
+  } finally { fs.unlinkSync(file); }
+  if(fail){
+    assert.notEqual(result.status,0,'unexpected SQL success: '+redact(q));
+    return redact(result.stderr);
+  }
+  if(checkWarnings)assert.doesNotMatch(redact(result.stderr),/WARNING:.*(?:no privileges|not all privileges)/i);
+  const output=pass(result,redact(q).slice(0,70));
+  return continueOnError?redact(result.stderr):output;
+}
+const install=(q,options)=>sql(q,{...options,user:installer,checkWarnings:managedInstaller});
 function asyncSql(q,user=controllerRole){return new Promise((resolve,reject)=>{const p=spawn(bin('psql'),['-X','-w','-q','-A','-t','-v','ON_ERROR_STOP=1','-d','tos_governance_lab'],{env:{...env,PGUSER:user,PGPASSWORD:passwords[user]},windowsHide:true});let out='',err='';p.stdout.on('data',x=>out+=x);p.stderr.on('data',x=>err+=x);p.on('error',reject);p.on('close',code=>code?reject(Error(redact(err))):resolve(out.trim()));p.stdin.end(q);});}
 async function availablePort(){const s=net.createServer();await new Promise((r,j)=>s.once('error',j).listen(0,'127.0.0.1',r));const port=s.address().port;await new Promise(r=>s.close(r));return port;}
 let attemptedStart=false,port,passed=0;
@@ -42,8 +62,8 @@ function ok(label){passed++;console.log('PASS '+label);}
     fs.chmodSync(path.join(dir,'server.key'),0o600);
     assert.equal(fs.statSync(path.join(dir,'server.key')).mode&0o077,0);
   }
-  const pwfile=path.join(dir,'pwfile');fs.writeFileSync(pwfile,passwords.postgres+'\n',{mode:0o600});
-  try{pass(run(bin('initdb'),['-D',data,'-U','postgres','--auth-local=scram-sha-256','--auth-host=scram-sha-256','--pwfile='+pwfile,'--no-locale','--encoding=UTF8']),'initdb');}finally{fs.unlinkSync(pwfile);}
+  const pwfile=path.join(dir,'pwfile');fs.writeFileSync(pwfile,passwords[admin]+'\n',{mode:0o600});
+  try{pass(run(bin('initdb'),['-D',data,'-U',admin,'--auth-local=scram-sha-256','--auth-host=scram-sha-256','--pwfile='+pwfile,'--no-locale','--encoding=UTF8']),'initdb');}finally{fs.unlinkSync(pwfile);}
   fs.writeFileSync(path.join(data,'TOS_DISPOSABLE_REHEARSAL'),'governance-control-v1');
   fs.appendFileSync(path.join(data,'postgresql.conf'),"\nssl=on\nssl_cert_file='../server.crt'\nssl_key_file='../server.key'\nunix_socket_directories=''\n");
   port=await availablePort();env.PGPORT=String(port);
@@ -52,33 +72,71 @@ function ok(label){passed++;console.log('PASS '+label);}
   assert.equal(fs.readFileSync(path.join(data,'TOS_DISPOSABLE_REHEARSAL'),'utf8'),'governance-control-v1');
   const identity=JSON.parse(sql("select json_build_object('data',current_setting('data_directory'),'version',current_setting('server_version_num'),'host',host(inet_server_addr()),'port',inet_server_port(),'ssl',(select ssl from pg_stat_ssl where pid=pg_backend_pid()));",{db:'postgres'}));
   assert.equal(fs.realpathSync(identity.data),fs.realpathSync(data));assert.equal(identity.version,'170011');assert.equal(identity.host,'127.0.0.1');assert.equal(identity.port,port);assert.equal(identity.ssl,true);
-  sql('create database tos_governance_lab;',{db:'postgres'});
+  if(managedInstaller)sql(`create role postgres login inherit createrole createdb nosuperuser bypassrls password ${quote(passwords[installer])};`,{db:'postgres'});
+  sql('create database tos_governance_lab owner postgres;',{db:'postgres'});
   for(const role of appRoles)sql(`create role ${role} login${role==='service_role'?' bypassrls':''} password ${quote(passwords[role])};`);
-  sql('create table public.analyses(id int,domain text,created_at timestamptz);create table public.learning_guard(key text,value jsonb);create table public.site_database(domain text,is_static boolean);');
-  sql(fs.readFileSync(path.join(proxy,'migrations/0006_release_activation.sql'),'utf8'));
-  sql(fs.readFileSync(path.join(proxy,'migrations/20261030040050_baseline_bootstrap.sql'),'utf8'));
+  if(managedInstaller){
+    // The independent API role logins exist only for the denial matrix.
+    sql(`create role authenticator login noinherit password ${quote(passwords.authenticator)};
+create role supabase_privileged_role nologin;
+grant anon,authenticated,service_role to authenticator with inherit false,set true;
+grant anon,authenticated,authenticator,service_role,pg_create_subscription,pg_monitor,pg_read_all_data,pg_signal_backend to postgres with admin true,inherit true,set true;
+grant supabase_privileged_role to postgres with admin false,inherit true,set true;`);
+    assert.equal(install(`select concat_ws('|',session_user,current_user,rolsuper,rolcreaterole,rolcreatedb,rolbypassrls,rolinherit,current_setting('createrole_self_grant'))
+from pg_roles where rolname=current_user;`),'postgres|postgres|f|t|t|t|t|');
+    assert.equal(install("select pg_get_userbyid(nspowner) from pg_namespace where nspname='public'"),'pg_database_owner');
+    assert.equal(install("select count(*) from pg_namespace n cross join lateral aclexplode(n.nspacl) a where n.nspname='public' and a.grantee=0 and a.privilege_type='CREATE'"),'0');
+    assert.equal(install("select count(*) from pg_auth_members where member=current_user::regrole and set_option and inherit_option"),'9');
+    ok('managed PostgreSQL installer has observed memberships and no superuser or automatic owner access');
+  }
+  install('create table public.analyses(id int,domain text,created_at timestamptz);create table public.learning_guard(key text,value jsonb);create table public.site_database(domain text,is_static boolean);');
+  install(fs.readFileSync(path.join(proxy,'migrations/0006_release_activation.sql'),'utf8'));
+  install(fs.readFileSync(path.join(proxy,'migrations/20261030040050_baseline_bootstrap.sql'),'utf8'));
   // Seed the actual legacy direct-write and halt routes before installing the fence.
   sql("select public.set_learning_release_halt('positive',false);",{user:'service_role'});
   ok('actual legacy service_role halt route exposed before fencing');
   const migration=fs.readFileSync(path.join(__dirname,'../release-control/supabase/migrations/20261117230320_separated_release_control.sql'),'utf8');
-  const catalog=sql(fs.readFileSync(path.join(__dirname,'../release-control/catalog.sql'),'utf8'));
+  const catalogQuery=fs.readFileSync(path.join(__dirname,'../release-control/catalog.sql'),'utf8');
+  const catalog=install(catalogQuery);
   const pins={expected_database:'tos_governance_lab',expected_installer_role:'postgres',expected_server_version_num:identity.version,reviewed_catalog_hash:catalog};
   const installerSettings=values=>Object.entries(values).map(([key,value])=>`set tos.${key}=${quote(value)};`).join('');
   const noInstallation=()=>{assert.equal(sql("select count(*) from pg_roles where rolname like 'tos_release_%'"),'0');assert.equal(sql("select count(*) from pg_namespace where nspname='tos_release_control'"),'0');};
-  assert.match(sql(migration,{fail:true}),/installer database pin/);noInstallation();
+  assert.match(install(migration,{fail:true}),/installer database pin/);noInstallation();
   const pinChecks=[['expected_database',/installer database pin/],['expected_installer_role',/installer role pin/],['expected_server_version_num',/server version pin/],['reviewed_catalog_hash',/unreviewed catalog/]];
   for(const [key,reason] of pinChecks){
     const missing={...pins};delete missing[key];
-    assert.match(sql(installerSettings(missing)+migration,{fail:true}),reason);noInstallation();
+    assert.match(install(installerSettings(missing)+migration,{fail:true}),reason);noInstallation();
     const wrong={...pins,[key]:key==='expected_server_version_num'?'170000':key==='reviewed_catalog_hash'?'0'.repeat(64):'wrong_installer_pin'};
-    assert.match(sql(installerSettings(wrong)+migration,{fail:true}),reason);noInstallation();
+    assert.match(install(installerSettings(wrong)+migration,{fail:true}),reason);noInstallation();
   }
-  assert.match(sql(installerSettings(pins)+'set role service_role;'+migration,{fail:true}),/installer role pin/);noInstallation();
+  assert.match(install(installerSettings(pins)+'set role service_role;'+migration,{fail:true}),/installer role pin/);noInstallation();
   ok('missing/wrong database, installer, exact version and catalog pins plus SET ROLE fail before DDL');
-  sql(installerSettings(pins)+migration);
-  // Fixture admin ceremony: provisioning changes rolpassword from null to masked.
-  // Final matrix runs only after this final catalog is pinned. No runtime repin API exists.
-  sql(`alter role tos_release_controller password ${quote(passwords[controllerRole])};update tos_release_control.catalog_pin set hash=tos_release_control.measure_catalog();`);
+  if(managedInstaller){
+    const failBeforeCommit=migration.replace(/\bCOMMIT;\s*$/i,"do $$ begin raise exception 'injected installer failure'; end $$;\nCOMMIT;");
+    assert.notEqual(failBeforeCommit,migration);
+    assert.match(install(installerSettings(pins)+failBeforeCommit,{fail:true}),/injected installer failure/);
+    noInstallation();
+    assert.equal(install(catalogQuery),catalog);
+    assert.equal(sql("select has_table_privilege('service_role','public.learning_active_releases','UPDATE')"),'t');
+    ok('managed first-install failure rolls back roles, grants and catalog together');
+  }
+  function verifyClosedInstallerAccess(){
+    if(!managedInstaller)return;
+    for(const role of ['tos_release_owner',controllerRole]){
+      assert.match(install(`set role ${role}`,{fail:true}),/permission denied to set role/i);
+      assert.equal(sql(`select count(*) from pg_auth_members
+where roleid='${role}'::regrole and member='postgres'::regrole and grantor=${quote(admin)}::regrole
+  and admin_option and not set_option and not inherit_option`),'1');
+      assert.equal(sql(`select count(*) from pg_auth_members where roleid='${role}'::regrole and (set_option or inherit_option)`),'0');
+    }
+    assert.equal(sql("select has_schema_privilege('tos_release_owner','public','CREATE')"),'f');
+  }
+  install(installerSettings(pins)+migration);
+  verifyClosedInstallerAccess();
+  const pinBeforePassword=sql('select hash from tos_release_control.catalog_pin');
+  // Local fixture credential provisioning is separate from the migrations.
+  sql(`alter role tos_release_controller password ${quote(passwords[controllerRole])};`);
+  assert.equal(install(catalogQuery),pinBeforePassword);
   const recoveryMigration=fs.readFileSync(path.join(__dirname,'../release-control/supabase/migrations/20261120161406_maintenance_recovery.sql'),'utf8');
   const measureCatalog=()=>sql('select tos_release_control.measure_catalog()');
   const previousCatalog=measureCatalog();
@@ -91,16 +149,17 @@ function ok(label){passed++;console.log('PASS '+label);}
   for(const [key,reason] of pinChecks){
     const missing={...recoveryPins};
     delete missing[key];
-    assert.match(sql(installerSettings(missing)+recoveryMigration,{fail:true}),reason);
+    assert.match(install(installerSettings(missing)+recoveryMigration,{fail:true}),reason);
     recoveryNotInstalled();
     const wrong={...recoveryPins,[key]:key==='expected_server_version_num'?'170000':key==='reviewed_catalog_hash'?catalog:'wrong_installer_pin'};
-    assert.match(sql(installerSettings(wrong)+recoveryMigration,{fail:true}),reason);
+    assert.match(install(installerSettings(wrong)+recoveryMigration,{fail:true}),reason);
     recoveryNotInstalled();
   }
-  assert.match(sql(installerSettings(recoveryPins)+'set role service_role;'+recoveryMigration,{fail:true}),/installer role pin/);
+  assert.match(install(installerSettings(recoveryPins)+'set role service_role;'+recoveryMigration,{fail:true}),/installer role pin/);
   recoveryNotInstalled();
   function installRecovery(){
-    sql(installerSettings(recoveryPins)+recoveryMigration);
+    install(installerSettings(recoveryPins)+recoveryMigration);
+    verifyClosedInstallerAccess();
     const measured=measureCatalog();
     assert.notEqual(measured,previousCatalog);
     assert.equal(sql('select hash from tos_release_control.catalog_pin'),measured);
@@ -113,11 +172,12 @@ function ok(label){passed++;console.log('PASS '+label);}
     const priorDefinition=recoverDefinition();
     const archivePins={...pins,reviewed_catalog_hash:recoveryCatalog};
     const badPins={...archivePins,reviewed_catalog_hash:previousCatalog};
-    assert.match(sql(installerSettings(badPins)+archiveLimitMigration,{fail:true}),/unreviewed catalog/);
+    assert.match(install(installerSettings(badPins)+archiveLimitMigration,{fail:true}),/unreviewed catalog/);
     assert.equal(recoverDefinition(),priorDefinition);
     assert.equal(measureCatalog(),recoveryCatalog);
     assert.ok(priorDefinition.includes('BETWEEN 1 AND 64000000'));
-    sql(installerSettings(archivePins)+archiveLimitMigration);
+    install(installerSettings(archivePins)+archiveLimitMigration);
+    verifyClosedInstallerAccess();
     assert.equal(recoverDefinition(),priorDefinition.replace('BETWEEN 1 AND 64000000','BETWEEN 1 AND 268435456'));
     const measured=measureCatalog();
     assert.notEqual(measured,recoveryCatalog);
@@ -185,7 +245,8 @@ function ok(label){passed++;console.log('PASS '+label);}
   const oldController=createController({...controllerConfig,reviewedPlan:oldPlan});
   const oldAdoption=envelope('base_only_fixture_adoption_0001',60000,oldPlan);
   assert.equal((await oldController.adopt(oldAdoption)).status,'adopted');
-  assert.match(sql(installerSettings(recoveryPins)+recoveryMigration,{fail:true}),/recovery must be installed before adoption/);
+  assert.match(install(installerSettings(recoveryPins)+recoveryMigration,{fail:true}),/recovery must be installed before adoption/);
+  assert.match(install(installerSettings(recoveryPins)+recoveryMigration,{continueOnError:true}),/recovery must be installed before adoption/);
   recoveryNotInstalled();
   assert.equal((await oldController.adopt(oldAdoption)).status,'already-applied');
   ok('installer refuses an adopted database without changing its catalog or durable adoption');
@@ -227,7 +288,8 @@ function ok(label){passed++;console.log('PASS '+label);}
     if(actor!=='tos_release_controller'){assert.match(sql('set role tos_release_controller',{user:actor,fail:true}),/permission denied/);denials++;}
   }
   for(const q of ["select tos_release_control.measure_catalog()","select tos_release_control.assert_catalog()","select tos_release_control.activate_validated('x','{}','{}','{}','x','{}',1,'x','{}','{}')"]){assert.match(sql(q,{user:'tos_release_controller',fail:true}),/permission denied/);denials++;}
-  assert.equal(sql("select count(*) from pg_auth_members m where roleid in(select oid from pg_roles where rolname in('tos_release_owner','tos_release_controller'));"),'0');
+  verifyClosedInstallerAccess();
+  assert.equal(sql("select count(*) from pg_auth_members m where roleid in(select oid from pg_roles where rolname in('tos_release_owner','tos_release_controller'));"),managedInstaller?'2':'0');
   ok(`final installed independent LOGIN denial matrix: ${denials} denials`);
   seed();const good=envelope();const bad=JSON.parse(JSON.stringify(good));bad.signature=Buffer.alloc(64).toString('base64');await assert.rejects(controller.adopt(bad),/signature/);assert.equal(sql('select count(*) from tos_release_control.events'),'0');
   assert.equal((await controller.adopt(good)).status,'adopted');assert.equal(sql("select generation from public.learning_active_releases where environment='lab'"),'1');assert.equal((await controller.adopt(good)).status,'already-applied');
@@ -282,7 +344,7 @@ function ok(label){passed++;console.log('PASS '+label);}
   assert.equal(activations.filter(x=>x.status==='fulfilled').length,1);assert.equal(sql("select generation from public.learning_active_releases where environment='lab'"),'2');
   ok('competing maintenance authorizations serialize with one activation and no partial consumption');
   seed();const expired=envelope('fixture_expired_authorization_01',-1);await assert.rejects(controller.adopt(expired),/expired/);assert.equal(sql('select count(*) from tos_release_control.events'),'0');
-  const locker=asyncSql("begin;select generation from public.learning_active_releases where environment='lab' for update;select pg_sleep(3);commit;",'postgres').then(()=>({ok:true}),error=>({error}));
+  const locker=asyncSql("begin;select generation from public.learning_active_releases where environment='lab' for update;select pg_sleep(3);commit;",admin).then(()=>({ok:true}),error=>({error}));
   let observedLock=false;
   for(let i=0;i<20;i++){await new Promise(resolve=>setTimeout(resolve,20));if(sql("select count(*) from pg_stat_activity where application_name='psql' and wait_event='PgSleep'")!=='0'){observedLock=true;break;}}
   if(!observedLock)await locker;
@@ -400,7 +462,8 @@ function ok(label){passed++;console.log('PASS '+label);}
   }
   assert.deepEqual(JSON.parse(sql(`select release from public.learning_releases where config_hash=${quote(recoveryRelease.configHash)}`,{user:'service_role'})),recoveryRelease);
   assert.equal(measureCatalog(),installedRecoveryCatalog);
-  assert.match(sql(installerSettings({...pins,reviewed_catalog_hash:installedRecoveryCatalog})+archiveLimitMigration,{fail:true}),/build archive limit must be installed before adoption/);
+  assert.match(install(installerSettings({...pins,reviewed_catalog_hash:installedRecoveryCatalog})+archiveLimitMigration,{fail:true}),/build archive limit must be installed before adoption/);
+  assert.match(install(installerSettings({...pins,reviewed_catalog_hash:installedRecoveryCatalog})+archiveLimitMigration,{continueOnError:true}),/build archive limit must be installed before adoption/);
   assert.equal(measureCatalog(),installedRecoveryCatalog);
   const restartedController=createController({...recoveryConfig,transport:createTransport(controllerConnection),now:()=>new Date(Date.now()+86400000).toISOString()});
   assert.deepEqual(await restartedController.recover(committedRequest,approvedRecovery.context),{...recoveredResult,status:'already-applied'});
@@ -419,7 +482,7 @@ function ok(label){passed++;console.log('PASS '+label);}
   sql("alter table public.learning_releases alter column created_at set default '2000-01-01'::timestamptz;");assert.throws(()=>transport.rpc('read_state',['lab']),/failed/);sql('alter table public.learning_releases alter column created_at set default now();');
   ok('expired request rolls back; unreviewed catalog changes fence all controller reads');
 
-  console.log(JSON.stringify({passed,denials,productionApplied:false,productionReady:false,labOnly:true,maintenanceActivationTested:true,maintenanceRecoveryTested:true,evaluationEvidence:'hypothetical-fixtures-only',actualArtifactBindings:!!actual,recoveryArtifactBinding:'synthetic-fixture-only',baselineConfigHash:baseline.configHash,candidateConfigHash:candidate.configHash,verifierHash:plan.verifierHash,evidenceDirectory:dir}));
+  console.log(JSON.stringify({passed,denials,managedInstaller,productionApplied:false,productionReady:false,labOnly:true,maintenanceActivationTested:true,maintenanceRecoveryTested:true,evaluationEvidence:'hypothetical-fixtures-only',actualArtifactBindings:!!actual,recoveryArtifactBinding:'synthetic-fixture-only',baselineConfigHash:baseline.configHash,candidateConfigHash:candidate.configHash,verifierHash:plan.verifierHash,evidenceDirectory:dir}));
 }finally{
   if(attemptedStart){
     const status=run(bin('pg_ctl'),['-D',data,'status']);

@@ -18,13 +18,12 @@ BEGIN
   END IF;
 END $identity$;
 
--- Runtime RPCs read the catalog pin before locking the registry.
-LOCK TABLE tos_release_control.catalog_pin, tos_release_control.registry IN ACCESS EXCLUSIVE MODE;
-DO $preflight$
-DECLARE measured text;
-BEGIN
-  -- Measure with the checked-in catalog query before trusting installed functions.
-  SELECT encode(sha256(convert_to(jsonb_build_object(
+-- Check the reviewed inventory before any DDL. Keep the exact query in a
+-- session-private view so later checks measure the same catalog under locks
+-- and after the installer's temporary membership is removed.
+DO $catalog$
+DECLARE
+  inventory_sql CONSTANT text := $inventory$select encode(sha256(convert_to(jsonb_build_object(
  'version', current_setting('server_version_num'),
  'roles',(select jsonb_agg(to_jsonb(x) order by x.oid) from pg_roles x),
  'memberships',(select coalesce(jsonb_agg(to_jsonb(x) order by x.oid),'[]'::jsonb) from pg_auth_members x),
@@ -47,17 +46,58 @@ BEGIN
  'foreignTables',(select coalesce(jsonb_agg(to_jsonb(x) order by x.ftrelid),'[]'::jsonb) from pg_foreign_table x),
  'extensions',(select jsonb_agg(to_jsonb(x) order by x.oid) from pg_extension x),
  'constraints',(select jsonb_agg(to_jsonb(x) order by x.oid) from pg_constraint x where connamespace not in(select oid from pg_namespace where nspname ~ '^pg_|^information_schema$'))
-)::text,'UTF8')),'hex') INTO measured;
+)::text,'UTF8')),'hex')$inventory$;
+  measured text;
+BEGIN
+  EXECUTE inventory_sql INTO STRICT measured;
   IF current_setting('tos.reviewed_catalog_hash', true) IS DISTINCT FROM measured THEN
     RAISE EXCEPTION 'unreviewed catalog';
   END IF;
-  IF (SELECT hash FROM tos_release_control.catalog_pin WHERE singleton) IS DISTINCT FROM measured THEN
-    RAISE EXCEPTION 'installed catalog drift';
+  EXECUTE 'CREATE TEMPORARY VIEW pg_temp.tos_installer_catalog (hash) WITH (security_invoker=true) AS ' || inventory_sql;
+END $catalog$;
+
+-- A managed installer has ADMIN on the owner role. Borrow ownership only
+-- inside this transaction. A preexisting self-grant belongs to another
+-- configuration and must never be removed by this migration.
+DO $borrow_owner$
+BEGIN
+  IF NOT (SELECT rolsuper FROM pg_roles WHERE rolname = session_user) THEN
+    IF EXISTS (SELECT FROM pg_auth_members
+               WHERE roleid = 'tos_release_owner'::regrole
+                 AND member = session_user::regrole AND grantor = session_user::regrole) THEN
+      RAISE EXCEPTION 'unexpected installer self-grant';
+    END IF;
+    GRANT tos_release_owner TO CURRENT_USER WITH INHERIT TRUE, SET TRUE GRANTED BY CURRENT_USER;
   END IF;
-  IF EXISTS (SELECT FROM tos_release_control.registry
-             WHERE plan IS NOT NULL OR state->'governanceEpoch' IS DISTINCT FROM '0'::jsonb) THEN
-    RAISE EXCEPTION 'recovery must be installed before adoption';
-  END IF;
+END $borrow_owner$;
+-- Take locks in runtime order and retain them across the permission check.
+LOCK TABLE tos_release_control.catalog_pin, tos_release_control.registry IN ACCESS EXCLUSIVE MODE;
+DO $preflight$
+DECLARE
+  measured text;
+  guards_passed boolean := false;
+BEGIN
+  BEGIN
+    IF NOT (SELECT rolsuper FROM pg_roles WHERE rolname = session_user) THEN
+      REVOKE tos_release_owner FROM CURRENT_USER GRANTED BY CURRENT_USER;
+    END IF;
+    SELECT hash INTO STRICT measured FROM pg_temp.tos_installer_catalog;
+    IF current_setting('tos.reviewed_catalog_hash', true) IS DISTINCT FROM measured THEN
+      RAISE EXCEPTION 'unreviewed catalog';
+    END IF;
+    IF (SELECT hash FROM tos_release_control.catalog_pin WHERE singleton) IS DISTINCT FROM measured THEN
+      RAISE EXCEPTION 'installed catalog drift';
+    END IF;
+    IF EXISTS (SELECT FROM tos_release_control.registry
+               WHERE plan IS NOT NULL OR state->'governanceEpoch' IS DISTINCT FROM '0'::jsonb) THEN
+      RAISE EXCEPTION 'recovery must be installed before adoption';
+    END IF;
+    -- Restore the temporary membership only after every guard succeeds.
+    guards_passed := true;
+    RAISE SQLSTATE 'ZMF02' USING MESSAGE = 'locked installer checks passed';
+  EXCEPTION WHEN SQLSTATE 'ZMF02' THEN
+    IF NOT guards_passed THEN RAISE; END IF;
+  END;
 END $preflight$;
 
 SET LOCAL ROLE tos_release_owner;
@@ -269,6 +309,40 @@ BEGIN
       AND (a.grantee <> 'tos_release_controller'::regrole OR a.is_grantable OR a.privilege_type <> 'EXECUTE')
   ) THEN RAISE EXCEPTION 'unexpected recovery function privileges'; END IF;
 END $acl$;
-UPDATE tos_release_control.catalog_pin SET hash = tos_release_control.measure_catalog() WHERE singleton;
 RESET ROLE;
+-- The catalog includes role memberships. Measure the final privilege state
+-- in a subtransaction, restore ownership long enough to write the pin, then
+-- remove the grant for good and verify the stored and actual hashes together.
+DO $finalize_pin$
+DECLARE
+  managed boolean := NOT (SELECT rolsuper FROM pg_roles WHERE rolname = session_user);
+  final_hash text;
+BEGIN
+  IF managed THEN
+    BEGIN
+      REVOKE tos_release_owner FROM CURRENT_USER GRANTED BY CURRENT_USER;
+      SELECT hash INTO STRICT final_hash FROM pg_temp.tos_installer_catalog;
+      RAISE SQLSTATE 'ZMF01' USING MESSAGE = 'restore temporary installer membership';
+    EXCEPTION WHEN SQLSTATE 'ZMF01' THEN
+      NULL; -- The transaction state rolls back. The local variable retains the measurement.
+    END;
+  ELSE
+    SELECT hash INTO STRICT final_hash FROM pg_temp.tos_installer_catalog;
+  END IF;
+  IF final_hash IS NULL OR final_hash !~ '^[0-9a-f]{64}$' THEN
+    RAISE EXCEPTION 'invalid final catalog measurement';
+  END IF;
+
+  SET LOCAL ROLE tos_release_owner;
+  UPDATE tos_release_control.catalog_pin SET hash = final_hash WHERE singleton;
+  RESET ROLE;
+  IF managed THEN
+    REVOKE tos_release_owner FROM CURRENT_USER GRANTED BY CURRENT_USER;
+  END IF;
+  IF (SELECT hash FROM pg_temp.tos_installer_catalog) IS DISTINCT FROM final_hash OR
+     (SELECT hash FROM tos_release_control.catalog_pin WHERE singleton) IS DISTINCT FROM final_hash THEN
+    RAISE EXCEPTION 'installed catalog drift';
+  END IF;
+END $finalize_pin$;
+DROP VIEW pg_temp.tos_installer_catalog;
 COMMIT;
