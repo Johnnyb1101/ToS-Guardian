@@ -218,15 +218,15 @@ function createImageRequestBuilder(appDirectory) {
   };
 }
 
-function fixtureResponse(fixture, stage, request, bytes) {
+function providerResponse(fixture, stage, request, bytes, parseJson, requireStandardTier) {
   if (!exact(fixture, ['status', 'requestId', 'response']) || fixture.status !== 200 ||
       !receiptId(fixture.requestId) ||
       !bytes) {
     throw new Error('Fake provider response failed or was incomplete');
   }
-  const response = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  const response = parseJson(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
   if (!response || !receiptId(response.id) ||
-      (response.service_tier !== undefined && response.service_tier !== 'default')) {
+      ((requireStandardTier || response.service_tier !== undefined) && response.service_tier !== 'default')) {
     throw new Error('Fake provider response has an unexpected identity or billing tier');
   }
   const { choices, usage } = response;
@@ -255,17 +255,21 @@ function fixtureResponse(fixture, stage, request, bytes) {
       !boundedText(choice.message.content) || choice.message.refusal != null ||
       !exact(usage, usageFields) || !count(usage.prompt_tokens) || !count(usage.completion_tokens) ||
       !count(usage.total_tokens) || usage.prompt_tokens + usage.completion_tokens !== usage.total_tokens ||
-      !exact(details, ['cached_tokens']) || !count(details.cached_tokens) || details.cached_tokens > usage.prompt_tokens ||
-      (completion !== undefined && (!exact(completion, ['reasoning_tokens']) || !count(completion.reasoning_tokens) ||
-        completion.reasoning_tokens > usage.completion_tokens))) throw new Error('Unsupported fake provider output or incomplete usage');
+      !supported(details, ['cached_tokens', 'audio_tokens']) || !count(details.cached_tokens) ||
+      details.cached_tokens > usage.prompt_tokens || (details.audio_tokens !== undefined && details.audio_tokens !== 0) ||
+      (completion !== undefined && (!supported(completion, ['reasoning_tokens', 'audio_tokens', 'accepted_prediction_tokens', 'rejected_prediction_tokens']) ||
+        Object.entries(completion).some(([key, value]) => key === 'reasoning_tokens'
+          ? !count(value) || value > usage.completion_tokens : value !== 0)))) {
+    throw new Error('Unsupported provider output or incomplete usage');
+  }
   return {
     text: choice.message.content, requestId: fixture.requestId, completionId: response.id,
     usage: { inputTokens: usage.prompt_tokens, outputTokens: usage.completion_tokens },
   };
 }
 
-function readIndependentGrade(text) {
-  const grade = JSON.parse(text);
+function readIndependentGrade(text, parseJson) {
+  const grade = parseJson(text);
   if (!exact(grade, ['accuracy', 'completeness', 'fabrications']) ||
       ![grade.accuracy, grade.completeness].every(value => Number.isFinite(value) && value >= 0 && value <= 1) ||
       !Number.isSafeInteger(grade.fabrications) || grade.fabrications < 0) {
@@ -296,13 +300,12 @@ function createArtifactWriter(directory) {
   };
 }
 
-// Runs with an explicitly supplied trusted local request builder and fake response bytes.
-// This is not a boundary against malicious JavaScript loaded by the caller.
-async function runObservedRehearsal({ plan, approvedPlanHash, preregistrations, reviewerRegistry, now, attachments,
-  archiveLocations, outputDirectory, shapeRequest, fixtures }) {
+// Internal orchestration shared with the separately authorized live supervisor.
+async function runBoundEvaluation({ plan, approvedPlanHash, preregistrations, reviewerRegistry, now, attachments,
+  archiveLocations, outputDirectory, shapeRequest }, { origin, deliver, parseJson = JSON.parse, beforeReserve = () => {} }) {
   const bound = validatePlan(plan, approvedPlanHash);
-  if (typeof shapeRequest !== 'function' || !(attachments instanceof Map) || !(fixtures instanceof Map)) {
-    throw new Error('Trusted request builder, attachment bytes and fake provider replies required');
+  if (typeof shapeRequest !== 'function' || !(attachments instanceof Map)) {
+    throw new Error('Trusted request builder and attachment bytes required');
   }
   const attachment = descriptor => {
     const bytes = attachments.get(descriptor?.sha256);
@@ -326,6 +329,8 @@ async function runObservedRehearsal({ plan, approvedPlanHash, preregistrations, 
   const budget = openObservedBudget(bound.journalDirectory, bound.budget);
   const observations = [];
   const requestIds = new Set(), completionIds = new Set();
+  const live = origin === 'captured-runtime';
+  let providerCalls = 0;
   try {
     if (budget.snapshot().attempts.length) throw new Error('This rehearsal has already started; do not replay it');
     for (const run of bound.runs) {
@@ -336,6 +341,7 @@ async function runObservedRehearsal({ plan, approvedPlanHash, preregistrations, 
       const sourceUrl = sample.provenance.url;
       const outputs = {};
       const stages = {};
+      const receipts = {};
       const buildHash = C.digest(build);
       let independentGrade;
       for (const stage of Object.keys(STAGES)) {
@@ -348,29 +354,37 @@ async function runObservedRehearsal({ plan, approvedPlanHash, preregistrations, 
         } : await shapeRequest(copyJson({ stage, build, buildHash, sourceUrl, sourceText, sourceHash: sample.source.sha256,
           prior: outputs.analyzer ?? null }));
         const { request, bytes } = validateRequest(captured, stage);
-        const requestDescriptor = write(bytes);
+        const sentBytes = live ? Buffer.from(C.canonicalJson({ ...request.body, service_tier: 'default' })) : bytes;
+        const requestDescriptor = write(sentBytes);
+        beforeReserve();
         budget.reserve(id, requestDescriptor.sha256);
-        const fixture = fixtures.get(id);
         let responseDescriptor = null;
+        let receipt = null;
         const retainFailure = () => write(Buffer.from(C.canonicalJson({
-          callId: id, request: requestDescriptor, response: responseDescriptor, origin: 'fixture', outcome: 'failed',
+          callId: id, request: requestDescriptor, response: responseDescriptor, receipt, origin, outcome: 'failed',
         })));
         let result, retained;
         try {
-          const reply = Buffer.isBuffer(fixture?.response) && fixture.response.length > 0 && fixture.response.length <= 1048576
-            ? Buffer.from(fixture.response) : null;
+          if (live) providerCalls++;
+          const delivery = await deliver({ id, bytes: sentBytes, sha256: requestDescriptor.sha256 });
+          const reply = Buffer.isBuffer(delivery?.response) && delivery.response.length > 0 && delivery.response.length <= 1048576
+            ? Buffer.from(delivery.response) : null;
+          if (delivery && Number.isInteger(delivery.status) && receiptId(delivery.requestId)) {
+            receipt = { status: delivery.status, requestId: delivery.requestId };
+          }
           if (reply) responseDescriptor = write(reply);
-          result = fixtureResponse(fixture, stage, request, reply);
+          result = providerResponse(delivery, stage, request, reply, parseJson, live);
           if (requestIds.has(result.requestId) || completionIds.has(result.completionId)) {
             throw new Error('Repeated provider request or completion identity');
           }
           requestIds.add(result.requestId);
           completionIds.add(result.completionId);
-          if (stage === 'independent') independentGrade = readIndependentGrade(result.text);
+          if (stage === 'independent') independentGrade = readIndependentGrade(result.text, parseJson);
           retained = {
             provider: 'openai', model: request.body.model, requestId: result.requestId,
             request: requestDescriptor, response: responseDescriptor, output: write(Buffer.from(result.text)),
           };
+          if (live) receipts[stage] = { ...receipt, completionId: result.completionId, usage: result.usage };
         } catch (error) {
           budget.fail(id);
           retainFailure();
@@ -385,15 +399,21 @@ async function runObservedRehearsal({ plan, approvedPlanHash, preregistrations, 
         outputs[stage] = result.text;
         stages[stage] = retained;
       }
-      const observation = { ...run, buildHash, sourceHash: sample.source.sha256, origin: 'fixture', stages, independentGrade };
-      const log = write(Buffer.from(C.canonicalJson(observation)));
+      const observation = { ...run, buildHash, sourceHash: sample.source.sha256, origin, stages, independentGrade };
+      const log = write(Buffer.from(C.canonicalJson(live ? { ...observation, receipts } : observation)));
       observations.push({ ...observation, log });
     }
     return { diagnosticOnly: true, evaluationPassed: false, promotionEligible: false,
-      providerCalls: 0, fakeCalls: bound.calls.length, planHash: bound.hash, observations, budget: budget.snapshot() };
+      providerCalls, fakeCalls: live ? 0 : bound.calls.length, planHash: bound.hash, observations, budget: budget.snapshot() };
   } finally {
     budget.close();
   }
 }
 
-module.exports = { createObservedPlan, createImageRequestBuilder, runObservedRehearsal };
+// Trusted request builder and fake response bytes only. This entry point never dispatches.
+function runObservedRehearsal(input) {
+  if (!(input.fixtures instanceof Map)) return Promise.reject(new Error('Fake provider replies required'));
+  return runBoundEvaluation(input, { origin: 'fixture', deliver: ({ id }) => input.fixtures.get(id) });
+}
+
+module.exports = { createObservedPlan, createImageRequestBuilder, runObservedRehearsal, runBoundEvaluation };
