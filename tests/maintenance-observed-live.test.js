@@ -31,12 +31,22 @@ const projectId = 'proj_fake_evaluation';
 
 function fakeProvider(model, number) {
   const content = model === 'gpt-6-luna' ? '{"accuracy":1,"completeness":1,"fabrications":0}' : 'Local fake output';
+  const usage = { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 };
+  if (number % 4 !== 2) {
+    usage.prompt_tokens_details = {
+      cached_tokens: 2, cache_write_tokens: model === 'gpt-4o-mini' ? 0 : 4,
+      text_tokens: 10, audio_tokens: 0, image_tokens: 0,
+    };
+    usage.completion_tokens_details = {
+      reasoning_tokens: model === 'gpt-6-luna' ? 1 : 0,
+      text_tokens: model === 'gpt-6-luna' ? 2 : 3,
+      audio_tokens: 0, accepted_prediction_tokens: 0, rejected_prediction_tokens: 0,
+    };
+  }
   return Buffer.from(JSON.stringify({
     id: `completion-${number}`, object: 'chat.completion', model, service_tier: 'default',
-    choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content } }],
-    usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13,
-      prompt_tokens_details: { cached_tokens: 2, audio_tokens: 0 },
-      completion_tokens_details: { reasoning_tokens: 0, audio_tokens: 0, accepted_prediction_tokens: 0, rejected_prediction_tokens: 0 } },
+    choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content, annotations: [] } }],
+    usage,
   }));
 }
 
@@ -183,7 +193,11 @@ test('signed live plan uses one journal, isolates credentials and retains fake H
     assert.equal(run.origin, 'captured-runtime');
     const log = JSON.parse(fs.readFileSync(path.join(options.outputDirectory, run.log.sha256), 'utf8'));
     assert.equal(log.receipts.judge.status, 200);
-    assert.equal(log.receipts.independent.usage.outputTokens, 3);
+    for (const stage of ['analyzer', 'critic', 'judge', 'independent']) {
+      assert.deepEqual(log.receipts[stage].usage, { inputTokens: 10, outputTokens: 3 });
+    }
+    const independentReceipt = JSON.parse(fs.readFileSync(path.join(options.outputDirectory, run.stages.independent.response.sha256), 'utf8'));
+    assert.equal(independentReceipt.usage.prompt_tokens_details.cache_write_tokens, 4);
     const body = JSON.parse(fs.readFileSync(path.join(options.outputDirectory, run.stages.judge.request.sha256), 'utf8'));
     assert.equal(body.model, 'gpt-4o');
     assert.equal(body.max_tokens, 8000);

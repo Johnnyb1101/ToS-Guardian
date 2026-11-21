@@ -218,7 +218,7 @@ function createImageRequestBuilder(appDirectory) {
   };
 }
 
-function providerResponse(fixture, stage, request, bytes, parseJson, requireStandardTier) {
+function providerResponse(fixture, stage, request, bytes, parseJson, live) {
   if (!exact(fixture, ['status', 'requestId', 'response']) || fixture.status !== 200 ||
       !receiptId(fixture.requestId) ||
       !bytes) {
@@ -226,45 +226,39 @@ function providerResponse(fixture, stage, request, bytes, parseJson, requireStan
   }
   const response = parseJson(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
   if (!response || !receiptId(response.id) ||
-      ((requireStandardTier || response.service_tier !== undefined) && response.service_tier !== 'default')) {
+      ((live || response.service_tier !== undefined) && response.service_tier !== 'default')) {
     throw new Error('Fake provider response has an unexpected identity or billing tier');
   }
-  const { choices, usage } = response;
+  const { choices } = response;
   const choice = Array.isArray(choices) && choices.length === 1 ? choices[0] : null;
   if (choice?.message?.role !== 'assistant') throw new Error('Unsupported fake provider output role');
-  const count = n => Number.isSafeInteger(n) && n >= 0;
+  const usageOptions = { requireCachedTokens: !live };
+  let text;
+  let usage;
   if (stage === 'analyzer' || stage === 'critic') {
-    const parsed = OpenAI.recordOpenAIResponse(request, OpenAI.prepareOpenAIRequest(request), response);
-    return {
-      text: parsed.text, requestId: fixture.requestId, completionId: response.id,
-      usage: { inputTokens: parsed.usage.inputTokens + parsed.usage.cacheReadTokens, outputTokens: parsed.usage.outputTokens },
-    };
+    const parsed = OpenAI.recordOpenAIResponse(request, OpenAI.prepareOpenAIRequest(request), response, usageOptions);
+    ({ text, usage } = parsed);
+  } else {
+    const supported = (value, fields) => value && typeof value === 'object' && !Array.isArray(value) &&
+      Object.keys(value).every(key => fields.includes(key));
+    const { message } = choice;
+    if (!supported(response, ['id', 'object', 'created', 'model', 'choices', 'usage', 'system_fingerprint', 'service_tier']) ||
+        response.object !== 'chat.completion' ||
+        !acceptedModels[request.body.model].includes(response.model) ||
+        !supported(choice, ['index', 'finish_reason', 'message', 'logprobs']) ||
+        choice.index !== 0 || choice.finish_reason !== 'stop' || choice.logprobs != null ||
+        !supported(message, ['role', 'content', 'refusal', 'annotations']) ||
+        !boundedText(message.content) || message.refusal != null ||
+        (message.annotations !== undefined && (!Array.isArray(message.annotations) || message.annotations.length !== 0))) {
+      throw new Error('Unsupported provider output');
+    }
+    text = message.content;
+    usage = OpenAI.readOpenAITextUsage(response.usage, STAGES[stage].output, { ...usageOptions, allowReasoning: true });
   }
-  const details = usage?.prompt_tokens_details;
-  const completion = usage?.completion_tokens_details;
-  const supported = (value, fields) => value && typeof value === 'object' && !Array.isArray(value) &&
-    Object.keys(value).every(key => fields.includes(key));
-  const usageFields = ['prompt_tokens', 'completion_tokens', 'total_tokens', 'prompt_tokens_details'];
-  if (completion !== undefined) usageFields.push('completion_tokens_details');
-  if (!supported(response, ['id', 'object', 'created', 'model', 'choices', 'usage', 'system_fingerprint', 'service_tier']) ||
-      response.object !== 'chat.completion' ||
-      !acceptedModels[request.body.model].includes(response.model) ||
-      !supported(choice, ['index', 'finish_reason', 'message', 'logprobs']) ||
-      choice.index !== 0 || choice.finish_reason !== 'stop' || choice.logprobs != null ||
-      !supported(choice.message, ['role', 'content', 'refusal']) || choice.message.role !== 'assistant' ||
-      !boundedText(choice.message.content) || choice.message.refusal != null ||
-      !exact(usage, usageFields) || !count(usage.prompt_tokens) || !count(usage.completion_tokens) ||
-      !count(usage.total_tokens) || usage.prompt_tokens + usage.completion_tokens !== usage.total_tokens ||
-      !supported(details, ['cached_tokens', 'audio_tokens']) || !count(details.cached_tokens) ||
-      details.cached_tokens > usage.prompt_tokens || (details.audio_tokens !== undefined && details.audio_tokens !== 0) ||
-      (completion !== undefined && (!supported(completion, ['reasoning_tokens', 'audio_tokens', 'accepted_prediction_tokens', 'rejected_prediction_tokens']) ||
-        Object.entries(completion).some(([key, value]) => key === 'reasoning_tokens'
-          ? !count(value) || value > usage.completion_tokens : value !== 0)))) {
-    throw new Error('Unsupported provider output or incomplete usage');
-  }
+  // Charge every prompt token at the reserved rate, including reads and writes.
   return {
-    text: choice.message.content, requestId: fixture.requestId, completionId: response.id,
-    usage: { inputTokens: usage.prompt_tokens, outputTokens: usage.completion_tokens },
+    text, requestId: fixture.requestId, completionId: response.id,
+    usage: { inputTokens: usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens, outputTokens: usage.outputTokens },
   };
 }
 

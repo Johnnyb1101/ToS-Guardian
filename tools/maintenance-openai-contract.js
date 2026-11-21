@@ -26,11 +26,52 @@ function prepareOpenAIRequest(request) {
     dispatchEnabled: false, liveDispatchAllowed: false });
 }
 
-// Narrow offline acceptance contract. The API allows optional usage details, but
-// this accounting observation requires explicit cached counts; omission cannot
-// become zero-cost evidence. No prices, billing bound, or provider proof here.
 // https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
-function recordOpenAIResponse(request, preparation, response) {
+function readOpenAITextUsage(usage, maxOutputTokens, { allowReasoning = false, requireCachedTokens = true } = {}) {
+  if (!only(usage, ['prompt_tokens', 'completion_tokens', 'total_tokens', 'prompt_tokens_details', 'completion_tokens_details'])) {
+    throw new Error('OpenAI usage missing, malformed or inconsistent');
+  }
+  const {
+    prompt_tokens: promptTokens, completion_tokens: outputTokens, total_tokens: totalTokens,
+    prompt_tokens_details: promptDetails = {}, completion_tokens_details: completionDetails = {}
+  } = usage;
+  if (!count(promptTokens) || !count(outputTokens) || !count(totalTokens) ||
+      !count(maxOutputTokens) || outputTokens > maxOutputTokens || totalTokens - outputTokens !== promptTokens) {
+    throw new Error('OpenAI usage missing, malformed or inconsistent');
+  }
+
+  if (!only(promptDetails, ['cached_tokens', 'cache_write_tokens', 'audio_tokens', 'image_tokens', 'text_tokens'])) {
+    throw new Error('Unsupported OpenAI prompt usage details');
+  }
+  const {
+    cached_tokens: cacheReadTokens = 0, cache_write_tokens: cacheWriteTokens = 0,
+    audio_tokens: promptAudio = 0, image_tokens: promptImages = 0, text_tokens: promptText = 0
+  } = promptDetails;
+  if (requireCachedTokens && !count(promptDetails.cached_tokens)) {
+    throw new Error('Explicit valid OpenAI cached usage required');
+  }
+  if (!count(cacheReadTokens) || !count(cacheWriteTokens) || cacheWriteTokens > promptTokens - cacheReadTokens ||
+      promptAudio !== 0 || promptImages !== 0 || !count(promptText) || promptText > promptTokens) {
+    throw new Error('Unsupported OpenAI prompt usage details');
+  }
+
+  if (!only(completionDetails, ['reasoning_tokens', 'audio_tokens', 'accepted_prediction_tokens', 'rejected_prediction_tokens', 'text_tokens'])) {
+    throw new Error('Unsupported OpenAI completion usage details');
+  }
+  const {
+    reasoning_tokens: reasoning = 0, audio_tokens: completionAudio = 0, text_tokens: completionText = 0,
+    accepted_prediction_tokens: acceptedPrediction = 0, rejected_prediction_tokens: rejectedPrediction = 0
+  } = completionDetails;
+  if (!count(reasoning) || (!allowReasoning && reasoning !== 0) ||
+      !count(completionText) || completionText > outputTokens - reasoning ||
+      completionAudio !== 0 || acceptedPrediction !== 0 || rejectedPrediction !== 0) {
+    throw new Error('Unsupported OpenAI completion usage details');
+  }
+
+  return { inputTokens: promptTokens - cacheReadTokens - cacheWriteTokens, outputTokens, cacheReadTokens, cacheWriteTokens };
+}
+
+function recordOpenAIResponse(request, preparation, response, options) {
   const expected = prepareOpenAIRequest(request);
   if (digest(preparation) !== digest(expected)) throw new Error('OpenAI preparation no longer matches complete request');
   digest(response);
@@ -39,15 +80,16 @@ function recordOpenAIResponse(request, preparation, response) {
   const choice = response.choices[0];
   if (!only(choice, ['index', 'message', 'finish_reason', 'logprobs']) || choice.index !== 0 || choice.finish_reason !== 'stop' || (choice.logprobs !== undefined && choice.logprobs !== null)) throw new Error('OpenAI response incomplete, truncated or unsupported');
   const message = choice.message;
-  if (!only(message, ['role', 'content', 'refusal']) || message.role !== 'assistant' || !text(message.content) || (message.refusal !== undefined && message.refusal !== null)) throw new Error('OpenAI refusal or unsupported text response');
-  const u = response.usage;
-  if (!only(u, ['prompt_tokens', 'completion_tokens', 'total_tokens', 'prompt_tokens_details', 'completion_tokens_details']) || !count(u.prompt_tokens) || !count(u.completion_tokens) || !count(u.total_tokens) || !Number.isSafeInteger(u.prompt_tokens + u.completion_tokens) || u.total_tokens !== u.prompt_tokens + u.completion_tokens || u.completion_tokens > request.body.max_tokens) throw new Error('OpenAI usage missing, malformed or inconsistent');
-  if (!only(u.prompt_tokens_details, ['cached_tokens', 'audio_tokens']) || !count(u.prompt_tokens_details.cached_tokens) || u.prompt_tokens_details.cached_tokens > u.prompt_tokens || (u.prompt_tokens_details.audio_tokens !== undefined && u.prompt_tokens_details.audio_tokens !== 0)) throw new Error('Explicit valid OpenAI cached usage required');
-  if (u.completion_tokens_details !== undefined && (!only(u.completion_tokens_details, ['reasoning_tokens', 'audio_tokens', 'accepted_prediction_tokens', 'rejected_prediction_tokens']) || Object.values(u.completion_tokens_details).some(value => value !== 0))) throw new Error('Unsupported OpenAI completion usage details');
+  if (!only(message, ['role', 'content', 'refusal', 'annotations']) || message.role !== 'assistant' || !text(message.content) ||
+      (message.refusal !== undefined && message.refusal !== null) ||
+      (message.annotations !== undefined && (!Array.isArray(message.annotations) || message.annotations.length !== 0))) {
+    throw new Error('OpenAI refusal or unsupported text response');
+  }
+  const usage = readOpenAITextUsage(response.usage, request.body.max_tokens, options);
   return seal({ kind: 'unverified-openai-response-observation', v: 1, requestHash: digest(request), requestPreparationHash: preparation.hash,
     responseHash: digest(response), reportedModel: response.model, text: message.content, stopReason: choice.finish_reason,
-    usage: { inputTokens: u.prompt_tokens - u.prompt_tokens_details.cached_tokens, outputTokens: u.completion_tokens, cacheReadTokens: u.prompt_tokens_details.cached_tokens, cacheWriteTokens: 0 },
+    usage,
     providerAuthenticated: false, hardUpperBoundEstablished: false, liveDispatchAllowed: false, promotionEligible: false });
 }
 
-module.exports = { prepareOpenAIRequest, recordOpenAIResponse };
+module.exports = { prepareOpenAIRequest, readOpenAITextUsage, recordOpenAIResponse };
