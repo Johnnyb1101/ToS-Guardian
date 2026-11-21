@@ -10,6 +10,7 @@ const { createObservedBudgetPlan, openObservedBudget } = require('./maintenance-
 const { localPath, localPaths } = require('./maintenance-local-path');
 
 const ENDPOINT = 'https://api.openai.com/v1/chat/completions';
+const SYNTHETIC_KEY = 'OFFLINE-NOT-A-CREDENTIAL';
 const STAGES = Object.freeze({
   analyzer: Object.freeze({ model: 'gpt-4o-mini', tier: 'default', input: 128000, output: 1200, inputRate: 150000, outputRate: 600000 }),
   critic: Object.freeze({ model: 'gpt-4o-mini', tier: 'default', input: 128000, output: 1000, inputRate: 150000, outputRate: 600000 }),
@@ -185,8 +186,11 @@ function createImageRequestBuilder(appDirectory) {
   const { classifyDocumentType } = require(path.join(root, 'docType.js'));
   const npm = require(path.resolve(path.dirname(process.execPath), '../lib/node_modules/npm/package.json')).version;
   const runtime = { node: process.version, npm, platform: process.platform, arch: process.arch };
-  return ({ stage, build, buildHash, sourceUrl, sourceText, sourceHash, prior }) => {
-    if (!F.STAGES.includes(stage) || !same(build.runtime, runtime) || C.digest(build) !== buildHash ||
+  return ({ stage, provider, build, buildHash, sourceUrl, sourceText, sourceHash, prior }) => {
+    const legacy = provider === undefined;
+    const escalation = stage === 'escalation' && !legacy;
+    if ((!F.STAGES.includes(stage) && !escalation) || (!legacy && !isImageProvider(provider)) ||
+        !same(build.runtime, runtime) || C.digest(build) !== buildHash ||
         !boundedText(sourceText) || sha(Buffer.from(sourceText)) !== sourceHash) {
       throw new Error('Image runtime, build or held-out source identity changed');
     }
@@ -197,25 +201,65 @@ function createImageRequestBuilder(appDirectory) {
       throw new Error('Image runtime policy does not match the frozen release');
     }
     const domain = new URL(sourceUrl).hostname;
-    const operation = { operation: stage === 'judge' ? 'jury' : stage, provider: 'openai', domain };
+    const target = escalation ? 'analyzer' : stage;
+    const operation = { operation: target === 'judge' ? 'jury' : target, provider: provider ?? 'openai', domain };
     const options = {};
-    if (stage === 'analyzer') operation.documentText = sourceText;
-    else {
+    if (target === 'analyzer') {
+      operation.documentText = sourceText;
+      if (escalation) operation.escalate = true;
+    } else {
       operation.sourceText = sourceText;
       operation.analysisSummary = prior;
     }
-    if (stage === 'judge') options.trainerOperations = true;
+    if (target === 'judge') options.trainerOperations = true;
     else {
       const docType = classifyDocumentType(sourceText, domain).type;
-      options.lessons = { [stage]: release.resolveRelease(build.release, { target: stage, docType }).lessons };
+      options.lessons = { [target]: release.resolveRelease(build.release, { target, docType }).lessons };
     }
     const op = operations.validateOperationRequest(operation, options);
     if (!op.valid) throw new Error(op.reason);
     const validated = relay.validateAnalyzeRequest(op.relayRequest);
     if (!validated.valid) throw new Error(validated.reason);
-    const { url, body } = relay.buildProviderRequest(validated, 'OFFLINE-NOT-A-CREDENTIAL');
-    return validateRequest({ url, body }, stage).request;
+    const { url, headers, body } = relay.buildProviderRequest(validated, SYNTHETIC_KEY);
+    if (legacy) return validateRequest({ url, body }, stage).request;
+    const auth = provider === 'anthropic' ? 'x-api-key' : 'Authorization';
+    const expected = provider === 'anthropic' ? SYNTHETIC_KEY : `Bearer ${SYNTHETIC_KEY}`;
+    if (headers?.[auth] !== expected) throw new Error('Image request did not use the synthetic credential');
+    const retainedHeaders = Object.fromEntries(Object.entries(headers).filter(([name]) => name !== auth));
+    // The proxy serializes the relay body with JSON.stringify before dispatch.
+    return { url, headers: retainedHeaders, body: JSON.stringify(body) };
   };
+}
+
+function isImageProvider(provider) {
+  return provider === 'anthropic' || provider === 'openai';
+}
+
+function replayImageResponse(appDirectory, { provider, body }) {
+  if (!isImageProvider(provider) || typeof body !== 'string') throw new Error('Invalid image response replay');
+  let data;
+  try {
+    data = JSON.parse(body);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    return { outcome: 'malformed-json', parsed: null, usage: null };
+  }
+  const relay = require(path.join(appDirectory, 'llmRelay.js'));
+  const parsed = relay.parseProviderResponse(provider, data);
+  const usage = relay.normalizeProviderUsage(provider, data?.usage);
+  // Annotate the recorded edge case while retaining the relay's unmodified result.
+  const choice = data?.choices?.[0];
+  const stop = provider === 'anthropic' ? data?.stop_reason : choice?.finish_reason;
+  const refusal = provider === 'anthropic'
+    ? stop === 'refusal' || (Array.isArray(data?.content) && data.content.some(block => block?.type === 'refusal'))
+    : stop === 'content_filter' || Boolean(choice?.message?.refusal);
+  let outcome = parsed.error === undefined ? 'parsed' : 'provider-error';
+  if (stop === 'length' || stop === 'max_tokens') outcome = 'truncated';
+  else if (refusal) outcome = 'refusal';
+  else if (typeof parsed.text === 'string' && /^\s*```(?:json\b|[ \t]*\r?\n\s*[{\[])/i.test(parsed.text)) {
+    outcome = 'fenced-json';
+  }
+  return { outcome, parsed, usage };
 }
 
 function providerResponse(fixture, stage, request, bytes, parseJson, live) {
@@ -410,4 +454,4 @@ function runObservedRehearsal(input) {
   return runBoundEvaluation(input, { origin: 'fixture', deliver: ({ id }) => input.fixtures.get(id) });
 }
 
-module.exports = { createObservedPlan, createImageRequestBuilder, runObservedRehearsal, runBoundEvaluation };
+module.exports = { createObservedPlan, createImageRequestBuilder, replayImageResponse, runObservedRehearsal, runBoundEvaluation };
