@@ -56,6 +56,49 @@ test('OpenAI malformed, missing, fractional and inconsistent usage cannot become
   assert.equal(record(request(), r).usage.inputTokens, 100);
 });
 
+test('OpenAI text usage accounts for cache writes, text counts and opted-in reasoning', () => {
+  const q = request(), p = preflight.prepareOpenAIRequest(q), r = response();
+  r.choices[0].message.annotations = [];
+  Object.assign(r.usage.prompt_tokens_details, { cache_write_tokens: 10, image_tokens: 0, text_tokens: 100 });
+  Object.assign(r.usage.completion_tokens_details, { reasoning_tokens: 5, text_tokens: 15 });
+
+  assert.throws(() => record(q, r, p), /completion usage details/);
+  assert.deepEqual(preflight.recordOpenAIResponse(q, p, r, { allowReasoning: true }).usage,
+    { inputTokens: 60, outputTokens: 20, cacheReadTokens: 30, cacheWriteTokens: 10 });
+
+  delete r.usage.prompt_tokens_details.cached_tokens;
+  assert.throws(() => record(q, r, p), /cached usage required/);
+  assert.deepEqual(preflight.readOpenAITextUsage(r.usage, 1200, { allowReasoning: true, requireCachedTokens: false }),
+    { inputTokens: 90, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 10 });
+  delete r.usage.prompt_tokens_details;
+  delete r.usage.completion_tokens_details;
+  assert.deepEqual(preflight.readOpenAITextUsage(r.usage, 1200, { requireCachedTokens: false }),
+    { inputTokens: 100, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0 });
+});
+
+test('OpenAI live usage rejects malformed optional details and inconsistent counts', () => {
+  for (const mutate of [
+    u => u.prompt_tokens_details = null,
+    u => u.completion_tokens_details = [],
+    u => u.prompt_tokens_details.cache_write_tokens = 71,
+    u => u.prompt_tokens_details.cache_write_tokens = Number.MAX_SAFE_INTEGER + 1,
+    u => u.prompt_tokens_details.cached_tokens = null,
+    u => u.prompt_tokens_details.image_tokens = 1,
+    u => u.prompt_tokens_details.text_tokens = 101,
+    u => u.completion_tokens_details.text_tokens = 1.5,
+    u => Object.assign(u.completion_tokens_details, { text_tokens: 19, reasoning_tokens: 2 }),
+    u => u.completion_tokens_details.reasoning_tokens = 21,
+    u => u.completion_tokens_details.rejected_prediction_tokens = 1,
+    u => u.completion_tokens_details.accepted_prediction_tokens = 1,
+    u => u.completion_tokens_details.audio_tokens = 1,
+    u => u.completion_tokens_details.image_tokens = 0
+  ]) {
+    const { usage } = response(); mutate(usage);
+    assert.throws(() => preflight.readOpenAITextUsage(usage, 1200, { allowReasoning: true, requireCachedTokens: false }),
+      /OpenAI (prompt|completion) usage details/);
+  }
+});
+
 test('OpenAI refusals, truncation, alternate models and unsupported response options fail closed', () => {
   for (const mutate of [r => r.model = 'gpt-4o-mini-2099-01-01', r => r.model = 'gpt-4o', r => delete r.model,
     r => r.object = 'chat.completion.chunk', r => r.choices = [], r => r.choices.push(structuredClone(r.choices[0])),
@@ -63,6 +106,7 @@ test('OpenAI refusals, truncation, alternate models and unsupported response opt
     r => r.choices[0].finish_reason = 'tool_calls', r => delete r.choices[0].finish_reason,
     r => r.choices[0].message.refusal = 'Cannot comply', r => r.choices[0].message.content = '',
     r => r.choices[0].message.content = null, r => r.choices[0].message.tool_calls = [],
+    r => r.choices[0].message.annotations = null, r => r.choices[0].message.annotations = [{}],
     r => r.choices[0].message.role = 'user', r => r.unknown = {}, r => r.error = { message: 'unavailable' }]) {
     const r = response(); mutate(r); assert.throws(() => record(request(), r));
   }
