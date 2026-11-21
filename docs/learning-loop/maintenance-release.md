@@ -198,6 +198,29 @@ arguments or unreadable files. No command generates observation signatures or
 owner authorizations. The existing diagnostic `check` and `report` still always
 return 2.
 
+## Offline rehearsal for both release transitions
+
+`tools/maintenance-observed-runner.js` prepares one plan for the activation
+and recovery pairs. It binds the budget and journal directory to the plan
+hash, verifies both preregistrations and the archive and source bytes, and
+exercises the pipeline with fake provider responses. Its image request
+builder uses the release policy and request builders from a verified image.
+The caller supplies the binding between the measured archive and the running
+image. Run the image request builder in an isolated environment.
+
+Store budgets, request and response files, backups, and signed rehearsal
+inputs in a private local directory outside the checkout or in the ignored
+`.tos-guardian-private/` directory. Limit access to the operator. The runner
+names output files by hash, and those files may contain full document text
+and responses.
+
+Run the offline runner and budget tests with the command below. Live provider
+dispatch remains disabled, and the rehearsal produces fixture evidence.
+
+```powershell
+node --test tests/maintenance-observed-runner.test.js tests/maintenance-observed-budget.test.js
+```
+
 ## Verification
 
 ### Captured-source execution and provider preflight
