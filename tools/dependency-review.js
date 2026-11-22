@@ -7,9 +7,9 @@ const { spawnSync } = require('node:child_process');
 const { canonicalJson, checkSeal, isHash, seal } = require('./final-corpus-lib');
 const { localPath, localPaths } = require('./maintenance-local-path');
 const { parseUnambiguousJson } = require('./maintenance-observed-live-transport');
+const { GITHUB, publicRepository, readSource, collectAdvisories } = require('./dependency-advisories');
 
 const REGISTRY = 'https://registry.npmjs.org';
-const ADVISORIES = '/-/npm/v1/security/advisories/bulk';
 const KEYS = '/-/npm/v1/keys';
 const MAX_JSON = 32 * 1024 * 1024;
 const MAX_TARBALL = 128 * 1024 * 1024;
@@ -19,21 +19,6 @@ const UMOCI_SHA256 = 'b51c267ec394499e42c6fde47f240b7b7dba57ea49df0b5acd304378b8
 const NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
 const VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const INSTALLER_SUPPRESSED = ['dev', 'optional', 'devOptional'];
-const MAINTAINER_FINDINGS = [
-  {
-    name: 'express-rate-limit', versions: ['8.7.1', '8.7.4'],
-    id: 'GHSA-cppf-2hm6-mrvm', severity: 'moderate',
-    title: 'Prototype pollution can disable rate limiting',
-    url: 'https://github.com/express-rate-limit/express-rate-limit/security/advisories/GHSA-cppf-2hm6-mrvm',
-  },
-  {
-    name: 'express-rate-limit', versions: ['8.7.1'],
-    id: 'GHSA-j3cq-92fq-qg5f', severity: 'low',
-    title: 'MemoryStore counter can be decremented after its window resets',
-    url: 'https://github.com/express-rate-limit/express-rate-limit/security/advisories/GHSA-j3cq-92fq-qg5f',
-  },
-];
-
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 const sha256 = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const json = bytes => parseUnambiguousJson(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
@@ -182,7 +167,9 @@ function advisory(row, name, source) {
   const url = new URL(row.url);
   requireCondition(url.protocol === 'https:' && !url.username && !url.password, `Invalid advisory source for ${name}`);
   const ghsa = url.pathname.match(/\/(GHSA-[a-z0-9-]+)$/i)?.[1];
-  return { id: ghsa ?? String(row.id), title: row.title, severity: row.severity, url: row.url, source };
+  const id = ghsa ?? String(row.id);
+  return { id: /^GHSA-/i.test(id) ? id.toLowerCase().replace(/^ghsa/, 'GHSA') : id,
+    title: row.title, severity: row.severity, url: row.url, source };
 }
 
 function addSupplement(versions, supplemental, source) {
@@ -220,50 +207,47 @@ async function reviewDependencies({ classification, images, pair, supplemental }
   }
   requireCondition(versions.size <= 200, 'Too many changed dependency versions for one review');
 
+  const sourceChecks = [];
+  const readRegistry = (route, options, parse) => readSource(capture, sourceChecks, 'npm-registry', route, options, parse);
   const packuments = new Map();
-  const keys = versions.size ? await capture(KEYS) : null;
-  const signers = keys && registryKeys(json(keys.bytes));
-  const tarballs = [];
+  const keys = versions.size ? await readRegistry(KEYS, {}, response => ({
+    sha256: response.sha256, signers: registryKeys(json(response.bytes)),
+  })) : null;
+  const tarballs = new Map();
   for (const [id, entry] of versions) {
     const { name, version } = entry;
     if (!packuments.has(name)) {
-      const retained = await capture('/' + encodeURIComponent(name));
-      packuments.set(name, { body: json(retained.bytes), sha256: retained.sha256 });
+      const retained = await readRegistry('/' + encodeURIComponent(name), {}, response => ({
+        body: json(response.bytes), sha256: response.sha256,
+      }));
+      packuments.set(name, retained);
     }
     const packument = packuments.get(name);
-    const signed = verifyManifest(packument.body, entry, signers);
+    if (!packument || !keys) continue;
+    const signed = verifyManifest(packument.body, entry, keys.signers);
     requireCondition(entry.integrity === signed.integrity, `Signed registry integrity disagrees with lock for ${id}`);
-    const tarball = await capture(signed.tarballPath, { tarball: true });
-    const actual = 'sha512-' + crypto.createHash('sha512').update(tarball.bytes).digest('base64');
+    const verified = await readRegistry(signed.tarballPath, { tarball: true }, response => response);
+    if (!verified) continue;
+    const actual = 'sha512-' + crypto.createHash('sha512').update(verified.bytes).digest('base64');
     requireCondition(actual === entry.integrity, `Registry tarball integrity failed for ${id}`);
-    tarballs.push({ path: tarball.path, sha256: tarball.sha256 });
-    const query = { [name]: [version] };
-    const audit = await capture(ADVISORIES, { query });
-    const hits = json(audit.bytes);
-    requireCondition(object(hits) && Object.keys(hits).every(key => key === name) &&
-      (!Object.hasOwn(hits, name) || Array.isArray(hits[name]) && hits[name].length <= 100),
-    `Invalid npm advisory response for ${id}`);
-    for (const row of hits[name] ?? []) {
-      requireCondition(typeof row?.vulnerable_versions === 'string' && row.vulnerable_versions.length > 0 &&
-        row.vulnerable_versions.length <= 500, `Missing npm advisory range for ${id}`);
-      entry.advisories.push({ ...advisory(row, name, 'npm'), range: row.vulnerable_versions });
-    }
+    tarballs.set(id, { path: verified.path, sha256: verified.sha256 });
     Object.assign(entry, { signerKeyIds: signed.signerKeyIds, published: signed.published,
-      packumentSha256: packument.sha256, tarballSha256: tarball.sha256, npmAdvisorySha256: audit.sha256 });
+      packumentSha256: packument.sha256, tarballSha256: verified.sha256 });
   }
-  // Preserve published findings that npm's live feed omits for these exact versions.
-  addSupplement(versions, MAINTAINER_FINDINGS, 'maintainer');
-  addSupplement(versions, supplemental, 'supplemental');
-  if (tarballs.length) {
-    const measured = await inspectTarballs(tarballs);
-    requireCondition(measured.length === versions.size, 'Incomplete registry tarball measurements');
+  if (tarballs.size) {
+    const measured = await inspectTarballs([...tarballs.values()]);
+    requireCondition(measured.length === tarballs.size, 'Incomplete registry tarball measurements');
     let index = 0;
-    for (const entry of versions.values()) {
-      const { name, version, ...files } = measured[index++];
+    for (const id of tarballs.keys()) {
+      const entry = versions.get(id);
+      const { name, version, repository, ...files } = measured[index++];
       requireCondition(name === entry.name && version === entry.version, 'Registry tarball manifest identity mismatch');
-      Object.assign(entry, files);
+      Object.assign(entry, files, { repository: publicRepository(repository) });
     }
   }
+  await collectAdvisories(versions, capture, sourceChecks);
+  addSupplement(versions, supplemental, 'supplemental');
+  const complete = sourceChecks.every(check => check.status === 'complete');
 
   const blockers = [];
   const dependencies = changes.map(({ path: location, before, after }) => {
@@ -271,7 +255,7 @@ async function reviewDependencies({ classification, images, pair, supplemental }
     const previous = evidence(before);
     const next = evidence(after);
     for (const [arm, entry, reference] of [['baseline', before, previous], ['candidate', after, next]]) {
-      if (entry?.installed && (entry.installed.fileTreeSha256 !== reference.fileTreeSha256 ||
+      if (entry?.installed && reference.fileTreeSha256 && (entry.installed.fileTreeSha256 !== reference.fileTreeSha256 ||
           entry.installed.fileCount !== reference.fileCount)) {
         blockers.push({ kind: 'installed-content-mismatch', path: location, arm });
       }
@@ -280,43 +264,60 @@ async function reviewDependencies({ classification, images, pair, supplemental }
     if (after?.installed && (scriptChange || !before?.installed) && Object.keys(next?.scripts ?? {}).length) {
       blockers.push({ kind: 'install-script-changes', path: location });
     }
-    const introduced = [...new Set((next?.advisories ?? []).map(row => row.id))]
-      .filter(id => !before?.installed || !(previous?.advisories ?? []).some(row => row.id === id));
-    if (after?.installed && introduced.length) {
-      blockers.push({ kind: 'new-runtime-advisory', path: location, ids: introduced });
+    const lockOnly = !before?.installed && !after?.installed;
+    const beforeIds = new Set((before?.installed || lockOnly ? previous?.advisories ?? [] : []).map(row => row.id));
+    const afterIds = new Set((after?.installed || lockOnly ? next?.advisories ?? [] : []).map(row => row.id));
+    const introducedAdvisories = complete ? [...afterIds].filter(id => !beforeIds.has(id)).sort() : null;
+    const resolvedAdvisories = complete ? [...beforeIds].filter(id => !afterIds.has(id)).sort() : null;
+    const carriedAdvisories = complete ? [...afterIds].filter(id => beforeIds.has(id)).sort() : null;
+    if (after?.installed && introducedAdvisories?.length) {
+      blockers.push({ kind: 'new-runtime-advisory', path: location, ids: introducedAdvisories });
     }
     return { path: location, change: !before ? 'added' : !after ? 'removed' : 'changed', before, after,
-      scriptChange, introducedAdvisories: introduced };
+      scriptChange, introducedAdvisories, resolvedAdvisories, carriedAdvisories };
   });
   return seal({
-    v: 1, kind: 'dependency-review', pair, measuredAt: new Date().toISOString(),
+    v: 2, kind: 'dependency-review', pair, measuredAt: new Date().toISOString(),
     baseline: { image: classification.baseline.image, lockfileSha256: images[0].lockfileSha256 },
     candidate: { image: classification.candidate.image, lockfileSha256: images[1].lockfileSha256 },
     classificationHash: classification.hash, registry: REGISTRY, registryKeysSha256: keys?.sha256 ?? null,
-    dependencies, versions: [...versions.values()], blockers,
-    status: blockers.length ? 'stopped' : 'awaiting-owner-review', promotionEligible: false,
+    dependencies, versions: [...versions.values()], sourceChecks, blockers,
+    status: !complete ? 'incomplete' : blockers.length ? 'stopped' : 'awaiting-owner-review', promotionEligible: false,
   });
 }
 
-async function registryRequest(route, { query, tarball } = {}) {
-  const url = new URL(route, REGISTRY);
-  requireCondition(url.origin === REGISTRY && !url.username && !url.password && !url.search && !url.hash,
-    'npm registry is the only allowed network destination');
+async function publicRequest(route, { query, tarball, source } = {}) {
+  const github = source === 'github-global' || source === 'github-repository';
+  const origin = github ? GITHUB : REGISTRY;
+  const url = new URL(route, origin);
+  const githubRoute = source === 'github-global' ? url.pathname === '/advisories'
+    : /^\/repos\/[a-z0-9_.-]+\/[a-z0-9_.-]+\/security-advisories$/.test(url.pathname);
+  requireCondition(url.origin === origin && !url.username && !url.password && !url.hash &&
+    (github ? githubRoute && !query && !tarball : !url.search), 'Unexpected public advisory or registry destination');
   const limit = tarball ? MAX_TARBALL : MAX_JSON;
   const response = await fetch(url, {
-    redirect: 'error', signal: AbortSignal.timeout(60_000),
+    redirect: 'manual', signal: AbortSignal.timeout(60_000),
+    ...(github ? { headers: { accept: 'application/vnd.github+json' } } : {}),
     ...(query ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(query) } : {}),
   });
-  requireCondition(response.ok && response.body, `npm registry returned HTTP ${response.status} for ${route}`);
   const chunks = [];
   let length = 0;
-  for await (const chunk of response.body) {
-    length += chunk.length;
-    requireCondition(length <= limit, 'Registry response exceeded size bound');
-    chunks.push(chunk);
+  let readError = null;
+  try {
+    for await (const chunk of response.body ?? []) {
+      requireCondition(length + chunk.length <= limit, 'Source response exceeded size bound');
+      length += chunk.length;
+      chunks.push(chunk);
+    }
+  } catch (error) {
+    readError = error.message;
   }
-  requireCondition(length > 0, 'Empty npm registry response');
-  return Buffer.concat(chunks, length);
+  const headers = {};
+  for (const header of ['content-type', 'link', 'retry-after', 'x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-reset']) {
+    const value = response.headers.get(header);
+    if (value !== null) headers[header] = value;
+  }
+  return { bytes: Buffer.concat(chunks, length), status: response.status, link: headers.link, headers, readError };
 }
 
 function readJson(file) {
@@ -370,18 +371,20 @@ async function main(args) {
   const artifacts = path.join(out, 'evidence');
   fs.mkdirSync(artifacts);
   async function capture(route, options) {
-    const bytes = await registryRequest(route, options);
+    const response = await publicRequest(route, options);
+    const { bytes } = response;
     const hash = sha256(bytes);
     const file = path.join(artifacts, hash);
     if (!fs.existsSync(file)) fs.writeFileSync(file, bytes, { flag: 'wx' });
     else requireCondition(sha256(fs.readFileSync(file)) === hash, 'Registry attachment was modified');
-    return { bytes, sha256: hash, path: wslPath(file) };
+    return { ...response, sha256: hash, path: wslPath(file) };
   }
   const report = await reviewDependencies({ classification, images: inspected, pair, supplemental }, capture,
     tarballs => runInspector('tarballs', tarballs));
   fs.writeFileSync(path.join(out, 'dependency-review.json'), JSON.stringify(report, null, 2) + '\n', { flag: 'wx' });
   console.log(`Dependency review ${pair}: ${report.status} (${report.dependencies.length} changed paths, ${report.versions.length} reviewed versions)`);
-  if (report.blockers.length) process.exitCode = 2;
+  if (report.status === 'incomplete') process.exitCode = 3;
+  else if (report.blockers.length) process.exitCode = 2;
 }
 
 if (require.main === module) {

@@ -235,7 +235,7 @@ def inspect_tarball(path, expected):
     if "binding.gyp" in files and not ({"install", "preinstall"} & lifecycle.keys()):
         lifecycle["implicitInstall"] = "node-gyp rebuild"
     return {"name": manifest["name"], "version": manifest["version"],
-            "scripts": lifecycle, **fingerprint(files)}
+            "scripts": lifecycle, "repository": manifest.get("repository"), **fingerprint(files)}
 
 
 def main():
