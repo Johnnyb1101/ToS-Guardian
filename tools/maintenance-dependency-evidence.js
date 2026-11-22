@@ -535,4 +535,4 @@ function authorizationEvidence(report) {
     promotionEligible: true, diagnosticOnly: false });
 }
 
-module.exports = { TESTS, PROVIDERS, createDependencyProtocol, validateDependencyEvidence, authorizationEvidence, observationMessage };
+module.exports = { TESTS, PROVIDERS, createDependencyProtocol, validateDependencyEvidence, authorizationEvidence, observationMessage, verifySmokeStage };
