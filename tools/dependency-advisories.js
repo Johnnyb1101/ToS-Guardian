@@ -243,4 +243,4 @@ async function collectAdvisories(versions, capture, checks) {
   }
 }
 
-module.exports = { GITHUB, publicRepository, readSource, collectAdvisories };
+module.exports = { GITHUB, publicRepository, readSource, collectAdvisories, npmFindings, githubFindings, nextPage };

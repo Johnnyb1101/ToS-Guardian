@@ -394,4 +394,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { reviewDependencies };
+module.exports = { reviewDependencies, registryKeys, verifyManifest };

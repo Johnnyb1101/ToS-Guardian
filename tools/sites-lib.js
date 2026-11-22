@@ -218,7 +218,7 @@ async function fetchRelease(proxyUrl, configHash, fetchImpl = fetch) {
   return release;
 }
 
-function checkAuthorization(authorization, release, approvalKey, { environment = null, active = null, now = new Date(), maintenanceEvidence = null } = {}) {
+function checkAuthorization(authorization, release, approvalKey, { environment = null, active = null, now = new Date(), maintenanceEvidence = null, dependencyEvidence = null } = {}) {
   const releaseCheck = checkRelease(release);
   if (!releaseCheck.valid) return releaseCheck;
   if (!approvalKey) return { valid: false, reason: 'independent approval key is required' };
@@ -234,7 +234,7 @@ function checkAuthorization(authorization, release, approvalKey, { environment =
   const expires = Date.parse(p.expiresAt);
   if (typeof p.issuedAt !== 'string' || typeof p.expiresAt !== 'string' || !Number.isFinite(issued) || !Number.isFinite(expires) || issued > new Date(now).getTime() || expires <= new Date(now).getTime() || expires <= issued) return { valid: false, reason: 'authorization expired or not yet valid' };
   const evidence = p.evidence;
-  if (!evidence || !['step2-final', 'maintenance-final'].includes(evidence.phase) || evidence.configHash !== release.configHash || evidence.evaluationPassed !== true || evidence.promotionEligible !== true || evidence.diagnosticOnly !== false || ['evidenceHash', 'protocolHash', 'corpusHash'].some(key => !isHash(evidence[key]))) return { valid: false, reason: 'diagnostic evidence cannot authorize release activation' };
+  if (!evidence || !['step2-final', 'maintenance-final', 'maintenance-dependency'].includes(evidence.phase) || evidence.configHash !== release.configHash || evidence.evaluationPassed !== true || evidence.promotionEligible !== true || evidence.diagnosticOnly !== false || ['evidenceHash', 'protocolHash', 'corpusHash'].some(key => !isHash(evidence[key]))) return { valid: false, reason: 'diagnostic evidence cannot authorize release activation' };
   if (evidence.phase === 'maintenance-final') {
     try {
       if (!maintenanceEvidence) throw Error('maintenance-final requires the complete evidence and external trust context');
@@ -247,6 +247,24 @@ function checkAuthorization(authorization, release, approvalKey, { environment =
       const report = M.validateFinalEvidence(protocol, records, { attachments, trustedReviewers, now: new Date(now).toISOString() });
       const expected = M.authorizationEvidence(report);
       if (strictCanonicalJson(expected) !== strictCanonicalJson(evidence)) throw Error('maintenance-final authorization does not bind the recomputed report');
+    } catch (error) { return { valid: false, reason: error.message }; }
+  }
+  if (evidence.phase === 'maintenance-dependency') {
+    try {
+      const requiredKeys = ['protocol', 'evidence', 'attachments', 'trustedReviewers', 'trustedRates'];
+      if (!isObject(dependencyEvidence) || Object.keys(dependencyEvidence).length !== requiredKeys.length || requiredKeys.some(key => !Object.hasOwn(dependencyEvidence, key) || !isObject(dependencyEvidence[key]))) throw Error('maintenance-dependency requires the complete evidence and external trust context');
+      const { protocol, evidence: records, attachments, trustedReviewers, trustedRates } = dependencyEvidence;
+      if (p.expectedGeneration === 0 || protocol.builds?.baseline?.configHash !== p.expectedConfigHash) throw Error('maintenance-dependency protocol must bind the prior release configuration');
+      const ownerKey = trustedReviewers[protocol.reviewers?.owner]?.publicKey;
+      const executionKey = trustedReviewers[protocol.reviewers?.execution]?.publicKey;
+      if (!ownerKey || !samePublicKey(approvalKey, ownerKey)) throw Error('maintenance-dependency evidence owner must match the owner approval key');
+      if (!executionKey || samePublicKey(approvalKey, executionKey)) throw Error('owner approval key must be independent of the maintenance execution reviewer');
+      const M = require('./maintenance-dependency-evidence');
+      // The authorization cannot approve evidence observed after it was issued.
+      const report = M.validateDependencyEvidence(protocol, records, { attachments, trustedReviewers, trustedRates, now: new Date(issued).toISOString() });
+      if (report.baselineConfigHash !== p.expectedConfigHash) throw Error('maintenance-dependency report must bind the prior release configuration');
+      const expected = M.authorizationEvidence(report);
+      if (strictCanonicalJson(expected) !== strictCanonicalJson(evidence)) throw Error('maintenance-dependency authorization does not bind the recomputed report');
     } catch (error) { return { valid: false, reason: error.message }; }
   }
   const payloadKeys = ['v', 'kind', 'authorizationId', 'action', 'environment', 'configHash', 'expectedGeneration', 'expectedConfigHash', 'expectedHeadHash', 'issuedAt', 'expiresAt', 'evidence'];

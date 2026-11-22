@@ -178,7 +178,9 @@ function outputWriter(directory) {
       else if (!fs.readFileSync(file).equals(bytes)) throw new Error('Retained equivalence evidence changed');
       return hash;
     },
-    report(value) {
+    report(value, measurements) {
+      fs.writeFileSync(path.join(target, 'release-classification-measurement.json'),
+        JSON.stringify(measurements, null, 2) + '\n', { flag: 'wx' });
       fs.writeFileSync(path.join(target, 'release-classification.json'), JSON.stringify(value, null, 2) + '\n', { flag: 'wx' });
     },
   };
@@ -238,7 +240,8 @@ async function compareRelease(config, outputDirectory) {
     const recordedProviders = Object.keys(PROVIDERS).filter(provider => replayInputs.some(entry =>
       entry.id.startsWith(provider + ':') && entry.origin === 'recorded' &&
       entry.outcomes.every(outcome => outcome === 'parsed' || outcome === 'fenced-json')));
-    const { hash, ...classification } = classifyRelease({ baseline, candidate, requests, replays, replayInputs });
+    const measurement = { baseline, candidate, requests, replays, replayInputs };
+    const { hash, ...classification } = classifyRelease(measurement);
     const report = seal({ ...classification,
       corpus: corpus.map(({ sourceText, ...entry }) => entry),
       recordedProviders, fixtureCoverage,
@@ -248,7 +251,7 @@ async function compareRelease(config, outputDirectory) {
         fixedPrior: FIXED_PRIOR,
       },
     });
-    writer.report(report);
+    writer.report(report, measurement);
     return report;
   } finally {
     await bridge.close();
@@ -267,4 +270,4 @@ if (require.main === module) main().catch(error => {
   process.exitCode = 1;
 });
 
-module.exports = { compareRelease };
+module.exports = { compareRelease, replayFixtures, requestBytes };
