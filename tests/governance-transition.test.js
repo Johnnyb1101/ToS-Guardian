@@ -43,6 +43,56 @@ test('v1 plans keep their original hash and envelope shape when recovery is opti
  assert.equal(G.verifyEnvelope(signed,original,context(original)).valid,false);
  assert.equal(G.verifyEnvelope(envelope(original),extended,context(extended)).valid,false);
 });
+test('v4 owner approvals bind consecutive epochs, standard and signature purpose',()=>{
+ const standard='maintenance-dependency/v1';
+ const first=G.preparePlan({...input(),fromGovernanceEpoch:0,standard});
+ const i=withRecovery();
+ i.active.governanceEpoch=1;
+ const later=G.preparePlan({...i,fromGovernanceEpoch:1,standard});
+ for(const p of [first,later]){
+  assert.equal(p.v,4);
+  assert.equal(p.nextGovernanceEpoch,p.fromGovernanceEpoch+1);
+  assert.equal(p.standard,standard);
+  const signed=envelope(p,meta,owner.privateKey,G.PURPOSE_V4);
+  assert.equal(signed.payload.v,4);
+  for(const key of ['fromGovernanceEpoch','nextGovernanceEpoch','standard'])assert.equal(signed.payload[key],p[key]);
+  for(const key of ['fromStandard','toStandard'])assert.equal(Object.hasOwn(signed.payload,key),false);
+  assert.equal(G.message(signed.payload),G.PURPOSE_V4+C.canonicalJson(signed.payload));
+  assert.equal(G.verifyEnvelope(signed,p,context(p)).valid,true);
+  assert.equal(G.verifyEnvelope(envelope(p),p,context(p)).valid,false);
+ }
+ assert.equal(G.verifyEnvelope(envelope(first,meta,owner.privateKey,G.PURPOSE_V4),first,{...context(first),active:later.active}).valid,false);
+ assert.equal(G.verifyEnvelope(envelope(G.preparePlan(input())),first,context(first)).valid,false);
+});
+test('v4 plans require recovery after epoch zero and reject mismatched epochs or unknown standards',()=>{
+ const standard='maintenance-dependency/v1';
+ assert.equal(Object.hasOwn(G.preparePlan({...input(),fromGovernanceEpoch:0,standard}),'recovery'),false);
+ const {recovery,...later}=withRecovery();
+ later.active.governanceEpoch=1;
+ assert.throws(()=>G.preparePlan({...later,fromGovernanceEpoch:1,standard}));
+ assert.throws(()=>G.preparePlan({...later,recovery,fromGovernanceEpoch:0,standard}));
+ assert.throws(()=>G.preparePlan({...input(),fromGovernanceEpoch:0,standard:'step2-final/v2'}));
+ const last=withRecovery();
+ last.active.governanceEpoch=Number.MAX_SAFE_INTEGER;
+ assert.throws(()=>G.preparePlan({...last,fromGovernanceEpoch:Number.MAX_SAFE_INTEGER,standard}));
+});
+test('v4 approvals pin the adopted standard and all three complete build manifests',()=>{
+ const i=withRecovery();
+ i.active.governanceEpoch=2;
+ const standard='maintenance-dependency/v1';
+ const p=G.preparePlan({...i,fromGovernanceEpoch:2,standard});
+ const signed=envelope(p,meta,owner.privateKey,G.PURPOSE_V4);
+ for(const changed of [
+  {standard:'maintenance-final/v1'},
+  {baselineManifest:manifest('artifacts/release-build','B revised')},
+  {candidateManifest:manifest('artifacts/release-build','C revised')},
+  {recovery:{...i.recovery,manifest:manifest('artifacts/release-build','R revised')}},
+ ]){
+  const updated=G.preparePlan({...i,fromGovernanceEpoch:2,standard,...changed});
+  assert.notEqual(updated.hash,p.hash);
+  assert.equal(G.verifyEnvelope(signed,updated,context(updated)).valid,false);
+ }
+});
 test('recovery reserves two exactly representable forward generations',()=>{
  const i=withRecovery();
  i.active.generation=Number.MAX_SAFE_INTEGER-2;

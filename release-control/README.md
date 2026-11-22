@@ -72,15 +72,17 @@ state before committing. PostgreSQL retains its automatic `ADMIN` membership
 for the role creator. This trusted installer can administer the roles, while
 ordinary application roles and the controller remain outside the owner role.
 
-Adoption locks authorization ID, registry and the real active-release row. It
-requires the exact unhalted generation/head/configuration and epoch zero, stores
-the approved plan, and advances governance only. It does not activate the candidate.
+Adoption locks the authorization ID, registry, and active release row. It
+requires the exact unhalted snapshot and advances governance by one epoch.
+Version 4 binds the starting epoch, the evidence standard, and a new owner
+signature purpose. Historical version 3 adoption envelopes remain valid from
+epoch zero for the original plan format.
 `installedMigrationManifestHash` identifies the proxy's complete migration file
 inventory; it does not alone prove installed schema. Control SQL is included in
 the verifier measurement and installed SQL definitions are covered by the catalog.
 
-Activation requires epoch one, the adopted baseline/candidate pair, full recomputed
-maintenance-final evidence, independent owner release authorization, a second owner
+Activation requires the adopted epoch and baseline/candidate pair, full evidence
+recomputed under the adopted standard, independent owner authorization, a second owner
 control envelope binding destination/epoch/head/plan/authorization/release/event,
 and a verified online audit event. SQL rechecks state under locks and executes a
 private copy of the legacy validation/publication transaction with maintenance
@@ -96,14 +98,26 @@ a plan with a larger archive. The controller checks for the installed limit befo
 consuming such a plan. The migration retains the recovery function's grants and
 remeasures the reviewed catalog.
 
+Install the repeatable governance migration after the archive limit migration.
+Apply it outside an enclosing transaction so it can select a repeatable read
+snapshot. Set `tos.reviewed_catalog_hash` to the independently reviewed catalog
+after installing the first three migrations. This value must match the existing
+stored catalog pin and the catalog measured under lock. Save the new pin after
+installation. Later adoption requires ledger evidence that the preceding plan
+published its candidate or recovered release. The incoming baseline archive
+must match the published SHA-256 and byte count.
+
 The initial adoption plan may bind one recovery build with its own exact release
 configuration and complete artifact manifest. Its recovery edge starts at the
 activated candidate, uses the same database schema and migration inventory,
 and allows only a change to the server pipeline fingerprint. A recovery attempt
 needs fresh independent owner authorization, a recovery-specific control
 signature, and full maintenance-final evidence for the candidate-to-recovery
-pair. It publishes the declared backup as the next generation in epoch one.
-Plans without a recovery declaration continue to support the initial activation.
+pair when that is the adopted standard. Version 4 also accepts
+`maintenance-dependency/v1` with the complete evidence package and externally
+configured model rates. It publishes the declared backup as the next generation
+in the same epoch. The approved first activation omits a recovery declaration.
+Subsequent version 4 plans require one.
 
 Exact committed retries return the stored result even after expiry. Changed
 content under the same authorization ID fails. A failed transaction leaves the
@@ -135,12 +149,14 @@ directory, the harness uses synthetic build inputs. The optional Supabase CLI
 runs security advisors against the disposable database. Use `-` to supply the
 CLI with synthetic build inputs. `--preflight-only` stops after installation and
 catalog checks (and advisors if supplied), before activation testing.
-`--managed-installer` runs all three migrations through a separate non-superuser
+`--managed-installer` runs all four migrations through a separate non-superuser
 `postgres` login with the observed managed role memberships and public schema
 ownership. It checks that an installation failure rolls back and that temporary
 owner access is gone after every migration. The bootstrap fixture account handles
-test data and ephemeral credentials. Provider-specific event triggers and
-extension behavior require a separate managed-platform rehearsal.
+test data and ephemeral credentials. For WSL, supply the saved production RLS
+function as `--ensure-rls-file=<absolute-path>` in managed-installer mode. The
+harness checks its hash and verifies the trigger while modeling the managed
+role grants. Rehearse hosted behavior under separate approval.
 
 The harness creates a unique marked scratch cluster, binds TCP to loopback only,
 and disables Unix sockets. It uses separate ephemeral SCRAM passwords and checks

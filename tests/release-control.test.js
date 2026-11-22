@@ -1,7 +1,7 @@
 'use strict';
 const assert=require('node:assert/strict'),crypto=require('node:crypto'),path=require('node:path'),fs=require('node:fs');
 const C=require('../tools/final-corpus-lib'),G=require('../tools/governance-transition');
-const {createController,RECOVERY_PURPOSE}=require('../release-control/controller');
+const {createController,PURPOSE,RECOVERY_PURPOSE}=require('../release-control/controller');
 const {createTransport}=require('../release-control/transport');
 const fixture=require('./maintenance-final-fixtures').makeFinalFixture({mode:'observed'});
 const pair=()=>crypto.generateKeyPairSync('ed25519'),owner=pair(),online=pair(),pem=k=>k.export({type:'spki',format:'pem'});
@@ -49,6 +49,59 @@ const signed={payload,signature:crypto.sign(null,Buffer.from(G.message(payload))
   },evidenceContext),/destination or plan mismatch/);
  }
  assert.deepEqual(recoveryCalls,['read_committed','read_state'],'a different destination or plan must not read a receipt');
+ const standard='maintenance-dependency/v1';
+ const {v,kind,nextGovernanceEpoch,fromStandard,toStandard,policyDiff,hash,recovery:recoveryInput,...planInput}=recoveryPlan;
+ const laterActive={...active,governanceEpoch:1,generation:2};
+ const laterPlan=G.preparePlan({...planInput,recovery:recoveryInput,active:laterActive,fromGovernanceEpoch:1,standard});
+ const firstPlan=G.preparePlan({...planInput,fromGovernanceEpoch:0,standard});
+ const versionedCalls=[];
+ let state={destination,active:laterActive,governanceVersion:4,recoveryVersion:1,standard:'maintenance-final/v1',publicationComplete:false};
+ const versioned=reviewedPlan=>createController({
+  ...config,reviewedPlan,trustedRates:{},measureVerifier:()=>reviewedPlan.verifierHash,
+  transport:{rpc(name,args){
+   versionedCalls.push(name);
+   if(name==='read_committed')return null;
+   if(name==='read_state')return state;
+   if(name==='adopt'){
+    assert.deepEqual(args[2],reviewedPlan);
+    return {adopted:true};
+   }
+   throw Error('unexpected publication');
+  }},
+ });
+ const sign=(payload,message)=>({payload,signature:crypto.sign(null,Buffer.from(message),owner.privateKey).toString('base64')});
+ const signAdoption=(reviewedPlan,purpose)=> {
+  const approval=G.payloadFor(reviewedPlan,{...adoption,authorizationId:'fixture_versioned_adoption_01'});
+  return sign(approval,purpose?purpose+C.canonicalJson(approval):G.message(approval));
+ };
+ const later=versioned(laterPlan);
+ await assert.rejects(later.adopt(signAdoption(laterPlan,G.PURPOSE)),/signature/i);
+ assert.deepEqual(versionedCalls,[]);
+ await assert.rejects(later.adopt(signAdoption(laterPlan)),/Previous governance publication is incomplete/);
+ assert.deepEqual(versionedCalls.splice(0),['read_committed','read_state']);
+ state={...state,publicationComplete:true,activeBuild:laterPlan.baselineManifest.files.find(file=>file.path==='artifacts/release-build')};
+ await assert.rejects(versioned(firstPlan).adopt(signAdoption(firstPlan)),/epoch|current state|snapshot/i);
+ assert.deepEqual(versionedCalls.splice(0),['read_committed','read_state']);
+ assert.deepEqual(await later.adopt(signAdoption(laterPlan)),{adopted:true});
+ assert.deepEqual(versionedCalls.splice(0),['read_committed','read_state','adopt']);
+ const installed={
+  ...laterActive,governanceEpoch:laterPlan.nextGovernanceEpoch,
+  installedVerifierHash:laterPlan.verifierHash,installedMigrationManifestHash:laterPlan.migrationManifest.hash,
+ };
+ state={...state,active:installed,standard,planHash:laterPlan.hash,standardDocumentHash:laterPlan.standardDocumentHash,publicationComplete:false};
+ const authorization={payload:{action:'activate',authorizationId:adoption.authorizationId,issuedAt:adoption.issuedAt,expiresAt:adoption.expiresAt,evidence:{phase:'maintenance-final'}}};
+ const event={body:{},hash:C.hashText('publication event')};
+ const approval={
+  v:1,kind:'maintenance-control',authorizationId:authorization.payload.authorizationId,
+  issuedAt:authorization.payload.issuedAt,expiresAt:authorization.payload.expiresAt,destination,expected:installed,
+  planHash:laterPlan.hash,authorizationHash:C.digest(authorization),releaseHash:C.digest(candidate),eventHash:event.hash,
+ };
+ const request={controlEnvelope:sign(approval,PURPOSE+C.canonicalJson(approval)),authorization,event,release:candidate};
+ await assert.rejects(later.activate(request,evidenceContext),/Evidence phase does not match the adopted governance standard/);
+ assert.deepEqual(versionedCalls.splice(0),['read_committed','read_state']);
+ state={...state,standard:'maintenance-final/v1'};
+ await assert.rejects(later.activate(request,evidenceContext),/Installed governance standard mismatch/);
+ assert.deepEqual(versionedCalls.splice(0),['read_committed','read_state']);
  assert.throws(()=>createController({...config,onlinePublicKeys:[pem(owner.publicKey)]}),/Independent/);
  assert.throws(()=>createController({...config,destination:{...destination,databaseId:'wrong'}}),/destination/);
  const {hash:ignored,...body}=plan;const missingArtifact=C.seal({...body,candidateManifest:manifest('new.js')});
@@ -73,4 +126,5 @@ const signed={payload,signature:crypto.sign(null,Buffer.from(G.message(payload))
   assert.ok(dispatched.args.includes('-X'));assert.ok(!dispatched.options.input.includes('untrusted'));
  }finally{cp.spawnSync=spawn;delete require.cache[moduleId];}
  console.log('PASS controller measurement/key/destination/trust failures before dispatch; fixed TLS transport inputs and RPC allowlist');
+ console.log('PASS v4 adoption fences old epochs, unfinished publication and legacy signatures; publication fences mismatched standards and evidence phases');
 })().catch(e=>{console.error(e);process.exitCode=1;});
