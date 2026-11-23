@@ -6,6 +6,8 @@ const {checkRelease}=require('./sites-lib');
 const {localPath}=require('./maintenance-local-path');
 const {MAX_BUILD_BYTES}=require('./maintenance-final-evidence');
 const PURPOSE='tos-guardian.governance-transition.v3\n';
+const PURPOSE_V4='tos-guardian.governance-transition.v4\n';
+const STANDARDS=['maintenance-final/v1','maintenance-dependency/v1'];
 const HASH=/^[a-f0-9]{64}$/;
 const BUILD_ARCHIVE='artifacts/release-build';
 const MAX_FILE_BYTES=64000000;
@@ -71,14 +73,22 @@ function differences(a,b,p=''){
 function checkDestination(d){exact(d,['environment','projectId','serviceId','databaseId'],'destination');if(typeof d.environment!=='string'||!/^[a-z][a-z0-9-]{0,63}$/.test(d.environment))throw Error('Invalid environment');for(const k of ['projectId','serviceId','databaseId'])identifier(d[k],k);}
 function checkActive(a){
  exact(a,['generation','configHash','headHash','governanceEpoch','governanceRegistryId','governanceHeadHash','installedVerifierHash','installedMigrationManifestHash','halted'],'active snapshot');
- if(!Number.isSafeInteger(a.generation)||a.generation<1||a.governanceEpoch!==0||a.halted!==false)throw Error('Initial governance transition requires existing unhalted epoch zero state');
+ if(!Number.isSafeInteger(a.generation)||a.generation<1||!Number.isSafeInteger(a.governanceEpoch)||a.governanceEpoch<0||a.halted!==false)throw Error('Governance transition requires existing unhalted state');
  hash(a.configHash,'active configuration');hash(a.headHash,'active head');identifier(a.governanceRegistryId,'governance registry');for(const k of ['governanceHeadHash','installedVerifierHash','installedMigrationManifestHash'])hash(a[k],k);
 }
 function validatePlan(plan){
  const optionalFields=plan&&Object.hasOwn(plan,'recovery')?['recovery']:[];
- exact(plan,['v','kind','destination','active','nextGovernanceEpoch','fromStandard','toStandard','standardDocumentHash','verifierHash','ownerKeyFingerprint','baseline','candidate','baselineManifest','candidateManifest','migrationManifest','policyDiff','hash',...optionalFields],'plan');
- if(plan.v!==1||plan.kind!=='governance-transition-plan'||plan.nextGovernanceEpoch!==1||plan.fromStandard!=='step2-final/v2'||plan.toStandard!=='maintenance-final/v1')throw Error('Unsupported governance transition');
+ const repeatable=plan?.v===4;
+ const versionFields=repeatable?['fromGovernanceEpoch','standard']:['fromStandard','toStandard'];
+ exact(plan,['v','kind','destination','active','nextGovernanceEpoch',...versionFields,'standardDocumentHash','verifierHash','ownerKeyFingerprint','baseline','candidate','baselineManifest','candidateManifest','migrationManifest','policyDiff','hash',...optionalFields],'plan');
  checkDestination(plan.destination);checkActive(plan.active);
+ if(plan.kind!=='governance-transition-plan')throw Error('Unsupported governance transition');
+ if(repeatable){
+  const epoch=plan.active.governanceEpoch;
+  if(plan.fromGovernanceEpoch!==epoch||epoch>=Number.MAX_SAFE_INTEGER||plan.nextGovernanceEpoch!==epoch+1||!STANDARDS.includes(plan.standard))throw Error('Unsupported governance transition');
+  if(epoch>0&&!optionalFields.length)throw Error('Subsequent governance transitions require recovery');
+ }else if(plan.v!==1||plan.active.governanceEpoch!==0||plan.nextGovernanceEpoch!==1||plan.fromStandard!=='step2-final/v2'||plan.toStandard!=='maintenance-final/v1')throw Error('Unsupported governance transition');
+ if(!optionalFields.length&&plan.active.generation>=Number.MAX_SAFE_INTEGER)throw Error('Insufficient release generations for adoption and publication');
  hash(plan.standardDocumentHash,'standard document');hash(plan.verifierHash,'verifier');hash(plan.ownerKeyFingerprint,'owner key fingerprint');
  for(const r of [plan.baseline,plan.candidate]){rejectSeparatorKeys(r.config);const c=checkRelease(r);if(!c.valid)throw Error('Invalid release: '+c.reason);hash(r.config.policy.versions.serverPipeline,'serverPipeline');for(const key of ['storageSchema','baselineSchema','migrationManifest'])if(Object.hasOwn(r.config.policy.versions,key))hash(r.config.policy.versions[key],key);}
  if(plan.active.configHash!==plan.baseline.configHash||plan.baseline.configHash===plan.candidate.configHash)throw Error('Baseline/candidate binding mismatch');
@@ -109,16 +119,23 @@ function validatePlan(plan){
 }
 function preparePlan(input){
  const optionalFields=input&&Object.hasOwn(input,'recovery')?['recovery']:[];
- exact(input,['destination','active','standardDocumentHash','verifierHash','ownerKeyFingerprint','baseline','candidate','baselineManifest','candidateManifest','migrationManifest',...optionalFields],'plan input');
- const p=seal({v:1,kind:'governance-transition-plan',...input,nextGovernanceEpoch:1,fromStandard:'step2-final/v2',toStandard:'maintenance-final/v1',policyDiff:differences(input.baseline.config,input.candidate.config)});
+ const repeatable=input&&Object.hasOwn(input,'fromGovernanceEpoch');
+ const versionFields=repeatable?['fromGovernanceEpoch','standard']:[];
+ exact(input,['destination','active','standardDocumentHash','verifierHash','ownerKeyFingerprint','baseline','candidate','baselineManifest','candidateManifest','migrationManifest',...versionFields,...optionalFields],'plan input');
+ const transition=repeatable?{v:4,nextGovernanceEpoch:input.fromGovernanceEpoch+1}:{v:1,nextGovernanceEpoch:1,fromStandard:'step2-final/v2',toStandard:'maintenance-final/v1'};
+ const p=seal({...transition,kind:'governance-transition-plan',...input,policyDiff:differences(input.baseline.config,input.candidate.config)});
  validatePlan(p);return p;
 }
 function payloadFor(plan,{authorizationId,issuedAt,expiresAt}){
  validatePlan(plan);
- return {v:3,kind:'governance-transition',action:'adopt-maintenance-standard',authorizationId,issuedAt,expiresAt,planHash:plan.hash,destination:plan.destination,expected:plan.active,nextGovernanceEpoch:1,fromStandard:plan.fromStandard,toStandard:plan.toStandard,baselineConfigHash:plan.baseline.configHash,candidateConfigHash:plan.candidate.configHash,baselineManifestHash:plan.baselineManifest.hash,candidateManifestHash:plan.candidateManifest.hash,migrationManifestHash:plan.migrationManifest.hash,standardDocumentHash:plan.standardDocumentHash,verifierHash:plan.verifierHash,ownerKeyFingerprint:plan.ownerKeyFingerprint};
+ const transition=plan.v===4?{fromGovernanceEpoch:plan.fromGovernanceEpoch,standard:plan.standard}:{fromStandard:plan.fromStandard,toStandard:plan.toStandard};
+ return {v:plan.v===4?4:3,kind:'governance-transition',action:'adopt-maintenance-standard',authorizationId,issuedAt,expiresAt,planHash:plan.hash,destination:plan.destination,expected:plan.active,nextGovernanceEpoch:plan.nextGovernanceEpoch,...transition,baselineConfigHash:plan.baseline.configHash,candidateConfigHash:plan.candidate.configHash,baselineManifestHash:plan.baselineManifest.hash,candidateManifestHash:plan.candidateManifest.hash,migrationManifestHash:plan.migrationManifest.hash,standardDocumentHash:plan.standardDocumentHash,verifierHash:plan.verifierHash,ownerKeyFingerprint:plan.ownerKeyFingerprint};
 }
 function keyIdentity(pem){const k=crypto.createPublicKey(pem);if(k.asymmetricKeyType!=='ed25519')throw Error('Owner key must be Ed25519');return k.export({type:'spki',format:'der'}).toString('hex');}
-function message(payload){return PURPOSE+canonicalJson(payload);}
+function message(payload){
+ if(payload?.v!==3&&payload?.v!==4)throw Error('Unsupported governance authorization version');
+ return (payload.v===4?PURPOSE_V4:PURPOSE)+canonicalJson(payload);
+}
 function verifyEnvelope(envelope,plan,context){
  try{
   validatePlan(plan);
@@ -142,4 +159,4 @@ function verifyEnvelope(envelope,plan,context){
   return {valid:true,envelopeIntegrityVerified:true,...RESULTS,authorizationHash:digest(envelope),planHash:plan.hash,limitations:['Only caller-supplied snapshot and consumed-ID view checked; no atomic consumption','No database privilege isolation or anti-downgrade enforcement','Manifests bind declared/captured bytes, not deployed provenance or completeness','No report passes, signing, production migration, deployment or activation']};
  }catch(e){return {valid:false,envelopeIntegrityVerified:false,...RESULTS,reason:e.message};}
 }
-module.exports={PURPOSE,RESULTS,MAX_FILE_BYTES,MAX_BUILD_BYTES,captureManifest,checkManifest,differences,preparePlan,validatePlan,payloadFor,message,verifyEnvelope};
+module.exports={PURPOSE,PURPOSE_V4,RESULTS,MAX_FILE_BYTES,MAX_BUILD_BYTES,captureManifest,checkManifest,differences,preparePlan,validatePlan,payloadFor,message,verifyEnvelope};

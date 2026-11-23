@@ -146,6 +146,19 @@ function imageBridge(settings, input, approval) {
       clearTimeout(timer);
     }
   }
+  async function measure(digest, action, input, field) {
+    const image = images.find(item => item.sha256 === digest);
+    if (!image) throw new Error('Image helper cannot measure an unapproved build');
+    const envelope = { archiveSha256: digest };
+    if (action) envelope.action = action;
+    if (input !== undefined) envelope.input = input;
+    const result = await exchange(envelope, action === 'inventory' ? 60000 : 20000);
+    if (!exact(result, ['archiveSha256', 'manifestDigest', field]) ||
+        result.archiveSha256 !== digest || result.manifestDigest !== image.manifestDigest) {
+      throw new Error('Image helper returned a mismatched build');
+    }
+    return result[field];
+  }
   return {
     async ready() {
       const reply = await exchange({ images, umociPath: settings.umociPath, umociSha256: approval.umociSha256,
@@ -154,12 +167,16 @@ function imageBridge(settings, input, approval) {
       if (!exact(reply, ['ready']) || !same(reply.ready, expected)) throw new Error('Image helper could not verify the approved archive bindings');
     },
     async shape(input) {
-      const digest = input.build.artifact.sha256;
-      const image = images.find(item => item.sha256 === digest);
-      const result = await exchange({ archiveSha256: digest, input }, 20000);
-      if (!exact(result, ['archiveSha256', 'manifestDigest', 'request']) || result.archiveSha256 !== digest ||
-          !image || result.manifestDigest !== image.manifestDigest) throw new Error('Image helper returned a mismatched build');
-      return result.request;
+      return measure(input.build.artifact.sha256, null, input, 'request');
+    },
+    async inventory(digest) {
+      return measure(digest, 'inventory', undefined, 'inventory');
+    },
+    async shapeOffline(input) {
+      return measure(input.build.artifact.sha256, 'shape', input, 'request');
+    },
+    async replay(digest, input) {
+      return measure(digest, 'replay', input, 'replay');
     },
     async close() {
       child.stdin.end();
@@ -205,4 +222,4 @@ async function runObservedLive(options, readCredential) {
   }
 }
 
-module.exports = { approvalMessage, liveJournalDirectory, runObservedLive };
+module.exports = { approvalMessage, imageBridge, liveJournalDirectory, runObservedLive };

@@ -2,6 +2,8 @@
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const { createHash } = require('node:crypto');
+const { CHECKPOINT_E_SCOPE_HASH, CHECKPOINT_E_SMOKE_CAP } = require('../tools/maintenance-dependency-smoke-policy');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
@@ -53,6 +55,50 @@ test('preflight seals a defensive copy and rounds each token charge up', () => {
 if (process.platform !== 'win32') {
   test('journal rejects unverified platforms', () => assert.throws(() => openObservedBudget(os.tmpdir(), plan), /Windows/));
 } else {
+  test('one recovery preserves incident bytes and binds the retried first request across restart', t => {
+    const { dir } = fixture(t);
+    const recoveryPlan = createObservedBudgetPlan({
+      ...input(), approvalId: 'dep-smoke-live-' + CHECKPOINT_E_SCOPE_HASH, limitMicrodollars: CHECKPOINT_E_SMOKE_CAP,
+    });
+    const file = path.join(dir, `maintenance-observed-budget-${recoveryPlan.approvalId}.jsonl`);
+    let budget = openObservedBudget(dir, recoveryPlan);
+    budget.reserve('first', requestHash);
+    budget.fail('first');
+    const incident = fs.readFileSync(file);
+    const tail = JSON.parse(incident.toString().trimEnd().split('\n').at(-1));
+    const proof = {
+      journalHash: createHash('sha256').update(incident).digest('hex'), journalTailHash: tail.hash,
+      requestHash, authorizationHash: digest('test authorization'),
+    };
+    for (const key of Object.keys(proof)) {
+      assert.throws(() => budget.recoverBeforeDispatch({ ...proof, [key]: 'invalid' }), /recovery proof/);
+      if (key !== 'authorizationHash') {
+        assert.throws(() => budget.recoverBeforeDispatch({ ...proof, [key]: digest('other') }), /recovery proof/);
+      }
+    }
+    assert.deepEqual(fs.readFileSync(file), incident);
+    budget.recoverBeforeDispatch(proof);
+    assert.deepEqual(fs.readFileSync(file).subarray(0, incident.length), incident);
+    budget.close();
+    budget = openObservedBudget(dir, recoveryPlan);
+    assert.deepEqual(budget.snapshot().recovery, proof);
+    assert.deepEqual(budget.snapshot().attempts, []);
+    assert.throws(() => budget.recoverBeforeDispatch(proof), /recovery proof/);
+    assert.throws(() => budget.reserve('first', digest('changed')), /Recovered request/);
+    budget.reserve('first', requestHash);
+    budget.fail('first');
+    assert.throws(() => budget.recoverBeforeDispatch(proof), /recovery proof/);
+    budget.close();
+    budget = openObservedBudget(dir, recoveryPlan);
+    assert.equal(budget.snapshot().halted, true);
+    assert.equal(budget.snapshot().attempts.length, 1);
+    budget.close();
+    const records = fs.readFileSync(file, 'utf8').trimEnd().split('\n').map(line => JSON.parse(line));
+    const tampered = seal({ sequence: 3, previous: tail.hash, event: { ...records[3].event, journalHash: digest('tampered') } });
+    fs.writeFileSync(file, [...records.slice(0, 3), tampered].map(record => canonicalJson(record) + '\n').join(''));
+    assert.throws(() => openObservedBudget(dir, recoveryPlan), /recovery proof/);
+  });
+
   test('all planned funds remain reserved and the exact request persists across restart', t => {
     const { dir } = fixture(t);
     let budget = openObservedBudget(dir, plan);

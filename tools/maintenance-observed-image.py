@@ -1,4 +1,4 @@
-"""Verify approved OCI archives and shape requests inside their offline runtimes."""
+"""Verify approved OCI archives and inspect their offline files and runtimes."""
 
 import ctypes
 import errno
@@ -24,6 +24,8 @@ MAX_ARCHIVE = 1_000_000_000
 MAX_UNCOMPRESSED = 8_000_000_000
 HASH = re.compile(r"[0-9a-f]{64}")
 EXEC_DIRECTORY = re.compile(r"/[A-Za-z0-9_./+-]+")
+PROVIDERS = ("anthropic", "openai")
+STAGES = ("analyzer", "critic", "judge")
 EOF = object()
 BUILDER_MOUNT = "/.tos-observed-builder"
 BUILDER_FILES = {
@@ -44,7 +46,7 @@ UNSHARE = ["/usr/bin/unshare", "--mount", "--propagation", "private", "--net",
 NODE_SCRIPT = """
 const fs = require('node:fs');
 const path = require('node:path');
-const { createImageRequestBuilder } =
+const { createImageRequestBuilder, replayImageResponse } =
   require('/.tos-observed-builder/tools/maintenance-observed-runner.js');
 const build = createImageRequestBuilder('/app');
 if (process.argv[1] === 'probe') {
@@ -55,7 +57,8 @@ if (process.argv[1] === 'probe') {
   process.stdout.write('true');
 } else {
   const input = JSON.parse(fs.readFileSync(0, 'utf8'));
-  process.stdout.write(JSON.stringify(build(input)));
+  const result = process.argv[1] === 'replay' ? replayImageResponse('/app', input) : build(input);
+  process.stdout.write(JSON.stringify(result));
 }
 """
 
@@ -297,6 +300,68 @@ def prepare_image(approved, scratch, builder, umoci):
     return rootfs, node_path
 
 
+def image_inventory(rootfs):
+    app = rootfs / "app"
+    files = []
+    packages = []
+
+    def directories(parent):
+        for child in parent.iterdir():
+            if not child.name.startswith("."):
+                require(not child.is_symlink(), "Unexpected installed package directory link")
+                if child.is_dir():
+                    yield child
+
+    def installed(modules):
+        for directory in directories(modules):
+            candidates = directories(directory) if directory.name.startswith("@") else (directory,)
+            for package in candidates:
+                manifest = package / "package.json"
+                with open_regular(manifest) as stream:
+                    raw = stream.read(MAX_METADATA + 1)
+                require(len(raw) <= MAX_METADATA, "Package manifest exceeded its size bound")
+                record = parse_json(raw)
+                require(isinstance(record, dict) and all(isinstance(record.get(key), str)
+                        and record[key] for key in ("name", "version")), "Invalid installed package manifest")
+                packages.append({"path": package.relative_to(app).as_posix(), "name": record["name"],
+                                 "version": record["version"]})
+                nested = package / "node_modules"
+                require(not nested.is_symlink(), "Unexpected nested node_modules link")
+                if nested.is_dir():
+                    installed(nested)
+
+    def walk_error(error):
+        raise error
+
+    for parent, dirs, names in os.walk(app, onerror=walk_error):
+        directory = Path(parent)
+        for name in dirs[:]:
+            item = directory / name
+            if item.is_symlink():
+                dirs.remove(name)
+                names.append(name)
+            elif name == "node_modules":
+                dirs.remove(name)
+                installed(item)
+        for name in names:
+            item = directory / name
+            mode = item.lstat().st_mode
+            if stat.S_ISLNK(mode):
+                require(name != "node_modules", "Unexpected node_modules link")
+                # Record the link itself, even when its target is absent or outside /app.
+                target = os.readlink(os.fsencode(item))
+                kind, size, digest = "symlink", len(target), hashlib.sha256(target).hexdigest()
+            else:
+                kind = "file"
+                with open_regular(item) as stream:
+                    size, digest = digest_stream(stream, MAX_UNCOMPRESSED)
+            files.append({"path": item.relative_to(app).as_posix(), "kind": kind,
+                          "mode": stat.S_IMODE(mode), "bytes": size, "sha256": digest})
+
+    return {"files": sorted(files, key=lambda item: item["path"]),
+            "packages": sorted(packages, key=lambda item: item["path"])}
+
+
 def enter_image(rootfs, builder, node_path, mode):
     target = rootfs + BUILDER_MOUNT
     for command in (["--bind", rootfs, rootfs], ["--bind", builder, target],
@@ -359,22 +424,44 @@ def serve():
             ready.append({"sha256": sha, "manifestDigest": entry["manifestDigest"]})
         send({"ready": ready})
         while (message := read_line()) is not EOF:
-            require(exact(message, ("archiveSha256", "input")) and bare_hash(message["archiveSha256"])
+            require(isinstance(message, dict) and bare_hash(message.get("archiveSha256"))
                     and message["archiveSha256"] in prepared, "Unapproved image request")
             sha = message["archiveSha256"]
             entry = images[sha]
+            reply = {"archiveSha256": sha, "manifestDigest": entry["manifestDigest"]}
+            rootfs, node_path = prepared[sha]
+            action = message.get("action")
+            if action == "inventory":
+                require(exact(message, ("archiveSha256", "action")), "Invalid image inventory request")
+                send({**reply, "inventory": image_inventory(rootfs)})
+                continue
+            if action == "replay":
+                require(exact(message, ("archiveSha256", "action", "input"))
+                        and exact(message["input"], ("provider", "body"))
+                        and message["input"]["provider"] in PROVIDERS
+                        and isinstance(message["input"]["body"], str), "Invalid image response replay")
+                replay = image_process(rootfs, builder, node_path, "replay", json_bytes(message["input"]))
+                require(exact(replay, ("outcome", "parsed", "usage")), "Invalid image replay result")
+                send({**reply, "replay": replay})
+                continue
+            legacy = exact(message, ("archiveSha256", "input"))
+            require(legacy or (action == "shape" and exact(message, ("archiveSha256", "action", "input"))),
+                    "Invalid image request action")
             request_input = message["input"]
-            require(exact(request_input, ("stage", "build", "buildHash", "sourceUrl", "sourceText",
-                                          "sourceHash", "prior"))
-                    and request_input["stage"] in ("analyzer", "critic", "judge")
+            keys = ("stage", "build", "buildHash", "sourceUrl", "sourceText", "sourceHash", "prior")
+            require(exact(request_input, keys if legacy else (*keys, "provider"))
+                    and request_input["stage"] in (STAGES if legacy else (*STAGES, "escalation"))
+                    and (legacy or request_input["provider"] in PROVIDERS)
                     and isinstance(request_input["build"], dict)
                     and request_input["build"].get("artifact") == {
                         "sha256": sha, "bytes": entry["bytes"],
                     }, "Request build identity did not match the approved image")
-            rootfs, node_path = prepared[sha]
             request = image_process(rootfs, builder, node_path, "shape", json_bytes(request_input))
-            require(exact(request, ("url", "body")), "Invalid shaped image request")
-            send({"archiveSha256": sha, "manifestDigest": entry["manifestDigest"], "request": request})
+            require(exact(request, ("url", "body") if legacy else ("url", "headers", "body"))
+                    and isinstance(request["url"], str)
+                    and (legacy or (isinstance(request["headers"], dict) and isinstance(request["body"], str))),
+                    "Invalid shaped image request")
+            send({**reply, "request": request})
 
 
 if __name__ == "__main__":
