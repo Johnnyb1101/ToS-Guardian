@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('node:fs');
+const { createHash } = require('node:crypto');
 const path = require('node:path');
 const { canonicalJson, digest, isHash, seal } = require('./final-corpus-lib');
 const { localPath } = require('./maintenance-local-path');
@@ -8,6 +9,10 @@ const { localPath } = require('./maintenance-local-path');
 const PLAN_KEYS = ['approvalId', 'planHash', 'limitMicrodollars', 'overheadMicrodollars', 'calls'];
 const CALL_KEYS = ['id', 'maxInputTokens', 'maxOutputTokens', 'inputMicrodollarsPerMillion', 'outputMicrodollarsPerMillion'];
 const USAGE_KEYS = ['inputTokens', 'outputTokens'];
+const RECOVERY_KEYS = ['journalHash', 'journalTailHash', 'requestHash', 'authorizationHash'];
+// The observed builder ships without the host smoke-policy module.
+const RECOVERY_APPROVAL_ID = 'dep-smoke-live-d6e429083b0d745526b9ed42e80f6e4c0acd2fe9a131637c85b5804d3b4b540a';
+const RECOVERY_CAP = 6_080_000;
 const JOURNAL_MAX_BYTES = 10000000;
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 const exact = (value, keys) => value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -59,6 +64,7 @@ class ObservedBudget {
   #plan;
   #attempts = [];
   #halted = false;
+  #recovery;
   #fd;
   #lockFd;
   #lock;
@@ -98,7 +104,10 @@ class ObservedBudget {
   #replay() {
     const stat = fs.fstatSync(this.#fd);
     if (!stat.isFile() || stat.nlink !== 1 || stat.size > JOURNAL_MAX_BYTES) throw new Error('Invalid observed budget journal file');
-    const bytes = fs.readFileSync(this.#fd, 'utf8');
+    const raw = fs.readFileSync(this.#fd);
+    const bytes = raw.toString('utf8');
+    if (!raw.equals(Buffer.from(bytes))) throw new Error('Invalid observed journal encoding');
+    let prefixBytes = 0;
     if (!bytes.endsWith('\n')) throw new Error('Incomplete observed budget journal');
     for (const line of bytes.slice(0, -1).split('\n')) {
       const record = JSON.parse(line);
@@ -110,11 +119,16 @@ class ObservedBudget {
       const { event } = record;
       if (this.#sequence === 0) {
         if (canonicalJson(event) !== canonicalJson(this.#header())) throw new Error('Observed budget plan mismatch');
+      } else if (event?.type === 'recover-before-dispatch') {
+        const { type, ...proof } = event;
+        this.#checkRecovery(proof, raw.subarray(0, prefixBytes));
+        this.#applyRecovery(proof);
       } else {
         this.#apply(event);
       }
       this.#previous = record.hash;
       this.#sequence++;
+      prefixBytes += Buffer.byteLength(line) + 1;
     }
     if (this.#pending()) throw new Error('Unresolved observed attempt requires reconciliation');
   }
@@ -153,6 +167,7 @@ class ObservedBudget {
     if (this.#pending()) throw new Error('Unresolved observed attempt');
     const call = this.#plan.calls[this.#attempts.length];
     if (!call || call.id !== id || !isHash(requestHash)) throw new Error('Next planned observed call and exact request hash required');
+    if (this.#recovery && !this.#attempts.length && this.#recovery.requestHash !== requestHash) throw new Error('Recovered request hash mismatch');
     return call;
   }
 
@@ -190,6 +205,38 @@ class ObservedBudget {
       return;
     }
     throw new Error('Unsupported observed budget journal event');
+  }
+
+  #checkRecovery(proof, prefix) {
+    if (!exact(proof, RECOVERY_KEYS) || !RECOVERY_KEYS.every(key => isHash(proof[key]))
+        || this.#plan.approvalId !== RECOVERY_APPROVAL_ID || this.#plan.limitMicrodollars !== RECOVERY_CAP
+        || this.#sequence !== 3 || this.#recovery || !this.#halted || this.#attempts.length !== 1
+        || this.#attempts[0].status !== 'unknown-cost' || this.#attempts[0].requestHash !== proof.requestHash
+        || this.#previous !== proof.journalTailHash || createHash('sha256').update(prefix).digest('hex') !== proof.journalHash) {
+      throw new Error('Exact failed first Checkpoint E reservation and recovery proof required');
+    }
+  }
+
+  #applyRecovery(proof) {
+    this.#recovery = proof;
+    this.#attempts.pop();
+    this.#halted = false;
+  }
+
+  recoverBeforeDispatch(input) {
+    this.#ready();
+    const proof = structuredClone(input);
+    const size = fs.fstatSync(this.#fd).size;
+    if (size > JOURNAL_MAX_BYTES) throw new Error('Invalid observed budget journal size');
+    const bytes = Buffer.alloc(size);
+    for (let offset = 0; offset < size;) {
+      const read = fs.readSync(this.#fd, bytes, offset, size - offset, offset);
+      if (!read) throw new Error('Incomplete observed budget journal');
+      offset += read;
+    }
+    this.#checkRecovery(proof, bytes);
+    this.#append({ type: 'recover-before-dispatch', ...proof });
+    this.#applyRecovery(proof);
   }
 
   reserve(id, requestHash) {
@@ -230,6 +277,7 @@ class ObservedBudget {
       reservedMicrodollars: this.#plan.totalMicrodollars,
       halted: this.#halted,
       attempts: structuredClone(this.#attempts),
+      ...(this.#recovery && { recovery: structuredClone(this.#recovery) }),
     };
   }
 

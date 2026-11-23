@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const fs = require('node:fs');
 const C = require('./final-corpus-lib');
 const { observationMessage } = require('./maintenance-dependency-evidence');
 const { parseUnambiguousJson } = require('./maintenance-observed-live-transport');
@@ -9,9 +10,15 @@ const { CHECKPOINT_E_SMOKE_CAP } = require('./maintenance-dependency-smoke-polic
 
 const DAY = 24 * 60 * 60 * 1000;
 const PURPOSE = 'tos-guardian.maintenance-dependency-smoke-live-approval.v1\n';
+const RECOVERY_PURPOSE = 'tos-guardian.maintenance-dependency-smoke-recovery.v1\n';
 const approvalFields = ['v', 'kind', 'protocolHash', 'budgetHash', 'maximumMicrodollars',
   'preregistrationHash', 'accounts', 'executionKeyFingerprint', 'journalDirectory',
   'outputDirectory', 'issuedAt', 'expiresAt', 'billingEvidence', 'hash'];
+const recoveryFields = ['v', 'kind', 'incident', 'successorApprovalHash', 'launcherCommit', 'hash'];
+const incidentFields = ['priorApprovalHash', 'budgetHash', 'journalHash', 'journalTailHash', 'callId', 'requestHash',
+  'failureEvidence', 'dispatchLog'];
+const recoveryScopeFields = ['protocolHash', 'budgetHash', 'maximumMicrodollars', 'preregistrationHash',
+  'accounts', 'executionKeyFingerprint', 'journalDirectory'];
 const exact = (value, keys) => value !== null && typeof value === 'object' && !Array.isArray(value) &&
   Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -23,8 +30,23 @@ function requireThat(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function sameLocalDirectory(left, right) {
+  if (left.toLowerCase() === right.toLowerCase()) return true;
+  const options = { bigint: true, throwIfNoEntry: false };
+  const first = fs.statSync(left, options);
+  const second = fs.statSync(right, options);
+  if (!first || !second) return false;
+  requireThat(first.isDirectory() && second.isDirectory() && first.ino !== 0n && second.ino !== 0n,
+    'Could not verify local directory identities');
+  return first.dev === second.dev && first.ino === second.ino;
+}
+
 function dependencySmokeApprovalMessage(payload) {
   return PURPOSE + C.canonicalJson(payload);
+}
+
+function dependencySmokeRecoveryMessage(payload) {
+  return RECOVERY_PURPOSE + C.canonicalJson(payload);
 }
 
 function verifyEnvelope(envelope, fields, publicKey, message, label) {
@@ -99,11 +121,36 @@ function verifyDependencySmokeApproval({ approval, operatorTrust, protocol, prer
   requireThat(p.outputDirectory === outputDirectory && p.journalDirectory === operatorTrust.journalDirectory,
     'Signed output or journal directory mismatch');
   const [output, journal] = localPaths([outputDirectory, operatorTrust.journalDirectory]);
-  requireThat(p.outputDirectory === output && p.journalDirectory === journal && output.toLowerCase() !== journal.toLowerCase(),
+  requireThat(p.outputDirectory === output && p.journalDirectory === journal && !sameLocalDirectory(output, journal),
     'Distinct canonical local output and journal directories required');
   Object.freeze(p.accounts);
   Object.freeze(p.billingEvidence);
   return Object.freeze(p);
 }
 
-module.exports = { dependencySmokeApprovalMessage, verifyDependencySmokeApproval };
+function verifyDependencySmokeRecovery({ recovery, priorApproval, successor, operatorTrust, expectedIncident,
+  failureEvidenceBytes, dispatchLogBytes, launcherCommit }) {
+  const owner = publicKey(operatorTrust.ownerPublicKey);
+  const authorization = verifyEnvelope(copy(recovery), recoveryFields, owner, dependencySmokeRecoveryMessage, 'Smoke recovery');
+  const prior = verifyEnvelope(copy(priorApproval), approvalFields, owner, dependencySmokeApprovalMessage, 'Prior spending approval');
+  const { incident } = authorization;
+  requireThat(authorization.v === 1 && authorization.kind === 'maintenance-dependency-smoke-recovery' &&
+    typeof launcherCommit === 'string' && /^[a-f0-9]{40}$/.test(launcherCommit) && authorization.launcherCommit === launcherCommit &&
+    exact(incident, incidentFields) && C.canonicalJson(incident) === C.canonicalJson(expectedIncident) &&
+    ['priorApprovalHash', 'budgetHash', 'journalHash', 'journalTailHash', 'requestHash'].every(key => C.isHash(incident[key])) &&
+    incident.callId === 'anthropic:analyzer' && incident.priorApprovalHash === prior.hash &&
+    incident.budgetHash === successor.budgetHash && authorization.successorApprovalHash === successor.hash,
+  'Smoke recovery authorization does not match the reviewed incident, launcher, or successor');
+  requireThat(prior.v === 1 && prior.kind === successor.kind && date(prior.issuedAt) &&
+    prior.issuedAt <= successor.issuedAt && typeof prior.outputDirectory === 'string' &&
+    /^[A-Za-z]:\\/.test(prior.outputDirectory) && !sameLocalDirectory(prior.outputDirectory, successor.outputDirectory) &&
+    recoveryScopeFields.every(key => C.canonicalJson(prior[key]) === C.canonicalJson(successor[key])),
+  'Smoke recovery successor must preserve the original signed scope and use different output');
+  retainedBytes(incident.failureEvidence, failureEvidenceBytes, 64 * 1024, 'Smoke recovery failure evidence');
+  retainedBytes(incident.dispatchLog, dispatchLogBytes, 64 * 1024, 'Smoke recovery dispatch log');
+  return Object.freeze({ journalHash: incident.journalHash, journalTailHash: incident.journalTailHash,
+    requestHash: incident.requestHash, authorizationHash: authorization.hash });
+}
+
+module.exports = { dependencySmokeApprovalMessage, dependencySmokeRecoveryMessage,
+  sameLocalDirectory, verifyDependencySmokeApproval, verifyDependencySmokeRecovery };
