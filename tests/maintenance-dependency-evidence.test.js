@@ -106,6 +106,48 @@ test('smoke cost must reconcile with trusted prices and stay under the predeclar
   reject(understated, /computed cost disagrees with receipt/);
 });
 
+test('Anthropic smoke accepts only Standard speed and Global routing in recorded usage', async () => {
+  const data = await fixture({ className: 'E' });
+  const index = data.evidence.smokes.findIndex(({ payload }) => payload.provider === 'anthropic');
+  assert.notEqual(index, -1);
+  const smoke = data.evidence.smokes[index];
+  const { analyzer, critic } = smoke.payload.stages;
+  const response = JSON.parse(data.context.attachments[analyzer.response.sha256].toString('utf8'));
+  const standardUsage = {
+    ...response.usage,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0,
+    cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 },
+    service_tier: 'standard',
+  };
+
+  function setAnalyzerUsage(fields) {
+    const responseRef = data.retain({ ...response, usage: { ...standardUsage, ...fields } });
+    data.evidence.smokes[index] = data.resign(smoke, {
+      stages: { analyzer: { ...analyzer, response: responseRef }, critic },
+    });
+    data.evidence = reseal(data.evidence);
+  }
+
+  for (const fields of [{}, { inference_geo: 'global' }, { speed: 'standard' },
+    { inference_geo: 'global', speed: 'standard' }]) {
+    setAnalyzerUsage(fields);
+    const report = verify(data);
+    assert.equal(report.promotionEligible, true, JSON.stringify(report));
+    assert.equal(report.totalSmokeMicros, 44);
+  }
+
+  for (const fields of [
+    { inference_geo: 'us' }, { inference_geo: null }, { speed: 'fast' }, { speed: null },
+    { service_tier: 'priority' }, { output_tokens_details: { thinking_tokens: 0 } },
+    { cache_creation_input_tokens: 1 }, { cache_read_input_tokens: 1 },
+    { cache_creation: { ephemeral_5m_input_tokens: 1, ephemeral_1h_input_tokens: 0 } },
+  ]) {
+    setAnalyzerUsage({ inference_geo: 'global', speed: 'standard', ...fields });
+    reject(data, /Unsuccessful or unsupported Anthropic smoke response/);
+  }
+});
+
 test('the full-context exception is unavailable to other Class E releases', async () => {
   const existing = await fixture({ className: 'E' });
   const { evidence, protocol } = existing;

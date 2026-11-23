@@ -413,7 +413,7 @@ function verifySmokeStage(provider, name, stage, rate, bytesFor, usedIds, starte
   } else {
     const tokens = response.usage;
     const allowed = ['input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens',
-      'cache_creation', 'service_tier'];
+      'cache_creation', 'service_tier', 'inference_geo', 'speed'];
     requireCondition(response.type === 'message' && response.role === 'assistant' && response.stop_reason === 'end_turn' &&
       Array.isArray(response.content) && response.content.length > 0 &&
       response.content.every(block => block.type === 'text' && text(block.text)) && object(tokens) &&
@@ -422,7 +422,8 @@ function verifySmokeStage(provider, name, stage, rate, bytesFor, usedIds, starte
       [undefined, 0].includes(tokens.cache_creation_input_tokens) && [undefined, 0].includes(tokens.cache_read_input_tokens) &&
       (tokens.cache_creation == null || exact(tokens.cache_creation, ['ephemeral_5m_input_tokens', 'ephemeral_1h_input_tokens']) &&
         Object.values(tokens.cache_creation).every(count => count === 0)) &&
-      [undefined, 'standard'].includes(tokens.service_tier), 'Unsuccessful or unsupported Anthropic smoke response');
+      [undefined, 'standard'].includes(tokens.service_tier) && [undefined, 'global'].includes(tokens.inference_geo) &&
+      [undefined, 'standard'].includes(tokens.speed), 'Unsuccessful or unsupported Anthropic smoke response');
     usage = { inputTokens: tokens.input_tokens, outputTokens: tokens.output_tokens };
     responseText = response.content.map(block => block.text).join('');
   }
