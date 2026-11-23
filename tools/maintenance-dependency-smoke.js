@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const C = require('./final-corpus-lib');
@@ -13,30 +14,28 @@ const { prepareAnthropicCount } = require('./maintenance-provider-preflight');
 const { requestBytes } = require('./release-class');
 const { verifySmokeStage } = require('./maintenance-dependency-evidence');
 const { checkRelease } = require('./sites-lib');
+const { verifyDependencySmokeApproval } = require('./maintenance-dependency-smoke-approval');
+const { sendDependencySmokeRequest } = require('./maintenance-dependency-smoke-transport');
+const {
+  DEFAULT_SMOKE_CAP, CHECKPOINT_E_SMOKE_CAP, CHECKPOINT_E_SCOPE_HASH, CHECKPOINT_E_SAMPLE_ID: SAMPLE_ID,
+  CHECKPOINT_E_RATES: RATES, CHECKPOINT_E_CONTEXT, CHECKPOINT_E_OUTPUT: STAGES, isCheckpointEActivation,
+} = require('./maintenance-dependency-smoke-policy');
 
-const CAP_MICRODOLLARS = 500_000;
 const MAX_ARCHIVE = 256 * 1024 * 1024;
 const MAX_RESPONSE = 800_000;
-const SAMPLE_ID = 'fastmail-privacy';
 // Checkpoint E trust pins from the reviewed Class E evidence. File paths are
 // local inputs. The bytes executed by WSL are verified against these pins.
-const ACTIVATION_SCOPE_HASH = 'd6e429083b0d745526b9ed42e80f6e4c0acd2fe9a131637c85b5804d3b4b540a';
 const IMAGE_RUNTIME_HASH = 'a1b5a200c69a402a11d08c724849ccd27939dc40a532dcb9d9cef93d4d495a51';
 const PROVIDERS = ['anthropic', 'openai'];
-const STAGES = { analyzer: 1200, critic: 1000 };
-const INPUT_RESERVATIONS = { anthropic: 64_000, openai: 128_000 };
-const RATES = {
-  anthropic: { model: 'claude-sonnet-4-6', responseModel: 'claude-sonnet-4-6',
-    inputMicrodollarsPerMillion: 3_000_000, outputMicrodollarsPerMillion: 15_000_000 },
-  openai: { model: 'gpt-4o-mini', responseModel: 'gpt-4o-mini-2024-07-18',
-    inputMicrodollarsPerMillion: 150_000, outputMicrodollarsPerMillion: 600_000 },
-};
 const CALLS = PROVIDERS.flatMap(provider => Object.entries(STAGES).map(([stage, maxOutputTokens]) => ({
   provider, stage, id: provider + ':' + stage, maxOutputTokens,
 })));
 const IDS = CALLS.map(call => call.id);
 const POLICY_KEYS = ['v', 'kind', 'mode', 'declaredAt', 'smokeSampleId', 'smokeCapMicros', 'rates',
   'reviewers', 'corpus', 'providers', 'classification', 'classificationHash', 'builds', 'hash'];
+const IMAGE_INPUT = ['protocol', 'candidate', 'imageRuntime', 'sourceFile'];
+const AUTHORIZED_INPUT = [...IMAGE_INPUT, 'expectedProtocolHash', 'outputDirectory', 'approval',
+  'preregistration', 'preregistrationBytes', 'billingEvidenceBytes'];
 const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) &&
   Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const same = (left, right) => C.canonicalJson(left) === C.canonicalJson(right);
@@ -60,7 +59,7 @@ function planDependencySmoke(protocol, expectedProtocolHash) {
     'Pinned dependency smoke protocol required');
   requireThat(exact(protocol, POLICY_KEYS) && protocol.v === 1 && protocol.kind === 'maintenance-dependency-protocol' &&
     protocol.mode === 'observed' && protocol.classification === 'E' && C.isHash(protocol.classificationHash) &&
-    protocol.smokeSampleId === SAMPLE_ID && protocol.smokeCapMicros === CAP_MICRODOLLARS &&
+    protocol.smokeSampleId === SAMPLE_ID && [DEFAULT_SMOKE_CAP, CHECKPOINT_E_SMOKE_CAP].includes(protocol.smokeCapMicros) &&
     same(protocol.providers, PROVIDERS) && same(protocol.rates, RATES), 'Protocol is outside the approved smoke scope or rates');
   requireThat(exact(protocol.reviewers, ['owner', 'execution']) && identifier(protocol.reviewers.owner) &&
     identifier(protocol.reviewers.execution) && protocol.reviewers.owner !== protocol.reviewers.execution,
@@ -76,31 +75,35 @@ function planDependencySmoke(protocol, expectedProtocolHash) {
     samples[0].url === 'https://www.fastmail.com/policies/privacy/' &&
     exact(samples[0].source, ['sha256', 'bytes']) && C.isHash(samples[0].source.sha256) &&
     positive(samples[0].source.bytes) && samples[0].source.bytes <= 400_000, 'Pinned Fastmail privacy policy required');
+  const expanded = protocol.smokeCapMicros === CHECKPOINT_E_SMOKE_CAP;
+  requireThat(!expanded || isCheckpointEActivation({ builds: protocol.builds, classificationHash: protocol.classificationHash, sample: samples[0] }),
+    'Expanded smoke cap requires the approved Checkpoint E activation pair');
+  const bounds = assessDependencySmokeInputBounds(protocol.smokeCapMicros);
   return createObservedBudgetPlan({
-    approvalId: 'dep-smoke-off-' + protocol.hash,
+    // A new approval or protocol cannot reset this activation's paid allowance.
+    approvalId: expanded ? 'dep-smoke-live-' + CHECKPOINT_E_SCOPE_HASH : 'dep-smoke-off-' + protocol.hash,
     planHash: protocol.hash,
-    limitMicrodollars: CAP_MICRODOLLARS,
+    limitMicrodollars: protocol.smokeCapMicros,
     overheadMicrodollars: 0,
     calls: CALLS.map(({ provider, id, maxOutputTokens }) => ({
-      id, maxOutputTokens, maxInputTokens: INPUT_RESERVATIONS[provider],
+      id, maxOutputTokens, maxInputTokens: bounds[provider].reservedInputTokens,
       inputMicrodollarsPerMillion: RATES[provider].inputMicrodollarsPerMillion,
       outputMicrodollarsPerMillion: RATES[provider].outputMicrodollarsPerMillion,
     })),
   });
 }
 
-function assessDependencySmokeInputBounds() {
+function assessDependencySmokeInputBounds(cap = DEFAULT_SMOKE_CAP) {
   // Sonnet's Messages max_tokens covers generated output. Its count_tokens
   // response and any byte-length check are estimates, not a billing ceiling.
+  const fullContext = cap === CHECKPOINT_E_SMOKE_CAP;
   return {
-    anthropic: { reservedInputTokens: INPUT_RESERVATIONS.anthropic, providerContextTokens: 1_000_000, hardUpperBoundEstablished: false },
-    openai: { reservedInputTokens: INPUT_RESERVATIONS.openai, providerContextTokens: 128_000, hardUpperBoundEstablished: true },
+    anthropic: { reservedInputTokens: fullContext ? CHECKPOINT_E_CONTEXT.anthropic : 64_000,
+      providerContextTokens: CHECKPOINT_E_CONTEXT.anthropic, hardUpperBoundEstablished: fullContext },
+    openai: { reservedInputTokens: CHECKPOINT_E_CONTEXT.openai,
+      providerContextTokens: CHECKPOINT_E_CONTEXT.openai, hardUpperBoundEstablished: true },
     liveDispatchAllowed: false,
   };
-}
-
-async function runDependencySmokeLive() {
-  throw new Error('Live dependency smoke blocked: no verified Anthropic input ceiling at the $0.50 cap');
 }
 
 function validateBuildAndSource(protocol, build, sourceText) {
@@ -158,32 +161,36 @@ function openEvidence(directory) {
   };
 }
 
-async function rehearseDependencySmoke(input, bridge) {
-  const { protocol, expectedProtocolHash, build, sourceText, fixtures, outputDirectory } = structuredClone(input);
-  const plan = planDependencySmoke(protocol, expectedProtocolHash);
+async function executeSmoke({ protocol, build, sourceText, outputDirectory }, bridge, plan, dispatch) {
   const sample = validateBuildAndSource(protocol, build, sourceText);
-  requireThat(exact(fixtures, IDS), 'Exactly four offline fixture responses required');
   const directory = localPath(outputDirectory);
   requireThat(fs.readdirSync(directory).length === 0, 'An empty offline smoke output directory is required');
-  const writer = openEvidence(directory);
-  const budget = openObservedBudget(directory, plan);
+  const journal = localPath(dispatch.journalDirectory);
+  requireThat(dispatch.live || journal.toLowerCase() !== liveJournalPath().toLowerCase(),
+    'An offline rehearsal cannot use the paid smoke journal');
+  const budget = openObservedBudget(journal, plan);
   const usedIds = new Set();
   const stages = [];
   let prior;
   try {
+    requireThat(budget.snapshot().attempts.length === 0, 'This activation has already used its smoke allowance');
+    const writer = openEvidence(directory);
     for (const { provider, stage, id, maxOutputTokens } of CALLS) {
       const captured = await bridge.shapeOffline({ provider, stage, build: structuredClone(build), buildHash: C.digest(build),
         sourceUrl: sample.url, sourceText, sourceHash: sample.source.sha256, prior: stage === 'critic' ? prior : null });
       const capture = writer.keep(validateRequest(captured, provider, maxOutputTokens));
       const request = writer.keep(Buffer.from(captured.body));
+      dispatch.checkCurrent();
       budget.reserve(id, capture.sha256);
       try {
-        const fixture = fixtures[id];
-        requireThat(exact(fixture, ['status', 'requestId', 'body']) && fixture.status === 200 &&
-          identifier(fixture.requestId) && typeof fixture.body === 'string' &&
-          Buffer.byteLength(fixture.body) <= MAX_RESPONSE, 'Offline fixture response incomplete; charge would be unknown');
-        const response = writer.keep(Buffer.from(fixture.body));
-        const replay = await bridge.replay(build.artifact.sha256, { provider, body: fixture.body });
+        const startedAt = dispatch.live ? new Date().toISOString() : protocol.declaredAt;
+        const receipt = await dispatch.send({ id, provider, stage, captured, captureSha256: capture.sha256 });
+        requireThat(exact(receipt, ['status', 'requestId', 'body']) && identifier(receipt.requestId) &&
+          typeof receipt.body === 'string' && Buffer.byteLength(receipt.body) <= MAX_RESPONSE,
+        'Incomplete smoke response; charge unknown');
+        const response = writer.keep(Buffer.from(receipt.body));
+        requireThat(receipt.status === 200, 'Unsuccessful smoke response; charge unknown');
+        const replay = await bridge.replay(build.artifact.sha256, { provider, body: receipt.body });
         requireThat(['parsed', 'fenced-json'].includes(replay?.outcome) && typeof replay.parsed?.text === 'string' &&
           replay.parsed.text.trim() && replay.parsed.text.length <= 30_000, 'Unsupported smoke relay result');
         const { text } = replay.parsed;
@@ -195,10 +202,9 @@ async function rehearseDependencySmoke(input, bridge) {
         const rate = RATES[provider];
         const costMicros = Math.ceil(inputTokens * rate.inputMicrodollarsPerMillion / 1_000_000) +
           Math.ceil(outputTokens * rate.outputMicrodollarsPerMillion / 1_000_000);
-        const observation = { model: rate.model, requestId: fixture.requestId, request, response, output, usage, costMicros };
-        // The clock check in the promotion verifier is also exercised here.
-        // These fixtures never become captured-runtime observations.
-        verifySmokeStage(provider, stage, observation, rate, writer.read, usedIds, protocol.declaredAt, new Date().toISOString());
+        const observation = { model: rate.model, requestId: receipt.requestId, request, response, output, usage, costMicros };
+        verifySmokeStage(provider, stage, observation, rate, writer.read, usedIds, startedAt, new Date().toISOString(),
+          protocol.smokeCapMicros === CHECKPOINT_E_SMOKE_CAP);
         budget.settle(id, usage);
         stages.push({ id, capture, observation });
         if (stage === 'analyzer') prior = normalized.summary;
@@ -208,15 +214,31 @@ async function rehearseDependencySmoke(input, bridge) {
       }
     }
     const receipt = C.seal({
-      v: 1, kind: 'maintenance-dependency-smoke-rehearsal', origin: 'fixture', protocolHash: protocol.hash,
-      imageSha256: build.artifact.sha256, sampleId: SAMPLE_ID, providerCalls: 0, fixtureDeliveries: stages.length,
-      promotionEligible: false, ...assessDependencySmokeInputBounds(), budget: budget.snapshot(), stages,
+      v: 1, kind: 'maintenance-dependency-smoke-run', origin: dispatch.live ? 'captured-runtime' : 'fixture',
+      protocolHash: protocol.hash, approvalHash: dispatch.approvalHash ?? null,
+      imageSha256: build.artifact.sha256, sampleId: SAMPLE_ID, providerCalls: dispatch.live ? stages.length : 0,
+      fixtureDeliveries: dispatch.live ? 0 : stages.length, liveAuthorized: dispatch.live, promotionEligible: false,
+      ...assessDependencySmokeInputBounds(protocol.smokeCapMicros), budget: budget.snapshot(), stages,
     });
     fs.writeFileSync(path.join(directory, 'smoke-rehearsal.json'), C.canonicalJson(receipt) + '\n', { flag: 'wx', mode: 0o600 });
     return receipt;
   } finally {
     budget.close();
   }
+}
+
+function fixtureSender(fixtures) {
+  requireThat(exact(fixtures, IDS), 'Exactly four offline fixture responses required');
+  const replies = structuredClone(fixtures);
+  return ({ id }) => replies[id];
+}
+
+async function rehearseDependencySmoke(input, bridge) {
+  const snapshot = structuredClone(input);
+  const plan = planDependencySmoke(snapshot.protocol, snapshot.expectedProtocolHash);
+  return executeSmoke(snapshot, bridge, plan, {
+    live: false, journalDirectory: snapshot.outputDirectory, checkCurrent() {}, send: fixtureSender(snapshot.fixtures),
+  });
 }
 
 function readJson(file, limit) {
@@ -227,22 +249,16 @@ function readJson(file, limit) {
   return parseUnambiguousJson(utf8(bytes).replace(/^\uFEFF/, ''));
 }
 
-async function main([mode, inputFile, expectedProtocolHash, outputDirectory]) {
-  if (mode === '--live') return runDependencySmokeLive();
-  requireThat(mode === '--offline' && inputFile && expectedProtocolHash && outputDirectory && process.argv.length === 6,
-    'Usage: node tools/maintenance-dependency-smoke.js --offline <input.json> <protocol-sha256> <empty-output-directory>');
-  const options = readJson(localPath(inputFile), 4_000_000);
-  requireThat(exact(options, ['protocol', 'candidate', 'imageRuntime', 'sourceFile', 'fixtures']) &&
-    exact(options.candidate, ['archivePath', 'releaseFile', 'image', 'runtime']) &&
+function prepareImageRun(options) {
+  requireThat(exact(options.candidate, ['archivePath', 'releaseFile', 'image', 'runtime']) &&
     exact(options.imageRuntime, ['umociPath', 'umociSha256', 'imageLauncherSha256', 'builderFiles']),
-  'Offline candidate smoke input required');
-  const { protocol, candidate, imageRuntime, fixtures } = options;
-  planDependencySmoke(protocol, expectedProtocolHash);
+  'Exact candidate smoke input required');
+  const { protocol, candidate, imageRuntime } = options;
   const { umociPath, ...runtimeFiles } = imageRuntime;
   requireThat(typeof umociPath === 'string' && C.digest(runtimeFiles) === IMAGE_RUNTIME_HASH,
     'Unreviewed dependency smoke image runtime');
   const sample = protocol.corpus.find(item => item.id === SAMPLE_ID);
-  requireThat(C.digest({ builds: protocol.builds, classificationHash: protocol.classificationHash, sample }) === ACTIVATION_SCOPE_HASH,
+  requireThat(isCheckpointEActivation({ builds: protocol.builds, classificationHash: protocol.classificationHash, sample }),
     'Unreviewed Checkpoint E activation pair or smoke sample');
   requireThat(same(candidate.image, protocol.builds.candidate.image), 'Candidate OCI identity changed');
   const [archivePath, releaseFile, sourceFile] = localPaths([candidate.archivePath, candidate.releaseFile, options.sourceFile]);
@@ -253,15 +269,73 @@ async function main([mode, inputFile, expectedProtocolHash, outputDirectory]) {
   const release = readJson(releaseFile, 4_000_000);
   const build = { artifact: { sha256, bytes }, release, runtime: candidate.runtime };
   validateBuildAndSource(protocol, build, sourceText);
-  const bridge = imageBridge(imageRuntime, { archiveLocations: { [sha256]: archivePath } },
-    { ...imageRuntime, images: [candidate.image] });
+  return { build, sourceText, bridge: imageBridge(imageRuntime, { archiveLocations: { [sha256]: archivePath } },
+    { ...imageRuntime, images: [candidate.image] }) };
+}
+
+async function withImage(input, execute) {
+  const { build, sourceText, bridge } = prepareImageRun(input);
   try {
     await bridge.ready();
-    const receipt = await rehearseDependencySmoke({ protocol, expectedProtocolHash, build, sourceText, fixtures, outputDirectory }, bridge);
-    console.log('Offline dependency smoke completed with ' + receipt.fixtureDeliveries + ' fixture responses and zero provider calls.');
+    return await execute({ protocol: input.protocol, outputDirectory: input.outputDirectory, build, sourceText }, bridge);
   } finally {
     await bridge.close();
   }
+}
+
+function liveJournalPath() {
+  return path.join(os.homedir(), 'AppData', 'Local', 'ToSGuardian', 'dependency-smoke-live');
+}
+
+async function authorizedSmoke(input, operatorTrust, delivery, live) {
+  requireThat(exact(input, AUTHORIZED_INPUT), 'Signed live approval and input bounds are required');
+  const { preregistrationBytes, billingEvidenceBytes, ...config } = input;
+  const snapshot = structuredClone(config);
+  const plan = planDependencySmoke(snapshot.protocol, snapshot.expectedProtocolHash);
+  requireThat(plan.totalMicrodollars === 6_072_720, 'Live smoke requires full documented context reservations');
+  const approvalInput = {
+    ...snapshot, operatorTrust: structuredClone(operatorTrust), budgetHash: plan.hash,
+    preregistrationBytes: Buffer.from(preregistrationBytes), billingEvidenceBytes: Buffer.from(billingEvidenceBytes),
+  };
+  const approval = verifyDependencySmokeApproval(approvalInput);
+  if (live) {
+    requireThat(approval.journalDirectory === localPath(liveJournalPath()), 'Fixed Checkpoint E live journal directory required');
+  }
+  const checkCurrent = () => verifyDependencySmokeApproval(approvalInput);
+  return withImage(snapshot, (context, bridge) => executeSmoke(context, bridge, plan, {
+    live, journalDirectory: approval.journalDirectory, approvalHash: approval.hash, checkCurrent,
+    send: call => delivery(call, approval.accounts[call.provider], checkCurrent),
+  }));
+}
+
+// Called by a trusted local operator wrapper. Credentials are obtained only
+// when a signed, current approval has passed and the request is reserved.
+async function runDependencySmokeLive(input, operatorTrust, readCredential) {
+  requireThat(exact(input, AUTHORIZED_INPUT), 'Signed live approval and input bounds are required');
+  requireThat(typeof readCredential === 'function', 'Local credential reader required');
+  return authorizedSmoke(input, operatorTrust, async (call, accountId, checkCurrent) => {
+    const credential = await readCredential({ provider: call.provider, accountId });
+    checkCurrent();
+    return sendDependencySmokeRequest({ ...call, credential, accountId });
+  }, true);
+}
+
+function rehearseApprovedDependencySmoke(input, operatorTrust, fixtures) {
+  return authorizedSmoke(input, operatorTrust, fixtureSender(fixtures), false);
+}
+
+async function main([mode, inputFile, expectedProtocolHash, outputDirectory]) {
+  if (mode === '--live') throw new Error('Use runDependencySmokeLive with a trusted local operator and a signed Checkpoint E approval');
+  requireThat(mode === '--offline' && inputFile && expectedProtocolHash && outputDirectory && process.argv.length === 6,
+    'Usage: node tools/maintenance-dependency-smoke.js --offline <input.json> <protocol-sha256> <empty-output-directory>');
+  const options = readJson(localPath(inputFile), 4_000_000);
+  requireThat(exact(options, [...IMAGE_INPUT, 'fixtures']), 'Offline candidate smoke input required');
+  const plan = planDependencySmoke(options.protocol, expectedProtocolHash);
+  const send = fixtureSender(options.fixtures);
+  const receipt = await withImage({ ...options, outputDirectory }, (context, bridge) => executeSmoke(context, bridge, plan, {
+    live: false, journalDirectory: outputDirectory, checkCurrent() {}, send,
+  }));
+  console.log('Offline dependency smoke completed with ' + receipt.fixtureDeliveries + ' fixture responses and zero provider calls.');
 }
 
 if (require.main === module) main(process.argv.slice(2)).catch(error => {
@@ -269,4 +343,7 @@ if (require.main === module) main(process.argv.slice(2)).catch(error => {
   process.exitCode = 1;
 });
 
-module.exports = { planDependencySmoke, assessDependencySmokeInputBounds, rehearseDependencySmoke, runDependencySmokeLive };
+module.exports = {
+  planDependencySmoke, assessDependencySmokeInputBounds, rehearseDependencySmoke,
+  rehearseApprovedDependencySmoke, runDependencySmokeLive,
+};

@@ -10,6 +10,13 @@ const PATH = '/v1/chat/completions';
 const MAX_REQUEST_BYTES = 1000000;
 const MAX_RESPONSE_BYTES = 1048576;
 const MAX_TIMEOUT_MS = 60000;
+const ROUTES = Object.freeze({
+  openai: { hostname: HOST, path: PATH, requestIdHeader: 'x-request-id', accountPrefix: 'proj_' },
+  anthropic: {
+    hostname: 'api.anthropic.com', path: '/v1/messages', requestIdHeader: 'request-id', accountPrefix: 'wrkspc_',
+    accountHeader: 'anthropic-workspace-id',
+  },
+});
 
 function parseUnambiguousJson(text) {
   let value;
@@ -91,14 +98,15 @@ function verifiedBody(bytes, sha256) {
   return payload;
 }
 
-function responseMetadata(response) {
+function responseMetadata(response, { requestIdHeader, accountHeader }, accountId, maxResponseBytes) {
   const status = response.statusCode;
   const headers = response.rawHeaders;
   if (!Number.isInteger(status) || status < 200 || status > 599 || !Array.isArray(headers) || headers.length % 2) {
     throw new Error('Invalid provider status or response headers');
   }
 
-  const names = new Set(['x-request-id', 'content-encoding', 'content-length', 'transfer-encoding']);
+  const names = new Set([requestIdHeader, 'content-encoding', 'content-length', 'transfer-encoding']);
+  if (accountHeader) names.add(accountHeader);
   const values = new Map();
   for (let index = 0; index < headers.length; index += 2) {
     const name = headers[index].toLowerCase();
@@ -108,17 +116,20 @@ function responseMetadata(response) {
     }
     values.set(name, headers[index + 1]);
   }
-  const requestId = values.get('x-request-id');
+  const requestId = values.get(requestIdHeader);
   const encoding = values.get('content-encoding');
   const wireLength = values.get('content-length');
   const transfer = values.get('transfer-encoding');
   if (typeof requestId !== 'string' || !/^[A-Za-z0-9_-]{1,200}$/.test(requestId)) {
     throw new Error('Invalid provider request ID');
   }
+  if (accountHeader && status === 200 && values.get(accountHeader) !== accountId) {
+    throw new Error('Provider receipt belongs to a different account');
+  }
   if (encoding !== undefined && !/^identity$/i.test(encoding)) {
     throw new Error('Unsupported provider content encoding');
   }
-  if (wireLength !== undefined && (!/^(0|[1-9][0-9]*)$/.test(wireLength) || Number(wireLength) > MAX_RESPONSE_BYTES)) {
+  if (wireLength !== undefined && (!/^(0|[1-9][0-9]*)$/.test(wireLength) || Number(wireLength) > maxResponseBytes)) {
     throw new Error('Invalid provider response length');
   }
   const bodyless = status === 204 || status === 304;
@@ -130,14 +141,21 @@ function responseMetadata(response) {
   return { status, requestId, expectedLength: bodyless ? 0 : wireLength === undefined ? null : Number(wireLength) };
 }
 
-async function sendObservedRequest({ bytes, sha256, credential, projectId }, { request = https.request, timeoutMs = MAX_TIMEOUT_MS } = {}) {
-  const payload = verifiedBody(bytes, sha256);
+async function sendProviderBytes({ provider, bytes, credential, accountId, maxResponseBytes = MAX_RESPONSE_BYTES },
+  { request = https.request, timeoutMs = MAX_TIMEOUT_MS } = {}) {
+  if (!Object.hasOwn(ROUTES, provider) || !Buffer.isBuffer(bytes) || bytes.length < 1 || bytes.length > MAX_REQUEST_BYTES ||
+      !Number.isInteger(maxResponseBytes) || maxResponseBytes < 1 || maxResponseBytes > MAX_RESPONSE_BYTES) {
+    throw new Error('Invalid provider endpoint or payload bounds');
+  }
+  const route = ROUTES[provider];
+  const payload = Buffer.from(bytes);
   if (typeof credential !== 'string' || credential.length < 8 || credential.length > 1000 ||
       /[^\x21-\x7e]/.test(credential)) {
     throw new Error('Invalid provider credential format');
   }
-  if (typeof projectId !== 'string' || !/^proj_[A-Za-z0-9_-]{1,195}$/.test(projectId)) {
-    throw new Error('Invalid provider project ID');
+  if (typeof accountId !== 'string' || !accountId.startsWith(route.accountPrefix) ||
+      !/^[A-Za-z0-9_-]{1,195}$/.test(accountId.slice(route.accountPrefix.length))) {
+    throw new Error(provider === 'openai' ? 'Invalid provider project ID' : 'Invalid provider workspace ID');
   }
   if (typeof request !== 'function' || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMEOUT_MS) {
     throw new Error('Invalid provider transport options');
@@ -169,7 +187,7 @@ async function sendObservedRequest({ bytes, sha256, credential, projectId }, { r
       response.on('close', () => fail('Provider response closed before completion'));
       let metadata;
       try {
-        metadata = responseMetadata(response);
+        metadata = responseMetadata(response, route, accountId, maxResponseBytes);
       } catch {
         fail('Unsupported provider status or response headers');
         return;
@@ -182,7 +200,7 @@ async function sendObservedRequest({ bytes, sha256, credential, projectId }, { r
         if (settled) return;
         if (!Buffer.isBuffer(chunk)) return fail('Unsupported provider response bytes');
         size += chunk.length;
-        if (size > MAX_RESPONSE_BYTES || (expectedLength !== null && size > expectedLength)) {
+        if (size > maxResponseBytes || (expectedLength !== null && size > expectedLength)) {
           return fail('Provider response exceeded its size limit');
         }
         if (chunk.length) chunks.push(chunk);
@@ -199,12 +217,15 @@ async function sendObservedRequest({ bytes, sha256, credential, projectId }, { r
     }
 
     try {
+      const accountHeaders = provider === 'openai'
+        ? { authorization: `Bearer ${credential}`, 'OpenAI-Project': accountId }
+        : { 'x-api-key': credential, 'anthropic-version': '2023-06-01', [route.accountHeader]: accountId };
       outgoing = request({
         protocol: 'https:',
-        hostname: HOST,
-        servername: HOST,
+        hostname: route.hostname,
+        servername: route.hostname,
         port: 443,
-        path: PATH,
+        path: route.path,
         method: 'POST',
         agent: false,
         autoSelectFamily: false,
@@ -212,8 +233,7 @@ async function sendObservedRequest({ bytes, sha256, credential, projectId }, { r
         minVersion: 'TLSv1.2',
         maxHeaderSize: 16384,
         headers: {
-          authorization: `Bearer ${credential}`,
-          'OpenAI-Project': projectId,
+          ...accountHeaders,
           'content-type': 'application/json',
           'content-length': payload.length,
           accept: 'application/json',
@@ -235,4 +255,8 @@ async function sendObservedRequest({ bytes, sha256, credential, projectId }, { r
   });
 }
 
-module.exports = { parseUnambiguousJson, sendObservedRequest };
+async function sendObservedRequest({ bytes, sha256, credential, projectId }, options) {
+  return sendProviderBytes({ provider: 'openai', bytes: verifiedBody(bytes, sha256), credential, accountId: projectId }, options);
+}
+
+module.exports = { parseUnambiguousJson, sendObservedRequest, sendProviderBytes };

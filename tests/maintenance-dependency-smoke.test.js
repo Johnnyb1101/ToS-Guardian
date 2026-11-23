@@ -184,6 +184,17 @@ test('an estimate, credential callback and usage claim cannot enable live dispat
   await assert.rejects(runDependencySmokeLive(unexpectedInput, () => assert.fail('credential read')), /ceiling|bound|disabled/i);
 });
 
+test('the expanded reservation uses published contexts and needs the exact activation scope', () => {
+  const input = fixtureProtocol();
+  const { hash, ...body } = input.protocol;
+  const unrelated = seal({ ...body, smokeCapMicros: 6_080_000 });
+  assert.throws(() => planDependencySmoke(unrelated, unrelated.hash), /approved Checkpoint E activation pair/);
+  assert.deepEqual(assessDependencySmokeInputBounds(6_080_000).anthropic, {
+    reservedInputTokens: 1_000_000, providerContextTokens: 1_000_000, hardUpperBoundEstablished: true,
+  });
+  assert.equal(assessDependencySmokeInputBounds(6_080_000).liveDispatchAllowed, false);
+});
+
 if (process.platform === 'win32') {
   test('the CLI rejects an unreviewed runtime before resolving missing OCI inputs', t => {
     const input = fixture(t);

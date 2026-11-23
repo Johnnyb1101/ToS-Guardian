@@ -10,6 +10,8 @@ const { registryKeys, verifyManifest } = require('./dependency-review');
 const { parseUnambiguousJson } = require('./maintenance-observed-live-transport');
 const { readOpenAITextUsage } = require('./maintenance-openai-contract');
 const { SECTIONS } = require('./jury-lib');
+const { DEFAULT_SMOKE_CAP, CHECKPOINT_E_SMOKE_CAP, CHECKPOINT_E_RATES, CHECKPOINT_E_CONTEXT, CHECKPOINT_E_OUTPUT,
+  isCheckpointEActivation } = require('./maintenance-dependency-smoke-policy');
 
 const PHASE = 'maintenance-dependency';
 const PURPOSE = 'tos-guardian.maintenance-dependency-observation.v1\n';
@@ -25,7 +27,6 @@ const MAX_METADATA = 16 * 1024 * 1024;
 const MAX_ATTACHMENT = 128 * 1024 * 1024;
 const MAX_ARCHIVE = 256 * 1024 * 1024;
 const MAX_TOTAL = 1024 * 1024 * 1024;
-const MAX_SMOKE = 500_000;
 const GLOBAL_TYPES = ['reviewed', 'unreviewed', 'malware'];
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const same = (left, right) => C.canonicalJson(left) === C.canonicalJson(right);
@@ -115,10 +116,15 @@ function createDependencyProtocol(classificationInput, classificationReport, spe
   validateCorpus(corpus);
   const expected = corpus.flatMap(({ id }) => PROVIDERS.flatMap(provider => STAGES.map(stage => `${id}:${provider}:${stage}`))).sort();
   requireCondition(same(expected, computed.comparisons.requests.map(record => record.id)), 'Request evidence does not cover the preregistered corpus');
+  const builds = { baseline: computed.baseline, candidate: computed.candidate };
+  const sample = corpus.find(item => item.id === spec?.smokeSampleId);
   requireCondition(exact(spec, SPEC) && ['fixture', 'observed'].includes(spec.mode) && timestamp(spec.declaredAt) &&
-    corpus.some(sample => sample.id === spec.smokeSampleId) && positive(spec.smokeCapMicros) &&
-    spec.smokeCapMicros <= MAX_SMOKE && exact(spec.reviewers, ROLES) && Object.values(spec.reviewers).every(identifier) &&
+    sample && positive(spec.smokeCapMicros) && exact(spec.reviewers, ROLES) && Object.values(spec.reviewers).every(identifier) &&
     spec.reviewers.execution !== spec.reviewers.owner && exact(spec.rates, PROVIDERS), 'Invalid dependency protocol');
+  requireCondition(spec.smokeCapMicros <= DEFAULT_SMOKE_CAP ||
+    (spec.smokeCapMicros === CHECKPOINT_E_SMOKE_CAP && spec.mode === 'observed' && computed.classification === 'E' &&
+    same(spec.rates, CHECKPOINT_E_RATES) && isCheckpointEActivation({ builds, classificationHash: classificationReport.hash, sample })),
+  'Smoke cap exceeds the approved release scope');
   for (const provider of PROVIDERS) {
     const rate = spec.rates[provider];
     requireCondition(exact(rate, ['model', 'responseModel', 'inputMicrodollarsPerMillion', 'outputMicrodollarsPerMillion']) &&
@@ -127,7 +133,7 @@ function createDependencyProtocol(classificationInput, classificationReport, spe
   }
   return C.seal({ v: 1, kind: 'maintenance-dependency-protocol', ...spec, corpus, providers: PROVIDERS,
     classification: computed.classification, classificationHash: classificationReport.hash,
-    builds: { baseline: computed.baseline, candidate: computed.candidate } });
+    builds });
 }
 
 function trustKeys(protocol, registry) {
@@ -380,7 +386,7 @@ function verifySmokeOutput(name, output, responseText) {
     Array.isArray(output.flags) && output.flags.every(text), 'Smoke critic response is incomplete');
 }
 
-function verifySmokeStage(provider, name, stage, rate, bytesFor, usedIds, startedAt, observedAt) {
+function verifySmokeStage(provider, name, stage, rate, bytesFor, usedIds, startedAt, observedAt, fullContext = false) {
   requireCondition(exact(stage, ['model', 'requestId', 'request', 'response', 'output', 'usage', 'costMicros']) &&
     stage.model === rate.model && identifier(stage.requestId) && !usedIds.has(stage.requestId), 'Invalid or repeated smoke request');
   usedIds.add(stage.requestId);
@@ -390,6 +396,7 @@ function verifySmokeStage(provider, name, stage, rate, bytesFor, usedIds, starte
   requireCondition(request?.model === rate.model && positive(request.max_tokens) && request.stream !== true &&
     !Object.hasOwn(request, 'tools') && response?.model === rate.responseModel && identifier(response.id) &&
     !usedIds.has(response.id) && object(output) && Object.keys(output).length > 0, 'Smoke request, response or output mismatch');
+  requireCondition(!fullContext || request.max_tokens === CHECKPOINT_E_OUTPUT[name], 'Checkpoint E smoke output cap changed');
   usedIds.add(response.id);
   let usage, responseText;
   if (provider === 'openai') {
@@ -421,6 +428,7 @@ function verifySmokeStage(provider, name, stage, rate, bytesFor, usedIds, starte
   }
   verifySmokeOutput(name, output, responseText);
   const normalized = { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens };
+  requireCondition(!fullContext || normalized.inputTokens <= CHECKPOINT_E_CONTEXT[provider], 'Checkpoint E smoke input exceeds reserved context');
   const charge = (tokens, ratePerMillion) => (BigInt(tokens) * BigInt(ratePerMillion) + 999999n) / 1000000n;
   const cost = charge(normalized.inputTokens, rate.inputMicrodollarsPerMillion) +
     charge(normalized.outputTokens, rate.outputMicrodollarsPerMillion);
@@ -456,7 +464,7 @@ function checkExecution(protocol, evidence, signed, bytesFor, earliest) {
     attachment(bytesFor, p.log);
     for (const stage of SMOKE_STAGES) {
       total += verifySmokeStage(p.provider, stage, p.stages[stage], protocol.rates[p.provider], bytesFor, usedIds,
-        earliest, p.observedAt);
+        earliest, p.observedAt, protocol.smokeCapMicros === CHECKPOINT_E_SMOKE_CAP);
     }
   }
   requireCondition(total <= BigInt(protocol.smokeCapMicros), 'Total smoke cost exceeds approved cap');

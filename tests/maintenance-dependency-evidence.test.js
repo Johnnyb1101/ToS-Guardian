@@ -106,6 +106,15 @@ test('smoke cost must reconcile with trusted prices and stay under the predeclar
   reject(understated, /computed cost disagrees with receipt/);
 });
 
+test('the full-context exception is unavailable to other Class E releases', async () => {
+  const existing = await fixture({ className: 'E' });
+  const { evidence, protocol } = existing;
+  assert.throws(() => M.createDependencyProtocol(evidence.classificationInput, evidence.classificationReport, {
+    mode: protocol.mode, declaredAt: protocol.declaredAt, smokeSampleId: protocol.smokeSampleId,
+    smokeCapMicros: 6_080_000, rates: protocol.rates, reviewers: protocol.reviewers,
+  }), /approved release scope/);
+});
+
 test('the verifier rehashes original bytes and checks smoke output against the provider response', async () => {
   for (const select of [
     d => d.evidence.tests[0].payload.log.sha256,
