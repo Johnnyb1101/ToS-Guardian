@@ -248,7 +248,7 @@ function transportFixture(overrides = {}) {
   const bytes = Buffer.from(C.canonicalJson({ model: 'gpt-4o-mini', max_tokens: 1200, service_tier: 'default',
     messages: [{ role: 'system', content: 'fake prompt' }, { role: 'user', content: 'fake input' }] }));
   const approval = { bytes, sha256: sha(bytes), credential: fakeCredential, projectId };
-  const response = Buffer.from('{"saved":"fake raw response"}');
+  const response = Buffer.from(overrides.body ?? '{"saved":"fake raw response"}');
   const activity = { attempts: 0, destroyed: 0 };
   function request(config, receive) {
     activity.attempts++;
@@ -262,7 +262,8 @@ function transportFixture(overrides = {}) {
         const incoming = new EventEmitter();
         incoming.statusCode = overrides.status ?? 200;
         incoming.complete = !overrides.truncated;
-        incoming.rawHeaders = ['X-Request-Id', 'request-fixture', 'Content-Length', String(response.length), ...(overrides.extraHeaders ?? [])];
+        incoming.rawHeaders = [...(overrides.idHeaders ?? ['X-Request-Id', 'request-fixture']),
+          'Content-Length', String(response.length), ...(overrides.extraHeaders ?? [])];
         incoming.destroy = () => { activity.destroyed++; };
         receive(incoming);
         incoming.emit('data', response);
@@ -297,4 +298,60 @@ test('mismatched bytes, malformed header, incomplete response and timeout fail c
     assert.ok(fake.activity.destroyed > 0);
   }
   assert.throws(() => packet.parseUnambiguousJson('{"inner":{"a":1,"\\u0061":2}}'), /Duplicate JSON member/);
+});
+
+const countSource = {
+  model: 'claude-sonnet-4-6', max_tokens: 1200, system: 'Synthetic system ☃',
+  messages: [{ role: 'user', content: 'Synthetic input 🌲\n' }],
+};
+const countInput = { bytes: Buffer.from(JSON.stringify(countSource)), credential: fakeCredential, accountId: 'wrkspc_fixture' };
+const countHeaders = ['request-id', 'req_count', 'anthropic-workspace-id', countInput.accountId];
+
+test('count sends the complete generation input once to the fixed Anthropic TLS endpoint', async () => {
+  const { activity, request } = transportFixture({ idHeaders: countHeaders, body: '{"input_tokens":42}' });
+  const receipt = await packet.countAnthropicInputTokens(countInput, { request });
+  assert.deepEqual(receipt, { inputTokens: 42, requestId: 'req_count' });
+  assert.equal(activity.attempts, 1);
+  assert.deepEqual(JSON.parse(activity.sent), { model: countSource.model, system: countSource.system, messages: countSource.messages });
+  const { hostname, servername, port, method, path, headers, rejectUnauthorized, minVersion } = activity.config;
+  assert.equal(hostname, 'api.anthropic.com');
+  assert.equal(servername, hostname);
+  assert.equal(port, 443);
+  assert.equal(method, 'POST');
+  assert.equal(path, '/v1/messages/count_tokens');
+  assert.equal(rejectUnauthorized, true);
+  assert.equal(minVersion, 'TLSv1.2');
+  assert.equal(headers['x-api-key'], countInput.credential);
+  assert.equal(headers['anthropic-workspace-id'], countInput.accountId);
+  assert.equal(headers['anthropic-version'], '2023-06-01');
+  assert.equal(headers['content-length'], activity.sent.length);
+});
+
+test('count rejects request extensions and invalid text before contacting the provider', async () => {
+  const { request, activity } = transportFixture();
+  for (const body of [{ ...countSource, tools: [] }, { ...countSource, messages: [{ role: 'user', content: [] }] },
+    { ...countSource, max_tokens: 0 }, { ...countSource, system: '\ud800' }]) {
+    await assert.rejects(packet.countAnthropicInputTokens({ ...countInput, bytes: Buffer.from(JSON.stringify(body)) }, { request }));
+  }
+  await assert.rejects(packet.countAnthropicInputTokens(countInput, { request, path: '/v1/messages' }));
+  await assert.rejects(packet.countAnthropicInputTokens({ ...countInput, provider: 'openai' }, { request }));
+  assert.equal(activity.attempts, 0);
+});
+
+test('count rejects ambiguous, oversized, incomplete and unsuccessful receipts without retrying or exposing content', async () => {
+  const invalidBodies = ['{"input_tokens":0}', '{"input_tokens":1.5}', '{"input_tokens":9007199254740992}',
+    '{"input_tokens":1,"input_tokens":2}', '{"input_tokens":"123"}', '{"input_tokens":1,"detail":"PRIVATE"}',
+    'PRIVATE', Buffer.from([0xff]), ' '.repeat(4097)];
+  for (const scenario of [
+    ...invalidBodies.map(body => ({ body })), { status: 302 }, { status: 429 }, { truncated: true },
+    { idHeaders: ['request-id', 'req_count'] }, { idHeaders: ['anthropic-workspace-id', countInput.accountId] },
+    { idHeaders: ['request-id', 'req_count', 'anthropic-workspace-id', 'wrkspc_wrong'] },
+    { extraHeaders: ['request-id', 'req_duplicate'] },
+    { idHeaders: ['request-id', countInput.credential, 'anthropic-workspace-id', countInput.accountId] },
+  ]) {
+    const { activity, request } = transportFixture({ idHeaders: countHeaders, body: '{"input_tokens":1}', ...scenario });
+    await assert.rejects(packet.countAnthropicInputTokens(countInput, { request }), error =>
+      !error.message.includes('PRIVATE') && !error.message.includes(countInput.credential));
+    assert.equal(activity.attempts, 1);
+  }
 });

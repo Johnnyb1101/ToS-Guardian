@@ -141,13 +141,17 @@ function responseMetadata(response, { requestIdHeader, accountHeader }, accountI
   return { status, requestId, expectedLength: bodyless ? 0 : wireLength === undefined ? null : Number(wireLength) };
 }
 
-async function sendProviderBytes({ provider, bytes, credential, accountId, maxResponseBytes = MAX_RESPONSE_BYTES },
+async function sendProviderBytes(input, options) {
+  if (!Object.hasOwn(ROUTES, input.provider)) throw new Error('Invalid provider endpoint or payload bounds');
+  return sendToRoute(ROUTES[input.provider], input, options);
+}
+
+async function sendToRoute(route, { bytes, credential, accountId, maxResponseBytes = MAX_RESPONSE_BYTES },
   { request = https.request, timeoutMs = MAX_TIMEOUT_MS } = {}) {
-  if (!Object.hasOwn(ROUTES, provider) || !Buffer.isBuffer(bytes) || bytes.length < 1 || bytes.length > MAX_REQUEST_BYTES ||
+  if (!Buffer.isBuffer(bytes) || bytes.length < 1 || bytes.length > MAX_REQUEST_BYTES ||
       !Number.isInteger(maxResponseBytes) || maxResponseBytes < 1 || maxResponseBytes > MAX_RESPONSE_BYTES) {
     throw new Error('Invalid provider endpoint or payload bounds');
   }
-  const route = ROUTES[provider];
   const payload = Buffer.from(bytes);
   if (typeof credential !== 'string' || credential.length < 8 || credential.length > 1000 ||
       /[^\x21-\x7e]/.test(credential)) {
@@ -155,7 +159,7 @@ async function sendProviderBytes({ provider, bytes, credential, accountId, maxRe
   }
   if (typeof accountId !== 'string' || !accountId.startsWith(route.accountPrefix) ||
       !/^[A-Za-z0-9_-]{1,195}$/.test(accountId.slice(route.accountPrefix.length))) {
-    throw new Error(provider === 'openai' ? 'Invalid provider project ID' : 'Invalid provider workspace ID');
+    throw new Error(route === ROUTES.openai ? 'Invalid provider project ID' : 'Invalid provider workspace ID');
   }
   if (typeof request !== 'function' || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMEOUT_MS) {
     throw new Error('Invalid provider transport options');
@@ -217,7 +221,7 @@ async function sendProviderBytes({ provider, bytes, credential, accountId, maxRe
     }
 
     try {
-      const accountHeaders = provider === 'openai'
+      const accountHeaders = route === ROUTES.openai
         ? { authorization: `Bearer ${credential}`, 'OpenAI-Project': accountId }
         : { 'x-api-key': credential, 'anthropic-version': '2023-06-01', [route.accountHeader]: accountId };
       outgoing = request({
@@ -259,4 +263,30 @@ async function sendObservedRequest({ bytes, sha256, credential, projectId }, opt
   return sendProviderBytes({ provider: 'openai', bytes: verifiedBody(bytes, sha256), credential, accountId: projectId }, options);
 }
 
-module.exports = { parseUnambiguousJson, sendObservedRequest, sendProviderBytes };
+async function countAnthropicInputTokens(input, options = {}) {
+  if (!exact(input, ['bytes', 'credential', 'accountId']) || !Buffer.isBuffer(input.bytes) ||
+      !input.bytes.length || input.bytes.length > MAX_REQUEST_BYTES || !options || typeof options !== 'object' ||
+      Array.isArray(options) || !Object.keys(options).every(key => ['request', 'timeoutMs'].includes(key))) {
+    throw new Error('Invalid Anthropic count request or options');
+  }
+  const decode = bytes => new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  const body = parseUnambiguousJson(decode(input.bytes));
+  const text = value => typeof value === 'string' && value.isWellFormed() && value.trim().length > 0 && !value.includes('\0');
+  if (!exact(body, ['model', 'max_tokens', 'system', 'messages']) || !text(body.model) || !text(body.system) ||
+      !Number.isSafeInteger(body.max_tokens) || body.max_tokens < 1 || !Array.isArray(body.messages) ||
+      body.messages.length !== 1 || !exact(body.messages[0], ['role', 'content']) ||
+      body.messages[0].role !== 'user' || !text(body.messages[0].content)) {
+    throw new Error('Unsupported Anthropic count source');
+  }
+  const route = { ...ROUTES.anthropic, path: '/v1/messages/count_tokens' };
+  const bytes = Buffer.from(JSON.stringify({ model: body.model, system: body.system, messages: body.messages }));
+  const { status, response, requestId } = await sendToRoute(route, { ...input, bytes, maxResponseBytes: 4096 }, options);
+  if (status !== 200 || requestId.includes(input.credential)) throw new Error('Invalid Anthropic count receipt');
+  const count = parseUnambiguousJson(decode(response));
+  if (!exact(count, ['input_tokens']) || !Number.isSafeInteger(count.input_tokens) || count.input_tokens < 1) {
+    throw new Error('Invalid Anthropic input token count');
+  }
+  return { inputTokens: count.input_tokens, requestId };
+}
+
+module.exports = { parseUnambiguousJson, sendObservedRequest, sendProviderBytes, countAnthropicInputTokens };

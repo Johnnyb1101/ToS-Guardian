@@ -22,14 +22,14 @@ const COMPLETE = HEADINGS.map(heading => heading + '\nFixture text.').join('\n\n
 const MISSING = COMPLETE.replace('🧭 BOTTOM LINE\n', '').replace('DATA SELLING & SHARING', 'DATA SHARING & SELLING');
 const GRADE = '{"accuracy":1,"completeness":0.95,"fabrications":0}';
 
-function setup(t) {
+function setup(t, options) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tos-prompt-quality-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const outputDirectory = path.join(root, 'output');
   const journalDirectory = path.join(root, 'journal');
   fs.mkdirSync(outputDirectory);
   fs.mkdirSync(journalDirectory);
-  const settings = createQualityFixture(journalDirectory);
+  const settings = createQualityFixture(journalDirectory, options);
   const { protocol, plan, pricing } = settings;
   const archiveLocations = Object.fromEntries(Object.entries(protocol.builds).map(([arm, build]) => {
     const file = path.join(root, arm + '.oci.tar');
@@ -214,6 +214,149 @@ test('the supervisor request hook runs before request retention, reservation or 
   }), /Fixture request rejected/);
   assert.deepEqual(journalEvents(input).map(event => event.type), ['header']);
   assert.deepEqual(fs.readdirSync(path.join(input.outputDirectory, 'evidence')), []);
+});
+
+test('the runner awaits Anthropic count checks and binds their receipts to the exact dispatched requests', async t => {
+  const input = setup(t, { checkAnthropicInput: true });
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const checked = new Map();
+  const sent = [];
+  const evidence = path.join(input.outputDirectory, 'evidence');
+  const run = runBoundPromptQuality(input, {
+    origin: 'fixture',
+    async beforeReserve({ id, provider, bytes, sha256 }) {
+      if (provider !== 'anthropic') return;
+      assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'), sha256);
+      if (id === input.plan.calls[0].id) {
+        entered.resolve();
+        await release.promise;
+      }
+      const receipt = { inputTokens: 56_000, requestId: 'count-' + checked.size };
+      checked.set(id, { requestSha256: sha256, ...receipt });
+      bytes.fill(0);
+      return receipt;
+    },
+    deliver({ id, provider, bytes, sha256 }) {
+      assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'), sha256);
+      if (provider === 'anthropic') assert.equal(checked.get(id).requestSha256, sha256);
+      sent.push(id);
+      return input.fixtures.get(id);
+    },
+  });
+  try {
+    await Promise.race([entered.promise, run]);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(sent, []);
+    assert.deepEqual(journalEvents(input).map(event => event.type), ['header']);
+    assert.deepEqual(fs.readdirSync(evidence), []);
+  } finally {
+    release.resolve();
+  }
+  const report = await run;
+  assert.deepEqual([report.providerCalls, report.fixtureDeliveries, report.inputChecks], [0, 16, 6]);
+  assert.deepEqual(sent, input.plan.calls.map(call => call.id));
+  for (const row of report.observations) {
+    for (const stage of Object.values(row.stages)) {
+      const log = JSON.parse(fs.readFileSync(path.join(evidence, stage.log.sha256)));
+      if (stage.provider === 'anthropic') {
+        assert.equal(log.request.sha256, log.inputCheck.requestSha256);
+        assert.deepEqual(log.inputCheck, checked.get(log.callId));
+        assert.deepEqual(stage.inputCheck, log.inputCheck);
+      } else {
+        assert.equal(Object.hasOwn(stage, 'inputCheck'), false);
+        assert.equal(Object.hasOwn(log, 'inputCheck'), false);
+      }
+    }
+  }
+});
+
+test('missing, malformed and oversized counts stop before reservation or delivery', async t => {
+  const invalid = [
+    [undefined, null],
+    [{ inputTokens: 0, requestId: 'count-id' }, null],
+    [{ inputTokens: 1.5, requestId: 'count-id' }, null],
+    [{ inputTokens: 1, requestId: 'invalid id' }, 1],
+    [{ inputTokens: 1, requestId: 'count-id', extra: 1 }, 1],
+    [{ inputTokens: 56_001, requestId: 'count-id' }, 56_001],
+  ];
+  for (const [receipt, expectedCount] of invalid) {
+    const input = setup(t, { checkAnthropicInput: true });
+    const first = input.plan.calls[0].id;
+    let requestSha256;
+    await assert.rejects(runBoundPromptQuality(input, {
+      origin: 'fixture',
+      async beforeReserve({ id, sha256 }) {
+        assert.equal(id, first);
+        requestSha256 = sha256;
+        return receipt;
+      },
+      deliver() { assert.fail('Invalid count cannot permit delivery'); },
+    }), /Anthropic input count/);
+    assert.deepEqual(journalEvents(input).map(event => event.type), ['header']);
+    assert.deepEqual(fs.readdirSync(input.outputDirectory), ['evidence']);
+    const evidence = path.join(input.outputDirectory, 'evidence');
+    const files = fs.readdirSync(evidence);
+    assert.equal(files.length, 1);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(evidence, files[0]))), {
+      kind: 'prompt-quality-input-check-failed', origin: 'fixture', planHash: input.plan.hash,
+      callId: first, requestSha256, inputTokens: expectedCount,
+    });
+  }
+});
+
+test('a repeated Anthropic count receipt stops before the second reservation', async t => {
+  const input = setup(t, { checkAnthropicInput: true });
+  const sent = [];
+  await assert.rejects(runBoundPromptQuality(input, {
+    origin: 'fixture',
+    async beforeReserve() { return { inputTokens: 10, requestId: 'reused-count-id' }; },
+    deliver({ id }) {
+      sent.push(id);
+      return input.fixtures.get(id);
+    },
+  }), /Anthropic input count/);
+  assert.deepEqual(sent, [input.plan.calls[0].id]);
+  assert.deepEqual(journalEvents(input).map(event => event.type), ['header', 'reserve', 'settle']);
+});
+
+test('a reduced reservation still requires headroom for one full-context Anthropic charge', async t => {
+  const input = setup(t, { checkAnthropicInput: true });
+  const { approvalId, overheadMicrodollars, journalDirectory, protocol } = input.plan;
+  const pricing = structuredClone(input.plan.pricing);
+  pricing.anthropic.analyzer.inputMicrodollarsPerMillion = 12000;
+  const plan = createPromptQualityPlan({ approvalId, limitMicrodollars: 6000, overheadMicrodollars,
+    journalDirectory, protocol, pricing });
+  assert(plan.budget.totalMicrodollars < plan.limitMicrodollars);
+  await assert.rejects(runBoundPromptQuality({ ...input, plan, approvedPlanHash: plan.hash }, {
+    origin: 'fixture',
+    beforeReserve() { assert.fail('The count should never be sent without charge headroom'); },
+    deliver() { assert.fail('The paid request should never be sent without charge headroom'); },
+  }), /Insufficient Anthropic charge headroom/);
+  assert.deepEqual(journalEvents(input).map(event => event.type), ['header']);
+});
+
+test('actual Anthropic usage above the reserved cap stays unknown-cost after an accepted estimate', async t => {
+  const input = setup(t, { checkAnthropicInput: true });
+  await assert.rejects(runPromptQualityRehearsal(input), /Local Anthropic input count fixtures required/);
+  assert.ok(!fs.existsSync(input.journal));
+  const first = input.plan.calls[0].id;
+  const delivery = input.fixtures.get(first);
+  const response = JSON.parse(delivery.response);
+  response.usage.input_tokens = 64_001;
+  const fixtures = new Map([[first, { ...delivery, response: Buffer.from(JSON.stringify(response)) }]]);
+  const inputCounts = new Map([[first, { inputTokens: 56_000, requestId: 'count-id' }]]);
+  await assert.rejects(runPromptQualityRehearsal({ ...input, fixtures, inputCounts }), /over-budget evaluation token usage/);
+  const events = journalEvents(input);
+  assert.deepEqual(events.map(event => event.type), ['header', 'reserve', 'fail']);
+  assert.equal(events[1].id, first);
+  const evidence = path.join(input.outputDirectory, 'evidence');
+  const failure = fs.readdirSync(evidence).map(file => JSON.parse(fs.readFileSync(path.join(evidence, file))))
+    .find(entry => entry.kind === 'prompt-quality-failed-call');
+  assert.equal(failure.accounting, 'unknown-cost');
+  assert.deepEqual(failure.inputCheck, {
+    requestSha256: events[1].requestHash, requestId: 'count-id', inputTokens: 56_000,
+  });
 });
 
 test('a metered reply that fails runtime replay stays settled and prevents later calls', async t => {

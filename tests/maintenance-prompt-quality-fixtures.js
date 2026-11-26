@@ -6,7 +6,9 @@ const Q = require('../tools/maintenance-prompt-quality');
 const { releaseConfigHash } = require('../tools/sites-lib');
 const { makeRelease } = require('./final-test-fixtures');
 
-function createQualityFixture(journalDirectory) {
+const ANTHROPIC_INPUT_CHECK = Object.freeze({ method: 'count-tokens', maxEstimatedInputTokens: 56_000, maxInputTokens: 64_000 });
+
+function createQualityFixture(journalDirectory, { checkAnthropicInput = false } = {}) {
   const attachments = new Map(), builds = {}, archives = {};
   function retain(text) {
     const bytes = Buffer.from(text);
@@ -47,20 +49,22 @@ function createQualityFixture(journalDirectory) {
     repetitions: 1, criteria: { minAccuracy: 0.8, minCompleteness: 0.8, maxFabrications: 0, maxMeanRegression: 0 },
     rubric: retain('Evaluate accuracy and completeness against the source.'),
     independentJudge: { model: 'gpt-6-luna', prompt: retain('Evaluate the summary using only the supplied source and rubric.') }, reviewers };
+  if (checkAnthropicInput) spec.anthropicInputCheck = ANTHROPIC_INPUT_CHECK;
   const protocol = Q.createPromptQualityProtocol(spec);
   const payload = C.seal({ v: 1, kind: 'preregistration', protocolHash: protocol.hash, reviewer: 'protocol', observedAt: now,
     outcome: 'pass', attachment: retain('Offline fixture declaration') });
   const preregistration = { payload, signature: crypto.sign(null, Buffer.from(Q.promptQualityPreregistrationMessage(payload)), signer).toString('base64') };
-  const rate = (responseModel, maxOutputTokens) => ({ responseModel, maxOutputTokens, maxInputTokens: 128000,
+  const rate = (responseModel, maxOutputTokens, maxInputTokens = 128_000) => ({ responseModel, maxOutputTokens, maxInputTokens,
     inputMicrodollarsPerMillion: 1000, outputMicrodollarsPerMillion: 2000 });
   const pricing = { independent: rate(spec.independentJudge.model, 8000) };
   for (const provider of Q.PROVIDERS) {
     const models = builds.baseline.release.config.policy.models[provider];
-    pricing[provider] = { analyzer: rate(models.default, 1200), critic: rate(models.default, 1000), judge: rate(models.jury, 8000) };
+    const cap = provider === 'anthropic' ? spec.anthropicInputCheck?.maxInputTokens : undefined;
+    pricing[provider] = { analyzer: rate(models.default, 1200, cap), critic: rate(models.default, 1000, cap), judge: rate(models.jury, 8000, cap) };
   }
   const planInput = { approvalId: 'quality-fixture', limitMicrodollars: 100000, overheadMicrodollars: 10, journalDirectory, protocol, pricing };
   const plan = journalDirectory ? Q.createPromptQualityPlan(planInput) : undefined;
   return { spec, protocol, planInput, plan, pricing, preregistration, reviewerRegistry, attachments, now, archives };
 }
 
-module.exports = { createQualityFixture };
+module.exports = { ANTHROPIC_INPUT_CHECK, createQualityFixture };

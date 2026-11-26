@@ -9,7 +9,7 @@ const { MAX_BYTES } = require('./maintenance-final-evidence');
 const { lexicalPath, localPaths } = require('./maintenance-local-path');
 const { sameLocalDirectory } = require('./maintenance-dependency-smoke-approval');
 const { imageBridge } = require('./maintenance-observed-live');
-const { parseUnambiguousJson, sendProviderBytes } = require('./maintenance-observed-live-transport');
+const { countAnthropicInputTokens, parseUnambiguousJson, sendProviderBytes } = require('./maintenance-observed-live-transport');
 const { prepareDependencySmokeCredentials } = require('./maintenance-dependency-smoke-credentials');
 
 const PURPOSE = 'tos-guardian.maintenance-prompt-quality-live-approval.v1\n';
@@ -252,8 +252,10 @@ async function runPromptQualityLive(options, operatorTrust, credentialFiles) {
     id, id.endsWith(':independent') ? 'openai' : id.split(':', 1)[0],
   ]));
   const bridge = imageBridge(input.imageRuntime, input, { ...payload, ...payload.imageRuntime });
+  const inputCheck = input.plan.protocol.anthropicInputCheck;
   let readCredential;
   let execution;
+  let checkedCall;
   const checkCurrent = () => requireCurrent(payload, billing);
   function checkRequest({ id, provider, bytes, sha256 }) {
     checkCurrent();
@@ -269,16 +271,45 @@ async function runPromptQualityLive(options, operatorTrust, credentialFiles) {
     checkCurrent();
     return credentials;
   }
+
+  async function checkAnthropicInput(call, credentials) {
+    checkedCall = undefined;
+    const { bytes, sha256, id } = call;
+    const result = await countAnthropicInputTokens({
+      bytes, credential: credentials[PROVIDERS.indexOf('anthropic')], accountId: payload.accounts.anthropic,
+    });
+    checkCurrent();
+    if (!exact(result, ['inputTokens', 'requestId']) || !Number.isSafeInteger(result.inputTokens) ||
+        result.inputTokens < 1 || typeof result.requestId !== 'string' ||
+        !/^[A-Za-z0-9_-]{1,200}$/.test(result.requestId) ||
+        credentials.some(credential => result.requestId.includes(credential))) {
+      throw new Error('Unsupported Anthropic input count receipt');
+    }
+    if (result.inputTokens <= inputCheck.maxEstimatedInputTokens) {
+      checkedCall = { id, sha256 };
+    }
+    return result;
+  }
   try {
     await bridge.ready();
     checkCurrent();
     verifyDestinations(payload, input);
     execution = {
       origin: 'captured-runtime',
-      beforeReserve(call) { checkRequest(call); },
+      beforeReserve(call) {
+        const credentials = checkRequest(call);
+        if (inputCheck && call.provider === 'anthropic') return checkAnthropicInput(call, credentials);
+      },
       async deliver(call) {
         const { provider, bytes } = call;
         const credentials = checkRequest(call);
+        if (inputCheck && provider === 'anthropic') {
+          const checked = checkedCall;
+          checkedCall = undefined;
+          if (checked?.id !== call.id || checked.sha256 !== call.sha256) {
+            throw new Error('Anthropic delivery requires a matching unused input check');
+          }
+        }
         const receipt = await sendProviderBytes({
           provider, bytes, accountId: payload.accounts[provider], credential: credentials[PROVIDERS.indexOf(provider)],
         });

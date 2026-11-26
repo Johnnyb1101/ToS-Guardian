@@ -17,13 +17,17 @@ const ROLES = ['protocol', 'execution', 'human', 'judge', 'scope', 'code'];
 const SPEC = ['mode', 'declaredAt', 'builds', 'offlineComparisonHash', 'corpus', 'repetitions', 'criteria', 'rubric', 'independentJudge', 'reviewers'];
 const PLAN = ['approvalId', 'limitMicrodollars', 'overheadMicrodollars', 'journalDirectory', 'protocol', 'pricing'];
 const TOKENS = { analyzer: 1200, critic: 1000, judge: 8000, independent: 8000 };
-// Reserve the entire reviewed context independently of local token estimates.
+const ANTHROPIC_INPUT_CHECK = Object.freeze({
+  method: 'count-tokens', maxEstimatedInputTokens: 56000, maxInputTokens: 64000,
+});
+const ANTHROPIC_FULL_CONTEXT_TOKENS = 1_000_000;
+// Reserve the entire reviewed context unless the protocol binds an enforced Anthropic input check.
 // https://platform.claude.com/docs/en/build-with-claude/context-windows
 // https://developers.openai.com/api/docs/models/gpt-4o-mini
 // https://developers.openai.com/api/docs/models/gpt-4o
 // https://developers.openai.com/api/docs/models/gpt-6-luna
 const CONTEXT = {
-  anthropic: { 'claude-sonnet-4-6': 1_000_000, 'claude-opus-5': 1_000_000 },
+  anthropic: { 'claude-sonnet-4-6': ANTHROPIC_FULL_CONTEXT_TOKENS, 'claude-opus-5': ANTHROPIC_FULL_CONTEXT_TOKENS },
   openai: { 'gpt-4o-mini': 128_000, 'gpt-4o': 128_000 },
   independent: { 'gpt-6-luna': 1_050_000 },
 };
@@ -193,8 +197,12 @@ function validateCorpus(protocol) {
 
 function validatePromptQualityProtocol(protocol) {
   try {
-    requireThat(exact(protocol, [...SPEC, 'v', 'kind', 'hash']) && protocol.v === 1 &&
+    const fields = Object.hasOwn(protocol ?? {}, 'anthropicInputCheck') ? [...SPEC, 'anthropicInputCheck'] : SPEC;
+    requireThat(exact(protocol, [...fields, 'v', 'kind', 'hash']) && protocol.v === 1 &&
       protocol.kind === 'maintenance-prompt-quality-protocol' && C.bodyHash(protocol) === protocol.hash, 'Invalid prompt quality protocol seal or shape');
+    if (fields !== SPEC) {
+      requireThat(same(protocol.anthropicInputCheck, ANTHROPIC_INPUT_CHECK), 'Invalid Anthropic input check');
+    }
     requireThat(['fixture', 'observed'].includes(protocol.mode) && stamp(protocol.declaredAt), 'Invalid protocol mode or declaration time');
     validateBuilds(protocol);
     validateCorpus(protocol);
@@ -212,7 +220,8 @@ function validatePromptQualityProtocol(protocol) {
 }
 
 function createPromptQualityProtocol(spec) {
-  requireThat(exact(spec, SPEC), 'Exact protocol specification required');
+  const fields = Object.hasOwn(spec ?? {}, 'anthropicInputCheck') ? [...SPEC, 'anthropicInputCheck'] : SPEC;
+  requireThat(exact(spec, fields), 'Exact protocol specification required');
   const protocol = C.seal({ v: 1, kind: 'maintenance-prompt-quality-protocol', ...clone(spec) });
   const checked = validatePromptQualityProtocol(protocol);
   requireThat(checked.valid, checked.reasons.join(', '));
@@ -223,11 +232,14 @@ function promptQualityCallId(run, stage) {
   return [run.provider, run.arm, run.sampleId, run.repetition, stage].join(':');
 }
 
-function validateRate(rate, model, stage, provider, mode) {
+function validateRate(rate, model, stage, provider, protocol) {
   requireThat(exact(rate, RATE) && modelId(rate.responseModel) && (rate.responseModel === model ||
     (rate.responseModel.startsWith(model + '-') && /^(?:\d{4}-\d{2}-\d{2}|\d{8})$/.test(rate.responseModel.slice(model.length + 1)))),
     'Response model must match the pinned request model or its dated snapshot');
-  if (mode === 'observed') {
+  if (provider === 'anthropic' && protocol.anthropicInputCheck) {
+    requireThat(rate.maxInputTokens === protocol.anthropicInputCheck.maxInputTokens,
+      'Anthropic pricing must reserve the full checked token allowance');
+  } else if (protocol.mode === 'observed') {
     requireThat(Object.hasOwn(CONTEXT[provider], model) && rate.maxInputTokens >= CONTEXT[provider][model],
       'Observed pricing must reserve the full audited model context');
   }
@@ -242,13 +254,13 @@ function createPromptQualityPlan(input) {
   const checked = validatePromptQualityProtocol(protocol);
   requireThat(checked.valid, checked.reasons.join(', '));
   requireThat(exact(pricing, [...PROVIDERS, 'independent']), 'Pricing for both providers and the independent judge required');
-  validateRate(pricing.independent, protocol.independentJudge.model, 'independent', 'independent', protocol.mode);
+  validateRate(pricing.independent, protocol.independentJudge.model, 'independent', 'independent', protocol);
   const runs = [];
   for (const provider of PROVIDERS) {
     requireThat(exact(pricing[provider], STAGES.slice(0, 3)), 'Three pipeline stages required per provider');
     for (const arm of ARMS) {
       const models = protocol.builds[arm].release.config.policy.models[provider];
-      for (const stage of STAGES.slice(0, 3)) validateRate(pricing[provider][stage], models[stage === 'judge' ? 'jury' : 'default'], stage, provider, protocol.mode);
+      for (const stage of STAGES.slice(0, 3)) validateRate(pricing[provider][stage], models[stage === 'judge' ? 'jury' : 'default'], stage, provider, protocol);
       for (const { id: sampleId } of protocol.corpus.samples) {
         for (let repetition = 1; repetition <= protocol.repetitions; repetition++) runs.push({ provider, arm, sampleId, repetition });
       }
@@ -317,5 +329,5 @@ function verifyPromptQualityPreregistration({ protocol, preregistration, reviewe
   return payload;
 }
 
-module.exports = { PROVIDERS, ARMS, STAGES, createPromptQualityProtocol, validatePromptQualityProtocol, createPromptQualityPlan,
+module.exports = { PROVIDERS, ARMS, STAGES, ANTHROPIC_FULL_CONTEXT_TOKENS, createPromptQualityProtocol, validatePromptQualityProtocol, createPromptQualityPlan,
   validatePromptQualityPlan, promptQualityPreregistrationMessage, verifyPromptQualityPreregistration, readQualityAttachment, promptQualityCallId };

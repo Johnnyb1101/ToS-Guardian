@@ -9,7 +9,8 @@ const { sameLocalDirectory } = require('./maintenance-dependency-smoke-approval'
 const { openObservedBudget } = require('./maintenance-observed-budget');
 const { isApprovedPromptQualityExecution, promptQualityLiveJournalDirectory } = require('./maintenance-prompt-quality-live');
 const {
-  STAGES, validatePromptQualityPlan, verifyPromptQualityPreregistration, readQualityAttachment, promptQualityCallId,
+  STAGES, ANTHROPIC_FULL_CONTEXT_TOKENS, validatePromptQualityPlan, verifyPromptQualityPreregistration,
+  readQualityAttachment, promptQualityCallId,
 } = require('./maintenance-prompt-quality');
 const {
   independentRequest, validateQualityRequest, readQualityResponse, readIndependentGrade, checkAnalyzerHeadings,
@@ -103,6 +104,17 @@ function callScope(run, stage, build, protocol, pricing) {
   return { provider: run.provider, stage, model, pricing: pricing[run.provider][stage] };
 }
 
+function requireAnthropicChargeHeadroom(budget, pricing) {
+  const { attempts, overheadMicrodollars, limitMicrodollars } = budget.snapshot();
+  requireThat(attempts.every(attempt => attempt.status === 'settled'), 'Anthropic charge headroom requires settled prior calls');
+  const paid = attempts.reduce((sum, attempt) => sum + BigInt(attempt.actualMicrodollars), BigInt(overheadMicrodollars));
+  const perMillion = 1_000_000n;
+  const input = BigInt(ANTHROPIC_FULL_CONTEXT_TOKENS) * BigInt(pricing.inputMicrodollarsPerMillion);
+  const output = BigInt(pricing.maxOutputTokens) * BigInt(pricing.outputMicrodollarsPerMillion);
+  const fullCharge = (input + perMillion - 1n) / perMillion + (output + perMillion - 1n) / perMillion;
+  requireThat(paid + fullCharge <= BigInt(limitMicrodollars), 'Insufficient Anthropic charge headroom for a full-context call');
+}
+
 async function verifyImageReplay(replayResponse, build, call, result) {
   const replay = await replayResponse(build.artifact.sha256, { provider: call.provider, body: result.body });
   const usage = replay?.usage;
@@ -131,12 +143,14 @@ async function runBoundPromptQuality({ plan, approvedPlanHash, preregistration, 
   const output = await verifyArchives(protocol.builds, archiveLocations, outputDirectory, bound.journalDirectory, live);
   const budget = openObservedBudget(bound.journalDirectory, bound.budget);
   let deliveries = 0;
+  let inputChecks = 0;
   try {
     requireThat(budget.snapshot().attempts.length === 0, 'Evaluation already attempted under this approval');
     const keep = openEvidence(output);
     const observations = [];
     const responseIds = new Set();
     const requestIds = new Set();
+    const inputCheckIds = new Set();
     for (const run of bound.runs) {
       const sample = sources.get(run.sampleId);
       const build = protocol.builds[run.arm];
@@ -154,7 +168,31 @@ async function runBoundPromptQuality({ plan, approvedPlanHash, preregistration, 
             prior: stage === 'analyzer' ? null : summary,
           });
         const { capture, bytes } = validateQualityRequest(request, call);
-        beforeReserve({ id, provider: call.provider, bytes: Buffer.from(bytes), sha256: sha(bytes) });
+        const requestDigest = sha(bytes);
+        const check = call.provider === 'anthropic' && protocol.anthropicInputCheck;
+        let inputCheck;
+        let checked;
+        try {
+          // The count is an estimate. Leave room for one full-context charge because an overage halts the run.
+          if (check) requireAnthropicChargeHeadroom(budget, call.pricing);
+          checked = await beforeReserve({ id, provider: call.provider, bytes: Buffer.from(bytes), sha256: requestDigest });
+          if (check) {
+            requireThat(checked && Object.keys(checked).length === 2 && receiptId(checked.requestId) &&
+              Number.isSafeInteger(checked.inputTokens) && checked.inputTokens > 0 &&
+              checked.inputTokens <= check.maxEstimatedInputTokens && !inputCheckIds.has(checked.requestId),
+            'Invalid, excessive or repeated Anthropic input count');
+            inputCheckIds.add(checked.requestId);
+            inputChecks++;
+            inputCheck = { requestSha256: requestDigest, requestId: checked.requestId, inputTokens: checked.inputTokens };
+          }
+        } catch (error) {
+          if (check) {
+            const count = Number.isSafeInteger(checked?.inputTokens) && checked.inputTokens > 0 ? checked.inputTokens : null;
+            keep(encode({ kind: 'prompt-quality-input-check-failed', origin, planHash: bound.hash,
+              callId: id, requestSha256: requestDigest, inputTokens: count }));
+          }
+          throw error;
+        }
         const captureRef = keep(capture);
         const requestRef = keep(bytes);
         budget.reserve(id, requestRef.sha256);
@@ -162,7 +200,7 @@ async function runBoundPromptQuality({ plan, approvedPlanHash, preregistration, 
         function retainFailure(accounting) {
           keep(encode({ kind: 'prompt-quality-failed-call', planHash: bound.hash, origin, callId: id,
             provider: call.provider, request: requestRef, capture: captureRef, response: response ?? null,
-            receipt: receipt ?? null, accounting }));
+            receipt: receipt ?? null, accounting, ...(inputCheck && { inputCheck }) }));
         }
         try {
           deliveries++;
@@ -193,7 +231,8 @@ async function runBoundPromptQuality({ plan, approvedPlanHash, preregistration, 
           if (stage !== 'independent') await verifyImageReplay(replayResponse, build, call, result);
           if (stage === 'independent') independentGrade = readIndependentGrade(result.text);
           const observation = { provider: call.provider, model: call.model, responseModel: call.pricing.responseModel,
-            capture: captureRef, request: requestRef, response, output: keep(Buffer.from(result.text)), receipt, usage: result.usage };
+            capture: captureRef, request: requestRef, response, output: keep(Buffer.from(result.text)), receipt,
+            usage: result.usage, ...(inputCheck && { inputCheck }) };
           stages[stage] = { ...observation, log: keep(encode({
             kind: 'prompt-quality-completed-call', planHash: bound.hash, origin, callId: id, ...observation,
           })) };
@@ -215,6 +254,7 @@ async function runBoundPromptQuality({ plan, approvedPlanHash, preregistration, 
       diagnosticOnly: true, promotionEligible: false, evaluationPassed: false,
       origin, planHash: bound.hash, protocolHash: protocol.hash,
       providerCalls: live ? deliveries : 0, fixtureDeliveries: live ? 0 : deliveries,
+      ...(protocol.anthropicInputCheck && { inputChecks }),
       observations, budget: budget.snapshot(),
     });
     fs.writeFileSync(path.join(output, 'prompt-quality-run.json'), encode(report), { flag: 'wx', mode: 0o600 });
@@ -226,7 +266,14 @@ async function runBoundPromptQuality({ plan, approvedPlanHash, preregistration, 
 
 function runPromptQualityRehearsal(input) {
   if (!(input.fixtures instanceof Map)) return Promise.reject(new Error('Local evaluation response fixtures required'));
-  return runBoundPromptQuality(input, { origin: 'fixture', deliver: ({ id }) => input.fixtures.get(id) });
+  if (input.plan?.protocol?.anthropicInputCheck && !(input.inputCounts instanceof Map)) {
+    return Promise.reject(new Error('Local Anthropic input count fixtures required'));
+  }
+  return runBoundPromptQuality(input, {
+    origin: 'fixture',
+    beforeReserve: ({ id, provider }) => provider === 'anthropic' ? input.inputCounts?.get(id) : undefined,
+    deliver: ({ id }) => input.fixtures.get(id),
+  });
 }
 
 module.exports = { runBoundPromptQuality, runPromptQualityRehearsal };
