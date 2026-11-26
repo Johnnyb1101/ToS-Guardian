@@ -72,7 +72,7 @@ function anthropicResponse(response, call) {
     blocks.length === 1 && text(blocks[0].text) &&
     content.every(block => ['text', 'thinking', 'redacted_thinking'].includes(block?.type)),
   'Anthropic evaluation response was refused, truncated or unsupported');
-  requireThat(only(usage, ['input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens',
+  requireThat(only(usage, ['input_tokens', 'output_tokens', 'output_tokens_details', 'cache_creation_input_tokens', 'cache_read_input_tokens',
     'cache_creation', 'service_tier', 'inference_geo', 'speed']) &&
     usage.service_tier === 'standard' && usage.inference_geo === 'global' &&
     [undefined, 'standard'].includes(usage.speed) &&
@@ -80,6 +80,11 @@ function anthropicResponse(response, call) {
     (usage.cache_creation == null || (exact(usage.cache_creation, ['ephemeral_5m_input_tokens', 'ephemeral_1h_input_tokens']) &&
       Object.values(usage.cache_creation).every(count => count === 0))),
   'Unsupported Anthropic tier, inference geography or cache usage');
+  // The billed output total already includes the thinking tokens.
+  const details = usage.output_tokens_details;
+  requireThat(details == null || (exact(details, ['thinking_tokens']) &&
+    tokens(details.thinking_tokens) && details.thinking_tokens <= usage.output_tokens),
+  'Invalid Anthropic thinking-token breakdown');
   return { text: blocks[0].text, usage: { inputTokens: usage.input_tokens, outputTokens: usage.output_tokens } };
 }
 

@@ -366,6 +366,77 @@ test('a metered reply that fails runtime replay stays settled and prevents later
   assert.deepEqual(journalEvents(input).map(event => event.type), ['header', 'reserve', 'settle']);
 });
 
+function anthropicThinkingResponse() {
+  // The retained Jury response's block types and usage, with synthetic content and identity.
+  return {
+    id: 'fixture-thinking-completion', type: 'message', role: 'assistant', model: 'claude-opus-5', stop_reason: 'end_turn',
+    content: [{ type: 'thinking', thinking: '', signature: 'fixture' }, { type: 'text', text: 'Fixture verdict.' }],
+    usage: {
+      input_tokens: 10_665, cache_creation_input_tokens: 0, cache_read_input_tokens: 0,
+      cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 },
+      output_tokens: 2_238, output_tokens_details: { thinking_tokens: 1_338 },
+      service_tier: 'standard', inference_geo: 'global', speed: 'standard',
+    },
+  };
+}
+
+function anthropicThinkingDelivery(response) {
+  return { status: 200, requestId: 'fixture-thinking-request', response: Buffer.from(JSON.stringify(response)) };
+}
+
+test('the runner settles all billed Anthropic Jury output tokens and retains the visible verdict', async t => {
+  const input = setup(t);
+  const { id } = input.plan.calls.find(call => call.id.startsWith('anthropic:') && call.id.endsWith(':judge'));
+  const response = anthropicThinkingResponse();
+  const usage = { inputTokens: 10_665, outputTokens: 2_238 };
+  input.fixtures.set(id, anthropicThinkingDelivery(response));
+  const replayResponse = input.replayResponse;
+  input.replayResponse = (digest, replay) => JSON.parse(replay.body).id === response.id ? {
+    outcome: 'parsed', parsed: { text: response.content[1].text },
+    usage: { ...usage, cacheReadTokens: 0, cacheWriteTokens: 0 },
+  } : replayResponse(digest, replay);
+
+  const report = await runPromptQualityRehearsal(input);
+  const attempt = report.budget.attempts.find(attempt => attempt.id === id);
+  assert.equal(attempt.status, 'settled');
+  assert.deepEqual(attempt.usage, usage);
+  assert.equal(attempt.actualMicrodollars, 16);
+  const { stages } = report.observations.find(row => row.provider === 'anthropic' && row.arm === id.split(':')[1]);
+  assert.deepEqual(stages.judge.usage, usage);
+  assert.equal(fs.readFileSync(path.join(input.outputDirectory, 'evidence', stages.judge.output.sha256), 'utf8'),
+    response.content[1].text);
+});
+
+test('Anthropic Jury usage allows omitted or null thinking details and rejects invalid breakdowns', () => {
+  const { pricing } = createQualityFixture(undefined, { checkAnthropicInput: true });
+  const call = { provider: 'anthropic', stage: 'judge', pricing: pricing.anthropic.judge };
+  const response = anthropicThinkingResponse();
+  function verify() {
+    return readQualityResponse(anthropicThinkingDelivery(response), call);
+  }
+
+  delete response.usage.output_tokens_details;
+  assert.deepEqual(verify().usage, { inputTokens: 10_665, outputTokens: 2_238 });
+  response.usage.output_tokens_details = null;
+  assert.deepEqual(verify().usage, { inputTokens: 10_665, outputTokens: 2_238 });
+
+  const invalid = [[], {}, { thinking_tokens: 1, unknown_tokens: 0 }, ...[
+    null, '1338', -1, 1.5, Number.MAX_SAFE_INTEGER + 1, 2_239,
+  ].map(thinking_tokens => ({ thinking_tokens }))];
+  for (const breakdown of invalid) {
+    response.usage.output_tokens_details = breakdown;
+    assert.throws(verify, /Invalid Anthropic thinking-token breakdown/, JSON.stringify(breakdown));
+  }
+  response.usage.output_tokens_details = { thinking_tokens: 1_338 };
+  response.usage.unknown_tokens = 0;
+  assert.throws(verify, /Unsupported Anthropic tier, inference geography or cache usage/);
+  delete response.usage.unknown_tokens;
+
+  response.usage.output_tokens = 8_001;
+  response.usage.output_tokens_details = { thinking_tokens: 7_101 };
+  assert.throws(verify, /over-budget evaluation token usage/);
+});
+
 test('unsupported tiers, refusals, duplicate JSON fields and premium cache writes fail closed', () => {
   const settings = createQualityFixture();
   const response = {
