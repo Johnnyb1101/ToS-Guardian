@@ -102,9 +102,13 @@ function openaiResponse(response, call) {
     requireCachedTokens: false,
     allowReasoning: call.stage === 'judge' || call.stage === 'independent',
   });
-  requireThat(usage.cacheWriteTokens === 0, 'Unsupported OpenAI cache write usage');
+  // The signed Luna reserve covers the full long-context, 12-hour cache-write rate.
+  const coveredCacheWrites = call.stage === 'independent' && response.model === 'gpt-6-luna' &&
+    call.pricing.inputMicrodollarsPerMillion >= 500_000 &&
+    call.pricing.outputMicrodollarsPerMillion >= 750_000;
+  requireThat(usage.cacheWriteTokens === 0 || coveredCacheWrites, 'Unsupported OpenAI cache write usage');
   return { text: message.content, usage: {
-    inputTokens: usage.inputTokens + usage.cacheReadTokens,
+    inputTokens: usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens,
     outputTokens: usage.outputTokens,
   } };
 }
