@@ -8,10 +8,25 @@ const Q = require('../tools/maintenance-prompt-quality');
 const F = require('../tools/maintenance-final-evidence');
 const C = require('../tools/final-corpus-lib');
 const { releaseConfigHash } = require('../tools/sites-lib');
-const { createQualityFixture } = require('./maintenance-prompt-quality-fixtures');
+const { ANTHROPIC_INPUT_CHECK: anthropicInputCheck, createQualityFixture } = require('./maintenance-prompt-quality-fixtures');
 
 const fixture = createQualityFixture();
+const guardedFixture = createQualityFixture(undefined, { checkAnthropicInput: true });
+const guardedProtocol = guardedFixture.protocol;
 assert.deepEqual(Q.validatePromptQualityProtocol(fixture.protocol), { valid: true, reasons: [] });
+assert.equal(Object.hasOwn(fixture.protocol, 'anthropicInputCheck'), false);
+assert.equal(guardedProtocol.v, fixture.protocol.v);
+assert.deepEqual(guardedProtocol.anthropicInputCheck, anthropicInputCheck);
+assert.notEqual(guardedProtocol.hash, fixture.protocol.hash);
+assert.throws(() => Q.verifyPromptQualityPreregistration({ ...fixture, protocol: guardedProtocol }), /preregistration declaration/);
+assert.deepEqual(Q.verifyPromptQualityPreregistration(guardedFixture), guardedFixture.preregistration.payload);
+for (const malformed of [
+  null, { method: 'count-tokens' }, { ...anthropicInputCheck, method: 'local-estimate' },
+  { ...anthropicInputCheck, maxEstimatedInputTokens: 56_001 }, { ...anthropicInputCheck, maxInputTokens: 64_001 },
+  { ...anthropicInputCheck, extra: true },
+]) {
+  assert.throws(() => Q.createPromptQualityProtocol({ ...fixture.spec, anthropicInputCheck: malformed }));
+}
 assert.equal(F.validateFinalProtocol(fixture.protocol).valid, false);
 const oldEvidence = F.validateFinalEvidence(fixture.protocol, {}, {});
 assert.equal(oldEvidence.evaluationPassed, false);
@@ -51,6 +66,27 @@ if (process.platform === 'win32') {
     assert.equal(plan.calls.length, 16);
     assert.equal(plan.budget.planHash, plan.hash);
     assert.deepEqual(plan.calls, plan.budget.calls);
+    const guardedPricing = guardedFixture.pricing;
+    const guardedInput = { ...input, protocol: guardedProtocol, pricing: guardedPricing };
+    const guardedPlan = Q.createPromptQualityPlan(guardedInput);
+    assert.deepEqual(Q.validatePromptQualityPlan(guardedPlan, guardedPlan.hash), guardedPlan);
+    assert.equal(guardedPlan.calls.length, plan.calls.length);
+    assert.notEqual(guardedPlan.hash, plan.hash);
+    for (const [index, call] of guardedPlan.calls.entries()) {
+      if (call.id.startsWith('anthropic:') && !call.id.endsWith(':independent')) {
+        assert.deepEqual(call, { ...plan.calls[index], maxInputTokens: 64_000 });
+      } else {
+        assert.deepEqual(call, plan.calls[index]);
+      }
+    }
+    assert.ok(guardedPlan.budget.totalMicrodollars < plan.budget.totalMicrodollars);
+    for (const stage of ['analyzer', 'critic', 'judge']) {
+      for (const maxInputTokens of [63_999, 64_001]) {
+        const pricing = structuredClone(guardedPricing);
+        pricing.anthropic[stage].maxInputTokens = maxInputTokens;
+        assert.throws(() => Q.createPromptQualityPlan({ ...guardedInput, pricing }));
+      }
+    }
     assert.throws(() => Q.validatePromptQualityPlan({ ...plan, runs: [] }, plan.hash));
     assert.throws(() => Q.validatePromptQualityPlan(plan, C.hashText('other plan')));
     assert.throws(() => Q.createPromptQualityPlan({ ...input, limitMicrodollars: 1 }));

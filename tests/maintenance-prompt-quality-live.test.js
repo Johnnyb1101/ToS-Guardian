@@ -61,7 +61,10 @@ function fixture(t, doubles = {}) {
       return { prepareDependencySmokeCredentials: doubles.credentials ?? rejectLiveAction };
     }
     if (id === './maintenance-observed-live-transport') {
-      return { ...load(id), sendProviderBytes: doubles.transport ?? rejectLiveAction };
+      return {
+        ...load(id), sendProviderBytes: doubles.transport ?? rejectLiveAction,
+        countAnthropicInputTokens: doubles.count ?? rejectLiveAction,
+      };
     }
     if (id === './maintenance-prompt-quality-runner') {
       return { runBoundPromptQuality: doubles.runner ?? rejectLiveAction };
@@ -242,4 +245,51 @@ test('checks the request before retention and reduces credential-bearing respons
   assert.deepEqual(events, [
     'image ready', 'fixture credentials checked', 'request eligible for retention', 'fixture dispatch', 'image closed',
   ]);
+});
+
+test('requires an unused Anthropic count receipt for the exact paid request', async t => {
+  const counted = [];
+  const delivered = [];
+  const anthropicBytes = Buffer.from('{"model":"claude-sonnet-4-6","system":"test","messages":[{"role":"user","content":"test"}],"max_tokens":1200}');
+  const openaiBytes = Buffer.from('{"model":"gpt-4o-mini"}');
+  let nextTokens = 56000;
+  const f = fixture(t, {
+    bridge: () => ({ ready() {}, close() {} }),
+    credentials: () => ({ provider }) => 'fixture-key-' + provider,
+    count({ bytes, credential, accountId }) {
+      assert.equal(credential, 'fixture-key-anthropic');
+      assert.equal(accountId, 'wrkspc_fixture');
+      assert.deepEqual(bytes, anthropicBytes);
+      counted.push(digest(bytes));
+      return { inputTokens: nextTokens, requestId: 'count-' + counted.length };
+    },
+    transport({ provider, bytes }) {
+      delivered.push([provider, digest(bytes)]);
+      return { status: 200, requestId: 'response-' + delivered.length, response: Buffer.from('{}') };
+    },
+    async runner({ plan }, { beforeReserve, deliver }) {
+      const anthropic = { id: plan.calls[0].id, provider: 'anthropic', bytes: anthropicBytes, sha256: digest(anthropicBytes) };
+      const openai = { id: plan.calls[1].id, provider: 'openai', bytes: openaiBytes, sha256: digest(openaiBytes) };
+      await assert.rejects(deliver(anthropic), /matching unused input check/);
+      assert.equal(await beforeReserve(openai), undefined);
+      await deliver(openai);
+
+      nextTokens = 56001;
+      assert.equal((await beforeReserve(anthropic)).inputTokens, 56001);
+      await assert.rejects(deliver(anthropic), /matching unused input check/);
+      nextTokens = 56000;
+      assert.deepEqual(await beforeReserve(anthropic), { inputTokens: 56000, requestId: 'count-2' });
+      const changed = Buffer.concat([anthropicBytes, Buffer.from(' ')]);
+      await assert.rejects(deliver({ ...anthropic, bytes: changed, sha256: digest(changed) }), /matching unused input check/);
+      await assert.rejects(deliver(anthropic), /matching unused input check/);
+      assert.deepEqual(await beforeReserve(anthropic), { inputTokens: 56000, requestId: 'count-3' });
+      await deliver(anthropic);
+      await assert.rejects(deliver(anthropic), /matching unused input check/);
+    },
+  });
+  f.options.plan.protocol.anthropicInputCheck = { method: 'count-tokens', maxEstimatedInputTokens: 56000, maxInputTokens: 64000 };
+  f.options.plan.calls = [{ id: 'anthropic:baseline:example:1:analyzer' }, { id: 'openai:baseline:example:1:analyzer' }];
+  await f.live.runPromptQualityLive(f.options, f.operatorTrust, {});
+  assert.deepEqual(counted, Array(3).fill(digest(anthropicBytes)));
+  assert.deepEqual(delivered, [['openai', digest(openaiBytes)], ['anthropic', digest(anthropicBytes)]]);
 });
