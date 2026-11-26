@@ -104,6 +104,60 @@ const CHANGES = [
     ]
   }
 ];
+const OBSERVED_BUILD_PAIRS = new Map([
+  [OFFLINE_HASH, { builds: BUILDS, changes: CHANGES }],
+  ['476d3d202fb834aa2205e31168e89524a69742b5c9a28558dca5b9857cdbfe2c', {
+    builds: {
+      "baseline": {
+        "commit": "39f34f11ea180a4de93370ec790009bc17d63e86",
+        "artifact": {
+          "manifestDigest": "sha256:d6320e7a89a6dacb6b3f84d56be38b56953d237137f001d89a1058dbe4aa805c",
+          "bytes": 266977280,
+          "sha256": "dabefdbff08b8f7d78d47e7c36b24079d0a4d3bf7bd8e8a5067e6eda3952be97"
+        },
+        "configHash": "4b136706efe246302618ed3e6317d7139a8b78d6c9d6d47e4d175d72b18cd960"
+      },
+      "candidate": {
+        "commit": "632b5fc38cdd19d6b042b6d193fb34fb3b612b98",
+        "artifact": {
+          "manifestDigest": "sha256:2898a9d7594b80a41c4ec21a8847c32b969fd68523ad472433693284d1d4d89b",
+          "bytes": 266977280,
+          "sha256": "f3a8d29821866d8bdef1a58837ffec89efedc3d0902a3000f116bb1da778276d"
+        },
+        "configHash": "208864d93ccbfb4ff8f9012e812bdf9c043f3d2919a65220292136383154ac73"
+      }
+    },
+    changes: [
+      {
+        "path": [
+          "policy",
+          "promptHashes",
+          "analyzer"
+        ],
+        "baseline": "b7860757fa2d7c81a39c07b5c7be23edd1e1d6730316f16ed392b1a78df11e97",
+        "candidate": "61c3552389d6b8bbb1a0c99693315c2d15575d6f4deb0a58d2a794705ff9e8c0"
+      },
+      {
+        "path": [
+          "policy",
+          "versions",
+          "promptComposition"
+        ],
+        "baseline": "dda72baadc2a7ef08a06d355b023a7baae14997ba2a3d36bdcda6be86edfd7f7",
+        "candidate": "bf9de2031ef72410fd4d71da45fe771fa9e0beff4bc211a50b7232f4cfc90c8e"
+      },
+      {
+        "path": [
+          "policy",
+          "versions",
+          "serverPipeline"
+        ],
+        "baseline": "11e04423e42901b04174b6c565e380dcf58bcfcbcdabba661071b7a1f03b4484",
+        "candidate": "190331bc7d9c826e2534920524aa55af9200772ea5210e2ccbd242905f1ac944"
+      }
+    ],
+  }],
+]);
 const OFFLINE_SOURCES = [
   {
     "url": "https://bsky.social/about/support/tos",
@@ -134,20 +188,22 @@ const OFFLINE_SOURCES = [
 function validateBuilds({ builds, mode, offlineComparisonHash }) {
   requireThat(exact(builds, ARMS) && C.isHash(offlineComparisonHash), 'Build pair and offline comparison hash required');
   const observed = mode === 'observed';
-  if (observed) requireThat(offlineComparisonHash === OFFLINE_HASH, 'Unknown offline comparison');
+  const reviewedPair = OBSERVED_BUILD_PAIRS.get(offlineComparisonHash);
+  if (observed) requireThat(reviewedPair, 'Unknown offline comparison');
+  const changes = observed ? reviewedPair.changes : CHANGES;
   const fixed = {};
   for (const arm of ARMS) {
     const b = builds[arm];
     requireThat(exact(b, ['commit', 'release', 'artifact', 'runtime']) && /^[a-f0-9]{40}$/.test(b.commit) &&
-      checkRelease(b.release, observed ? BUILDS[arm].configHash : null).valid, 'Invalid pinned ' + arm + ' release');
+      checkRelease(b.release, observed ? reviewedPair.builds[arm].configHash : null).valid, 'Invalid pinned ' + arm + ' release');
     const a = b.artifact;
     requireThat(exact(a, ['sha256', 'bytes', 'manifestDigest']) && C.isHash(a.sha256) &&
       positive(a.bytes) && a.bytes <= 256 * 1024 * 1024 && /^sha256:[a-f0-9]{64}$/.test(a.manifestDigest), 'Invalid OCI artifact');
     requireThat(exact(b.runtime, Object.keys(RUNTIME)) && Object.values(b.runtime).every(C.nonempty), 'Invalid runtime');
-    if (observed) requireThat(same(a, BUILDS[arm].artifact) && b.commit === BUILDS[arm].commit && same(b.runtime, RUNTIME),
+    if (observed) requireThat(same(a, reviewedPair.builds[arm].artifact) && b.commit === reviewedPair.builds[arm].commit && same(b.runtime, RUNTIME),
       'Observed build identity differs from reviewed ' + arm);
     fixed[arm] = clone(b.release.config);
-    for (const change of CHANGES) {
+    for (const change of changes) {
       const [, section, field] = change.path;
       const leaf = fixed[arm].policy[section][field];
       requireThat(C.isHash(leaf) && (!observed || leaf === change[arm]), 'Invalid changed release leaf ' + field);
