@@ -437,6 +437,100 @@ test('Anthropic Jury usage allows omitted or null thinking details and rejects i
   assert.throws(verify, /over-budget evaluation token usage/);
 });
 
+const LUNA_CACHE_WRITE_RATES = { inputMicrodollarsPerMillion: 500_000, outputMicrodollarsPerMillion: 750_000 };
+
+function lunaCacheWriteResponse() {
+  // The retained independent grader's usage, with synthetic content and identity.
+  return {
+    id: 'fixture-luna-cache-write-completion', object: 'chat.completion', model: 'gpt-6-luna', service_tier: 'default',
+    choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: GRADE } }],
+    usage: {
+      prompt_tokens: 6_725, completion_tokens: 2_355, total_tokens: 9_080,
+      prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: 6_722, audio_tokens: 0 },
+      completion_tokens_details: {
+        reasoning_tokens: 2_305, audio_tokens: 0, accepted_prediction_tokens: 0, rejected_prediction_tokens: 0,
+      },
+    },
+  };
+}
+
+function lunaCacheWriteDelivery(response) {
+  return { status: 200, requestId: 'fixture-luna-cache-write-request', response: Buffer.from(JSON.stringify(response)) };
+}
+
+test('the runner settles the retained Luna usage at the signed independent grader rates', async t => {
+  const input = setup(t);
+  const { approvalId, overheadMicrodollars, journalDirectory, protocol } = input.plan;
+  const pricing = structuredClone(input.plan.pricing);
+  Object.assign(pricing.independent, LUNA_CACHE_WRITE_RATES);
+  const plan = createPromptQualityPlan({
+    approvalId, limitMicrodollars: 1_000_000, overheadMicrodollars, journalDirectory, protocol, pricing,
+  });
+  const { id } = plan.calls.find(call => call.id.startsWith('anthropic:baseline:') && call.id.endsWith(':independent'));
+  input.fixtures.set(id, lunaCacheWriteDelivery(lunaCacheWriteResponse()));
+
+  const report = await runPromptQualityRehearsal({ ...input, plan, approvedPlanHash: plan.hash });
+  assert.deepEqual([report.v, report.providerCalls, report.fixtureDeliveries], [1, 0, 16]);
+  const attempt = report.budget.attempts.find(attempt => attempt.id === id);
+  const usage = { inputTokens: 6_725, outputTokens: 2_355 };
+  assert.equal(attempt.status, 'settled');
+  assert.deepEqual(attempt.usage, usage);
+  assert.equal(attempt.actualMicrodollars, 5_130);
+  assert.deepEqual(journalEvents(input).find(event => event.type === 'settle' && event.id === id),
+    { type: 'settle', id, usage });
+  const observation = report.observations.find(row => row.provider === 'anthropic' && row.arm === 'baseline');
+  assert.equal(observation.stages.independent.provider, 'openai');
+  assert.deepEqual(observation.stages.independent.usage, usage);
+  assert.deepEqual(observation.independentGrade, JSON.parse(GRADE));
+});
+
+test('Luna cache writes preserve full prompt usage and reject malformed counts and cap overruns', () => {
+  const { pricing } = createQualityFixture();
+  const independent = { ...pricing.independent, ...LUNA_CACHE_WRITE_RATES };
+  const response = lunaCacheWriteResponse();
+  function verify(overrides) {
+    return readQualityResponse(lunaCacheWriteDelivery(response), {
+      provider: 'openai', stage: 'independent', pricing: { ...independent, ...overrides },
+    });
+  }
+  const usage = { inputTokens: 6_725, outputTokens: 2_355 };
+  assert.deepEqual(verify({ maxInputTokens: 6_725, maxOutputTokens: 2_355 }).usage, usage);
+  response.usage.prompt_tokens_details.cached_tokens = 2;
+  assert.deepEqual(verify().usage, usage);
+  response.usage.prompt_tokens_details.cached_tokens = 4;
+  assert.throws(verify, /Unsupported OpenAI prompt usage details/);
+  response.usage.prompt_tokens_details.cached_tokens = 0;
+  for (const invalid of [-1, 2.5, '6722', 6_726]) {
+    response.usage.prompt_tokens_details.cache_write_tokens = invalid;
+    assert.throws(verify, /Unsupported OpenAI prompt usage details/);
+  }
+  response.usage.prompt_tokens_details.cache_write_tokens = 6_722;
+  assert.throws(() => verify({ maxInputTokens: 6_724 }), /over-budget evaluation token usage/);
+  assert.throws(() => verify({ maxOutputTokens: 2_354 }), /OpenAI usage missing, malformed or inconsistent/);
+});
+
+test('OpenAI cache writes require the independent Luna stage and both signed rates', () => {
+  const { pricing } = createQualityFixture();
+  const independent = { ...pricing.independent, ...LUNA_CACHE_WRITE_RATES };
+  const response = lunaCacheWriteResponse();
+  const call = { provider: 'openai', stage: 'independent', pricing: independent };
+  function verify(scope) {
+    return readQualityResponse(lunaCacheWriteDelivery(response), scope);
+  }
+  assert.throws(() => verify({ ...call, stage: 'judge' }), /Unsupported OpenAI cache write usage/);
+  for (const [rate, minimum] of Object.entries(LUNA_CACHE_WRITE_RATES)) {
+    assert.throws(() => verify({ ...call, pricing: { ...independent, [rate]: minimum - 1 } }),
+      /Unsupported OpenAI cache write usage/);
+  }
+  response.model = pricing.openai.judge.responseModel;
+  assert.throws(() => verify({ ...call, pricing: { ...independent, responseModel: response.model } }),
+    /Unsupported OpenAI cache write usage/);
+
+  response.model = independent.responseModel;
+  response.usage.prompt_tokens_details.cache_write_tokens = 0;
+  assert.deepEqual(verify({ ...call, pricing: pricing.independent }).usage, { inputTokens: 6_725, outputTokens: 2_355 });
+});
+
 test('unsupported tiers, refusals, duplicate JSON fields and premium cache writes fail closed', () => {
   const settings = createQualityFixture();
   const response = {
