@@ -10,7 +10,7 @@ const C = require('../tools/final-corpus-lib');
 const F = require('../tools/maintenance-final-evidence');
 const { AUTHORIZATION_PURPOSE, checkAuthorization, strictCanonicalJson } = require('../tools/sites-lib');
 const { runBoundPromptQuality, runPromptQualityRehearsal } = require('../tools/maintenance-prompt-quality-runner');
-const { readQualityResponse } = require('../tools/maintenance-prompt-quality-provider');
+const { checkAnalyzerHeadings, readQualityResponse } = require('../tools/maintenance-prompt-quality-provider');
 const { createPromptQualityPlan } = require('../tools/maintenance-prompt-quality');
 const { createQualityFixture } = require('./maintenance-prompt-quality-fixtures');
 
@@ -21,6 +21,33 @@ const HEADINGS = [
 const COMPLETE = HEADINGS.map(heading => heading + '\nFixture text.').join('\n\n');
 const MISSING = COMPLETE.replace('🧭 BOTTOM LINE\n', '').replace('DATA SELLING & SHARING', 'DATA SHARING & SELLING');
 const GRADE = '{"accuracy":1,"completeness":0.95,"fabrications":0}';
+
+test('analyzer heading check accepts trailing spaces and tabs on otherwise exact headings', () => {
+  const padded = HEADINGS.map((heading, index) => heading + (index % 2 ? ' \t' : '  ') + '\nFixture text.  ').join('\n\n');
+  assert.deepEqual(checkAnalyzerHeadings(COMPLETE), { passed: true, missing: [] });
+  assert.deepEqual(checkAnalyzerHeadings(padded), { passed: true, missing: [] });
+  assert.deepEqual(checkAnalyzerHeadings(padded.replaceAll('\n', '\r\n')), { passed: true, missing: [] });
+});
+
+test('analyzer heading whitespace tolerance preserves the required layout', () => {
+  const padded = HEADINGS.map(heading => heading + '  \nFixture text.').join('\n\n');
+  const malformed = {
+    missing: padded.replace(HEADINGS[3] + '  \n', ''),
+    reordered: padded.replace(HEADINGS[1] + '  \nFixture text.\n\n' + HEADINGS[2],
+      HEADINGS[2] + '  \nFixture text.\n\n' + HEADINGS[1]),
+    duplicate: padded + '\n' + HEADINGS[0] + '  ',
+    preamble: 'Title\n' + padded,
+    indentation: ' ' + padded,
+    markdown: '**' + padded.replace(HEADINGS[0], HEADINGS[0] + '**'),
+    backslash: padded.replace(HEADINGS[0], HEADINGS[0] + '\\'),
+    wrongLabel: padded.replace(HEADINGS[3], '🔴 DATA SHARING & SELLING'),
+    nonbreakingSpace: padded.replace(HEADINGS[0], HEADINGS[0] + '\u00a0'),
+    extraEmojiLine: padded + '\n🧭  ',
+  };
+  for (const [reason, summary] of Object.entries(malformed)) {
+    assert.equal(checkAnalyzerHeadings(summary).passed, false, reason);
+  }
+});
 
 function setup(t, options) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tos-prompt-quality-'));

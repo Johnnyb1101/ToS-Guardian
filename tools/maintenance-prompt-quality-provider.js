@@ -139,9 +139,16 @@ function readIndependentGrade(result) {
 
 function checkAnalyzerHeadings(summary) {
   const lines = summary.split(/\r?\n/u);
-  const headings = lines.filter(line => /^(?:🧭|📥|🔴|📋|🟡|🟢) /u.test(line));
+  const trimHeadingEnd = line => {
+    let end = line.length;
+    while (end > 0 && (line[end - 1] === ' ' || line[end - 1] === '\t')) end--;
+    return line.slice(0, end);
+  };
+  const headings = lines
+    .filter(line => /^(?:🧭|📥|🔴|📋|🟡|🟢) /u.test(line))
+    .map(trimHeadingEnd);
   return {
-    passed: lines[0] === HEADINGS[0] && headings.length === HEADINGS.length &&
+    passed: trimHeadingEnd(lines[0]) === HEADINGS[0] && headings.length === HEADINGS.length &&
       HEADINGS.every((heading, index) => headings[index] === heading),
     missing: HEADINGS.filter(heading => !headings.includes(heading)),
   };
