@@ -102,7 +102,8 @@ const RETRIEVAL_FAILURE_PATTERNS = [
 ];
 
 function mentionsRetrievalFailure(text) {
-  return RETRIEVAL_FAILURE_PATTERNS.some(pattern => pattern.test(text));
+  const privacy = privacyAnalysisText(text);
+  return RETRIEVAL_FAILURE_PATTERNS.some(pattern => pattern.test(privacy));
 }
 
 const MIN_CREDIBLE_LENGTH = 300;
@@ -112,7 +113,13 @@ const ACTIONABLE_PHRASES = [
   'email', 'manage', 'opt out', 'say no', 'limit'
 ];
 
+function privacyAnalysisText(analysisText) {
+  const terms = findOtherImportantTerms(analysisText);
+  return terms ? analysisText.slice(0, terms.index).trimEnd() : analysisText;
+}
+
 function parseSections(analysisText) {
+  analysisText = privacyAnalysisText(analysisText);
   const sections = {};
   const lower = analysisText.toLowerCase();
 
@@ -244,6 +251,7 @@ function evaluateAnalysis(analysisText, criticVerdict = null) {
     };
   }
 
+  analysisText = privacyAnalysisText(analysisText);
   const text = analysisText.toLowerCase();
   let score = 100;
   const issues = [];

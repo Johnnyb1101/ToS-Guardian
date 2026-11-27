@@ -346,6 +346,38 @@ function stripEvalChrome(text) {
 // document couldn't be assessed — it is never proposed by the model.
 const RISK_LEVELS = ['Low', 'Moderate', 'High'];
 
+const OTHER_IMPORTANT_TERMS_HEADING = '📌 OTHER IMPORTANT TERMS';
+
+function findOtherImportantTerms(summary) {
+  if (typeof summary !== 'string') return null;
+  const matches = [...summary.matchAll(/(?:^|\r?\n)📌 OTHER IMPORTANT TERMS[ \t]*(?=\r?\n|$)/g)];
+  if (matches.length !== 1) return null;
+
+  const [terms] = matches;
+  const headingText = line => line
+    .replace(/^[ \t#*]*/, '')
+    .replace(/^(?:🧭|📥|🔴|📋|🟡|🟢)[ \t*]*/, '')
+    .replace(/[ \t*]+$/, '');
+  const deletion = /^DATA DELETION RIGHTS$/i;
+  const required = [
+    /^BOTTOM LINE$/i,
+    /^RISK LEVEL$/i,
+    /^WHAT (?:DATA )?(?:THEY|WE) COLLECT$/i,
+    /^DATA (?:SELLING|SHARING)[ \t]*(?:&|AND)[ \t]*(?:SHARING|SELLING)$/i,
+    /^OPT[- ]?OUT RIGHTS$/i,
+    /^HOW TO OPT OUT(?: RIGHT NOW)?$/i,
+    /^AUTO[- ]?RENEWAL[ \t]*(?:&|AND)[ \t]*BILLING$/i,
+    deletion
+  ];
+  const before = summary.slice(0, terms.index).split(/\r?\n/);
+  const after = summary.slice(terms.index + terms[0].length).split(/\r?\n/);
+  if (!before.some(line => deletion.test(headingText(line)))) return null;
+  if (after.some(line => required.some(header => header.test(headingText(line))))) return null;
+  return terms;
+}
+
+if (typeof module !== 'undefined' && module.exports) module.exports = { findOtherImportantTerms };
+
 // Pull the analyzer's PROPOSED one-line bottom line and risk word out of its
 // 🧭 BOTTOM LINE / 🧭 RISK LEVEL blocks (run after normalizeAnalysisHeaders so the
 // markers are canonical). These are only proposals — the orchestrator validates
@@ -353,6 +385,8 @@ const RISK_LEVELS = ['Low', 'Moderate', 'High'];
 // ever shown, so a poisoned document can't force a reassuring verdict.
 function extractAnalyzerHeadline(summary) {
   if (!summary) return { bottomLine: null, risk: null };
+  const terms = findOtherImportantTerms(summary);
+  if (terms) summary = summary.slice(0, terms.index);
   const NEXT_MARKER = /🧭|📥|🔴|📋|🟡|🟢/;
 
   const blockAfter = (label) => {
@@ -392,8 +426,9 @@ function extractAnalyzerHeadline(summary) {
 // trusted chrome, so the body the model produced must never contribute its own.
 function stripHeadlineChrome(text) {
   if (!text) return "";
-  return text
-    .replace(/<div\s+class="tg-(?:risk|bottomline)\b[^"]*"[^>]*>[\s\S]*?<\/div>/gi, "")
+  const body = text.replace(/<div\s+class="tg-(?:risk|bottomline)\b[^"]*"[^>]*>[\s\S]*?<\/div>/gi, "");
+  const terms = findOtherImportantTerms(body);
+  const privacy = (terms ? body.slice(0, terms.index) : body)
     .replace(/🧭\s*BOTTOM LINE[\s\S]*?(?=[🧭🔴📋🟡🟢]|$)/gi, "")
     .replace(/🧭\s*RISK LEVEL[\s\S]*?(?=[🧭🔴📋🟡🟢]|$)/gi, "")
     // Any prose still left BEFORE the first section header is headline residue —
@@ -403,6 +438,13 @@ function stripHeadlineChrome(text) {
     // exists, so config/error messages with no sections are left intact.)
     .replace(/^[\s\S]*?(?=📥|🔴|📋|🟡|🟢)/, "")
     .trim();
+  if (terms) return privacy + body.slice(terms.index);
+  // Stripping the headline can discard an earlier duplicate marker. Do not
+  // promote a remaining marker to a valid section as a side effect.
+  const promotedTerms = findOtherImportantTerms(privacy);
+  return promotedTerms
+    ? privacy.slice(0, promotedTerms.index) + privacy.slice(promotedTerms.index + promotedTerms[0].length)
+    : privacy;
 }
 
 function stripInjectionWarning(text) {
@@ -492,7 +534,9 @@ function formatSummary(raw, optOutLinks = [], unreadableDocs = []) {
   raw = stripHeadlineChrome(stripEvalChrome(raw));
 
   const categoryMarkers = ["📥", "🔴", "📋", "🟡", "🟢"];
-  const lines = raw.split("\n").map(l => l.trim()).filter(l => l !== "" && l !== "•");
+  const terms = findOtherImportantTerms(raw);
+  const summaryLines = (text) => text.split("\n").map(l => l.trim()).filter(l => l !== "" && l !== "•");
+  const lines = summaryLines(terms ? raw.slice(0, terms.index) : raw);
 
   // Build opt-out links HTML once — shown up top (visible), since it's actionable.
   const validLinks = (optOutLinks || [])
@@ -618,6 +662,12 @@ function formatSummary(raw, optOutLinks = [], unreadableDocs = []) {
     return i === -1 ? knownHeaders.length : i;
   };
   collected.sort((a, b) => sectionOrder(a.title) - sectionOrder(b.title));
+
+  if (terms) {
+    currentTitle = OTHER_IMPORTANT_TERMS_HEADING;
+    currentBody = summaryLines(raw.slice(terms.index + terms[0].length));
+    flush();
+  }
 
   // Show only the first (most important) bullet by default; the rest live in a
   // per-section "Show more" panel. (Per-section progressive disclosure.)
@@ -786,11 +836,14 @@ function normalizeAnalysisHeaders(summary) {
     { pattern: /[🔴📋🟡🟢]*\s*\*{0,2}\s*[🔴📋🟡🟢]*\s*\*{0,2}\s*DATA DELETION RIGHTS\s*\*{0,2}/gi, replacement: '🟢 DATA DELETION RIGHTS' }
   ];
 
-  let normalized = summary;
+  // Keep the final section outside the legacy substitutions, which also match
+  // heading phrases in body text.
+  const terms = findOtherImportantTerms(summary);
+  let normalized = terms ? summary.slice(0, terms.index) : summary;
   for (const { pattern, replacement } of headerMap) {
     normalized = normalized.replace(pattern, '\n' + replacement + '\n');
   }
-  return normalized.trim();
+  return normalized.trim() + (terms ? summary.slice(terms.index) : '');
 }
 
 // Central URL validation gate — ALL outbound document fetches pass through here (SECURITY-020)

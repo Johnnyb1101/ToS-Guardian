@@ -12,6 +12,7 @@ const { AUTHORIZATION_PURPOSE, checkAuthorization, strictCanonicalJson } = requi
 const { runBoundPromptQuality, runPromptQualityRehearsal } = require('../tools/maintenance-prompt-quality-runner');
 const { checkAnalyzerHeadings, readQualityResponse } = require('../tools/maintenance-prompt-quality-provider');
 const { createPromptQualityPlan } = require('../tools/maintenance-prompt-quality');
+const { gradeFindings } = require('../tools/maintenance-prompt-quality-checklist');
 const { createQualityFixture } = require('./maintenance-prompt-quality-fixtures');
 
 const HEADINGS = [
@@ -49,6 +50,16 @@ test('analyzer heading whitespace tolerance preserves the required layout', () =
   }
 });
 
+const FIXED_SUMMARY = HEADINGS.join('\n') + '\n📌 OTHER IMPORTANT TERMS \t\nThey collect email. The text does not mention billing. Change your account settings.';
+const CLAIMS = [
+  { id: 'c1', analyzerQuote: 'They collect email.', verdict: 'supported', sourceQuote: 'collects an email address' },
+  { id: 'c2', analyzerQuote: 'The text does not mention billing.', verdict: 'silence', sourceQuote: null },
+  { id: 'c3', analyzerQuote: 'Change your account settings.', verdict: 'fabricated', sourceQuote: null },
+];
+const FINDINGS = { v: 2, claims: CLAIMS, checkpoints: [
+  { id: 'email', analyzerQuote: 'They collect email.', sourceQuote: 'collects an email address', covered: true },
+] };
+
 function setup(t, options) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tos-prompt-quality-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -67,8 +78,9 @@ function setup(t, options) {
   const fixtures = new Map(plan.calls.map(({ id }) => {
     const [provider, arm, , , stage] = id.split(':');
     const responseId = id.replaceAll(':', '-');
-    const content = stage === 'analyzer' ? (arm === 'baseline' ? MISSING : COMPLETE)
-      : stage === 'independent' ? GRADE : 'Fixture stage output.';
+    const summary = options?.fixedChecklist ? FIXED_SUMMARY : arm === 'baseline' ? MISSING : COMPLETE;
+    const grade = options?.fixedChecklist ? JSON.stringify(options.findings ?? FINDINGS) : GRADE;
+    const content = stage === 'analyzer' ? summary : stage === 'independent' ? grade : 'Fixture stage output.';
     const responseModel = stage === 'independent' ? pricing.independent.responseModel : pricing[provider][stage].responseModel;
     const body = provider === 'anthropic' && stage !== 'independent' ? {
       id: 'msg-' + responseId, type: 'message', role: 'assistant', model: responseModel, stop_reason: 'end_turn',
@@ -89,7 +101,7 @@ function setup(t, options) {
       assert.equal(C.digest(build), buildHash);
       assert.equal(C.hashText(sourceText), sourceHash);
       assert.equal(sourceUrl, 'https://example.test/privacy');
-      assert.equal(prior, stage === 'analyzer' ? null : build.commit === protocol.builds.baseline.commit ? MISSING : COMPLETE);
+      assert.equal(prior, stage === 'analyzer' ? null : options?.fixedChecklist ? FIXED_SUMMARY : build.commit === protocol.builds.baseline.commit ? MISSING : COMPLETE);
       const model = build.release.config.policy.models[provider][stage === 'judge' ? 'jury' : 'default'];
       const max_tokens = pricing[provider][stage].maxOutputTokens;
       const user = { role: 'user', content: sourceText };
@@ -118,6 +130,90 @@ function setup(t, options) {
     },
   };
 }
+
+test('fixed checklist bytes and hand-scored evidence survive rehearsal across both arms and providers', async t => {
+  const input = setup(t, { fixedChecklist: true });
+  const report = await runPromptQualityRehearsal(input);
+  const descriptor = input.protocol.corpus.samples[0].checklist;
+  const frozen = input.attachments.get(descriptor.sha256);
+  const evidence = ref => fs.readFileSync(path.join(input.outputDirectory, 'evidence', ref.sha256));
+  assert.deepEqual(evidence(descriptor), frozen);
+  assert.equal(report.v, 2);
+  assert.equal(report.observations.length, 4);
+  for (const row of report.observations) {
+    const request = JSON.parse(evidence(row.stages.independent.request));
+    assert.deepEqual(Buffer.from(JSON.parse(request.messages[1].content).checklist), frozen);
+    assert.match(request.messages[0].content, /material contradictions/);
+    assert.deepEqual(row.checklist, descriptor);
+    assert.equal(row.headingCheck.passed, true);
+    assert.deepEqual(row.independentGrade, { accuracy: 1 / 2, completeness: 1, fabrications: 1, findings: FINDINGS });
+    assert.deepEqual(JSON.parse(evidence(row.stages.independent.output)), FINDINGS);
+  }
+});
+
+function handGrade(findings, summary = FIXED_SUMMARY) {
+  const sample = { text: 'Our service collects an email address.', checkpoints: new Map([
+    ['email', { id: 'email', condition: 'Identify email collection.', sourceQuote: 'collects an email address' }],
+  ]) };
+  return gradeFindings(JSON.stringify(findings), sample, summary);
+}
+
+test('pure source-scoped silence earns zero accuracy and zero fabrications', () => {
+  const findings = { v: 2, claims: [{ ...CLAIMS[1], id: 'c1' }],
+    checkpoints: [{ ...FINDINGS.checkpoints[0], analyzerQuote: null, covered: false }] };
+  assert.deepEqual(handGrade(findings, CLAIMS[1].analyzerQuote), { accuracy: 0, completeness: 0, fabrications: 0, findings });
+});
+
+test('unbound source, invented passages and duplicate checklist IDs stop before a reservation', async t => {
+  for (const editChecklist of [
+    list => { list.sourceHash = '0'.repeat(64); },
+    list => { list.items[0].sourceQuote = 'invented'; },
+    list => { list.items.push(list.items[0]); },
+    list => { list.items[0].condition = 'a'.repeat(501); },
+  ]) {
+    const input = setup(t, { fixedChecklist: true, editChecklist });
+    await assert.rejects(runPromptQualityRehearsal(input), /checklist/);
+    assert.equal(fs.existsSync(input.journal), false);
+    assert.deepEqual(fs.readdirSync(input.outputDirectory), []);
+  }
+});
+
+test('structured receipts reject invalid evidence, IDs and incomplete coverage', () => {
+  for (const edit of [
+    receipt => { receipt.claims = []; },
+    receipt => { receipt.claims[0].sourceQuote = 'absent'; },
+    receipt => { receipt.claims[1].analyzerQuote = receipt.claims[0].analyzerQuote; },
+    receipt => { receipt.claims[0].id = 'c2'; },
+    receipt => { receipt.checkpoints[0].id = 'other'; },
+    receipt => { receipt.checkpoints[0].sourceQuote = 'an email'; },
+    receipt => { receipt.checkpoints[0].analyzerQuote = 'absent'; },
+    receipt => { receipt.checkpoints = []; },
+  ]) {
+    const findings = structuredClone(FINDINGS);
+    edit(findings);
+    assert.throws(() => handGrade(findings), /[Ii]ndependent/);
+  }
+});
+
+test('invalid structured receipts halt after settlement and retain raw evidence', async t => {
+  const input = setup(t, { fixedChecklist: true, findings: { ...FINDINGS, checkpoints: [] } });
+  await assert.rejects(runPromptQualityRehearsal(input), /[Ii]ndependent/);
+  assert.equal(journalEvents(input).filter(event => event.type === 'settle').length, 4);
+  assert.equal(fs.existsSync(path.join(input.outputDirectory, 'prompt-quality-run.json')), false);
+  const delivery = input.fixtures.get(input.plan.calls[3].id);
+  const hash = crypto.createHash('sha256').update(delivery.response).digest('hex');
+  assert.deepEqual(fs.readFileSync(path.join(input.outputDirectory, 'evidence', hash)), delivery.response);
+});
+
+test('v2 permits the optional heading once after all required headings', () => {
+  const optional = '📌 OTHER IMPORTANT TERMS';
+  for (const text of [COMPLETE, COMPLETE + '\n' + optional + ' \t']) assert.ok(checkAnalyzerHeadings(text, 2).passed);
+  for (const text of [COMPLETE + '\n' + optional + '\n' + optional, optional + '\n' + COMPLETE,
+    COMPLETE + '\n ' + optional, COMPLETE + '\n' + optional + '\u00a0', COMPLETE + '\n📌 wrong', COMPLETE + '\n**' + optional + '**']) {
+    assert.equal(checkAnalyzerHeadings(text, 2).passed, false);
+  }
+  assert.ok(checkAnalyzerHeadings(COMPLETE + '\n📌 wrong').passed);
+});
 
 function journalEvents(input) {
   return fs.readFileSync(input.journal, 'utf8').trimEnd().split('\n').map(line => JSON.parse(line).event);

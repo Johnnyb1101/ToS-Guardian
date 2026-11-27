@@ -46,6 +46,24 @@ Email support@acorns.com to request deletion.`;
     parsed.sections.dataCollection.items.length === 2 && parsed.sections.howToOptOut.items.length === 2 && parsed.sections.howToOptOut.items[1].startsWith('**Interest-based ads**'));
   ok('the header variant "DATA SHARING & SELLING" maps to dataSelling', parsed.sections.dataSelling.items.length === 1);
   ok('single-sentence sections are one item each', parsed.sections.autoRenewal.items.length === 1 && parsed.sections.dataDeletion.items[0].startsWith('Email'));
+  ok('legacy summaries have no other terms section', !parsed.sections.otherImportantTerms);
+  const withTerms = lib.parseSummary(`${SUMMARY}\r\n📌 OTHER IMPORTANT TERMS \t\r\n- **Arbitration**: Disputes go to arbitration.`);
+  ok('other terms do not become deletion items',
+    withTerms.sections.dataDeletion.items.length === 1 &&
+    withTerms.sections.otherImportantTerms.items[0] === '**Arbitration**: Disputes go to arbitration.');
+  const withLookalike = lib.parseSummary(`${SUMMARY}\n📌 OTHER IMPORTANT TERMS: See the policy.`);
+  ok('inline mentions do not start an other terms section',
+    !withLookalike.sections.otherImportantTerms && withLookalike.sections.dataDeletion.items.length === 2);
+  const marker = '📌 OTHER IMPORTANT TERMS';
+  for (const summary of [
+    `${marker}\n- Arbitration.\n${SUMMARY}`,
+    `${marker}\n- Early marker.\n${SUMMARY}\n${marker}\n- Arbitration.`,
+    `${SUMMARY}\n${marker}\n- Arbitration.\n**Opt-Out Rights**\nYou can opt out.`
+  ]) {
+    const parsed = lib.parseSummary(summary);
+    ok('a non-final or repeated marker keeps privacy items in the spot check',
+      !parsed.sections.otherImportantTerms && parsed.sections.dataDeletion.items[0].startsWith('Email'));
+  }
   ok('a summary with bold headers and no emoji still parses', lib.parseSummary('**BOTTOM LINE**\nx\n**RISK LEVEL**\nLow\n**What They Collect**\n- a').sections.dataCollection.items.length === 1);
   ok('empty input parses to empty sections', lib.parseSummary(null).sections.dataDeletion.items.length === 0 && lib.parseSummary(null).riskLevel === 'missing');
 

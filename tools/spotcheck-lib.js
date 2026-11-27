@@ -1,5 +1,6 @@
 'use strict';
 
+const { findOtherImportantTerms } = require('../tosUtils');
 const { SECTIONS, normalizeVerdict, parseJuryJson, scoreVerdict, riskFromSummary, RISK_LEVELS } = require('./jury-lib');
 
 const HEADERS = Object.freeze([
@@ -30,6 +31,12 @@ function parseSummary(text) {
   const result = { bottomLine: '', riskLevel: 'missing', sections: {}, unknown: [] };
   for (const h of HEADERS) if (h.key !== 'bottomLine' && h.key !== 'riskLevel') result.sections[h.key] = { title: h.title, items: [] };
   if (typeof text !== 'string') return result;
+  const terms = findOtherImportantTerms(text);
+  if (terms) {
+    const items = text.slice(terms.index + terms[0].length).split(/\r?\n/).map(itemText).filter(Boolean);
+    result.sections.otherImportantTerms = { title: 'Other important terms', items };
+    text = text.slice(0, terms.index);
+  }
   let current = null;
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim();

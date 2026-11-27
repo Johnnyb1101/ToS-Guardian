@@ -8,7 +8,7 @@ const { makeRelease } = require('./final-test-fixtures');
 
 const ANTHROPIC_INPUT_CHECK = Object.freeze({ method: 'count-tokens', maxEstimatedInputTokens: 56_000, maxInputTokens: 64_000 });
 
-function createQualityFixture(journalDirectory, { checkAnthropicInput = false } = {}) {
+function createQualityFixture(journalDirectory, { checkAnthropicInput = false, fixedChecklist = false, editChecklist } = {}) {
   const attachments = new Map(), builds = {}, archives = {};
   function retain(text) {
     const bytes = Buffer.from(text);
@@ -49,6 +49,15 @@ function createQualityFixture(journalDirectory, { checkAnthropicInput = false } 
     repetitions: 1, criteria: { minAccuracy: 0.8, minCompleteness: 0.8, maxFabrications: 0, maxMeanRegression: 0 },
     rubric: retain('Evaluate accuracy and completeness against the source.'),
     independentJudge: { model: 'gpt-6-luna', prompt: retain('Evaluate the summary using only the supplied source and rubric.') }, reviewers };
+  if (fixedChecklist) {
+    spec.v = 2;
+    spec.criteria = { minAccuracy: 0.9, minCompleteness: 0.8, maxFabrications: 0, maxMeanRegression: 0.05 };
+    const sample = spec.corpus.samples[0];
+    const checklist = { v: 2, sampleId: sample.id, sourceHash: sample.source.sha256,
+      items: [{ id: 'email', sourceQuote: 'collects an email address', condition: 'Identify email collection.' }] };
+    editChecklist?.(checklist);
+    sample.checklist = retain(JSON.stringify(checklist, null, 2));
+  }
   if (checkAnthropicInput) spec.anthropicInputCheck = ANTHROPIC_INPUT_CHECK;
   const protocol = Q.createPromptQualityProtocol(spec);
   const payload = C.seal({ v: 1, kind: 'preregistration', protocolHash: protocol.hash, reviewer: 'protocol', observedAt: now,

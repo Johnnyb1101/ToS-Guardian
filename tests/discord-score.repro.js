@@ -13,9 +13,9 @@ const sandbox = {
 };
 
 vm.createContext(sandbox);
-vm.runInContext(fs.readFileSync(path.join(repoRoot, 'evaluator.js'), 'utf8'), sandbox, {
-  filename: 'evaluator.js'
-});
+for (const file of ['tosUtils.js', 'evaluator.js']) {
+  vm.runInContext(fs.readFileSync(path.join(repoRoot, file), 'utf8'), sandbox, { filename: file });
+}
 
 const discordStyleAnalysis = `
 🔴 DATA SELLING & SHARING

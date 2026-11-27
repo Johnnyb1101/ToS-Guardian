@@ -207,6 +207,7 @@ function verifyApproval(options, operatorTrust) {
   verifyPromptQualityPreregistration({
     protocol: plan.protocol, preregistration, reviewerRegistry, attachments, now: new Date().toISOString(),
   });
+  if (plan.protocol.v === 2) require('./maintenance-prompt-quality-runner').readSources(plan.protocol, attachments);
   if (preregistration.payload.observedAt > payload.issuedAt) {
     throw new Error('Prompt-quality preregistration postdates spending approval');
   }

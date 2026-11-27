@@ -14,6 +14,9 @@ function loadSource(file) {
     URL
   };
   vm.createContext(sandbox);
+  if (file === 'evaluator.js') {
+    vm.runInContext(fs.readFileSync(path.join(repoRoot, 'tosUtils.js'), 'utf8'), sandbox, { filename: 'tosUtils.js' });
+  }
   if (file === 'tosUtils.js') {
     const tldtsSource = fs.readFileSync(path.join(repoRoot, 'vendor/tldts-7.4.8.umd.min.js'), 'utf8');
     vm.runInContext(tldtsSource, sandbox, { filename: 'vendor/tldts-7.4.8.umd.min.js' });
@@ -273,6 +276,39 @@ mustEqual('evaluateAnalysis thresholds', 'score 74 label', 'Failed', labelForSco
   const text = fullAnalysis().replace(/🟢 DATA DELETION RIGHTS[\s\S]*/, '🟢 DATA DELETION RIGHTS\nYou cannot delete your data.').replace('Call 1-888-817-2970 to limit sharing.', 'Call support to delete or remove your data.');
   const got = evaluator.detectContradictions(text).map(c => c.rule);
   mustTrue('detectContradictions', 'deletion-vs-howto true positive', true, got.includes('deletion-vs-howto'));
+}
+
+// The optional final section must stay outside the existing privacy score and checks.
+{
+  const privacy = fullAnalysis().replace(
+    /🟢 DATA DELETION RIGHTS[\s\S]*/,
+    '🟢 DATA DELETION RIGHTS\nYou can request deletion.'
+  ).replace('Call 1-888-817-2970 to limit sharing.', 'Call support to delete or remove your data.');
+  const terms = '\r\n📌 OTHER IMPORTANT TERMS \t\r\n- You cannot delete an arbitration filing. Error: details are not included.';
+  const legacy = evaluator.evaluateAnalysis(privacy);
+  const expanded = evaluator.evaluateAnalysis(privacy + terms);
+  mustEqual('evaluateAnalysis', 'other terms do not change the privacy score', legacy.score, expanded.score);
+  mustFalse('detectContradictions', 'other terms do not negate privacy deletion rights', false,
+    evaluator.detectContradictions(privacy + terms).some(c => c.rule === 'deletion-vs-howto'));
+  mustFalse('isGenuineRetrievalFailure', 'other terms do not change the trusted retrieval verdict', false,
+    evaluator.isGenuineRetrievalFailure(privacy + terms));
+}
+
+{
+  const privacy = fullAnalysis().replace(
+    /🟢 DATA DELETION RIGHTS[\s\S]*/,
+    '🟢 DATA DELETION RIGHTS\nYou cannot delete your data.'
+  ).replace('Call 1-888-817-2970 to limit sharing.', 'Call support to delete or remove your data.');
+  const marker = '📌 OTHER IMPORTANT TERMS';
+  const malformed = [
+    `${marker}\n- Arbitration.\n${privacy}`,
+    `${marker}\n- Early marker.\n${privacy}\n${marker}\n- Arbitration.`,
+    `${privacy}\n${marker}\n- Arbitration.\n🔴 OPT-OUT RIGHTS\nYou can opt out.`
+  ];
+  for (const summary of malformed) {
+    mustTrue('detectContradictions', 'a non-final or repeated marker cannot hide deletion contradictions', true,
+      evaluator.detectContradictions(summary).some(c => c.rule === 'deletion-vs-howto'));
+  }
 }
 
 // Navy-Federal-style policy-finder steps should not count as actual opt-out steps when rights are not covered.

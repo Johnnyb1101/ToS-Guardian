@@ -312,6 +312,16 @@ async function runTest(fn) {
     mustTrue('runOrchestrator', 'rebuilds current cached confidence badge', true,
       got.summary.includes('Analysis confidence: Strong (100/100)'));
     mustDeep('runOrchestrator', 'returns cached opt-out links', ['https://chase.com/optout'], got.optOutLinks);
+    mustFalse('formatSummary', 'legacy cache has no other terms card', false,
+      context.formatSummary(got.summary, got.optOutLinks).includes('📌 OTHER IMPORTANT TERMS'));
+  });
+
+  await runTest(async () => {
+    const terms = '\n📌 OTHER IMPORTANT TERMS\n- **Arbitration**: Disputes go to arbitration.';
+    spies.analyzeWithModel.impl = async () => ({ summary: strongSummary('ordinary') + terms });
+    const got = await context.runOrchestrator('https://chase.com/signup', 'page text', '<html></html>');
+    mustTrue('formatSummary', 'preserves the optional section on the ordinary path', true,
+      context.formatSummary(got.summary).includes('<strong>Arbitration</strong>: Disputes go to arbitration.'));
   });
 
   // A cached summary that predates the current overlay schema (no trusted risk
@@ -436,9 +446,12 @@ ${strongSummary('clean source')}`
 
   // Opus should replace Haiku only when its evaluated score is strictly greater.
   await runTest(async () => {
-    spies.analyzeWithModel.impl = async (_text, _source, escalate = false) => ({ summary: escalate ? strongSummary('Opus wins') : failedSummary('Haiku loses') });
+    const terms = '\n📌 OTHER IMPORTANT TERMS\n- **Account termination**: They may close your account.';
+    spies.analyzeWithModel.impl = async (_text, _source, escalate = false) => ({ summary: escalate ? strongSummary('Opus wins') + terms : failedSummary('Haiku loses') });
     const got = await context.runOrchestrator('https://chase.com/signup', 'page text', '<html></html>');
     mustTrue('runOrchestrator', 'accepts better Opus result', true, got.summary.includes('Opus wins'));
+    mustTrue('formatSummary', 'preserves the optional section on the escalated path', true,
+      context.formatSummary(got.summary).includes('<strong>Account termination</strong>: They may close your account.'));
   });
 
   // Opus should not replace Haiku when its score is equal or worse.

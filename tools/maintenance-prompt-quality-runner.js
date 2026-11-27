@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const C = require('./final-corpus-lib');
+const { readChecklist, gradeFindings } = require('./maintenance-prompt-quality-checklist');
 const { localPaths } = require('./maintenance-local-path');
 const { sameLocalDirectory } = require('./maintenance-dependency-smoke-approval');
 const { openObservedBudget } = require('./maintenance-observed-budget');
@@ -96,6 +97,16 @@ function inputText(attachments, descriptor, label) {
   return text;
 }
 
+function readSources(protocol, attachments) {
+  return new Map(protocol.corpus.samples.map(sample => {
+    const text = inputText(attachments, sample.source, 'source');
+    if (protocol.v === 1) return [sample.id, { ...sample, text }];
+    const checklistText = inputText(attachments, sample.checklist, 'checklist');
+    const checkpoints = readChecklist(checklistText, sample, text);
+    return [sample.id, { ...sample, text, checklistText, checkpoints }];
+  }));
+}
+
 function callScope(run, stage, build, protocol, pricing) {
   if (stage === 'independent') {
     return { provider: 'openai', stage, model: protocol.independentJudge.model, pricing: pricing.independent };
@@ -135,9 +146,7 @@ async function runBoundPromptQuality({ plan, approvedPlanHash, preregistration, 
     typeof deliver === 'function' &&
     typeof shapeRequest === 'function' && typeof replayResponse === 'function', 'Trusted evaluation executor required');
   verifyPromptQualityPreregistration({ protocol, preregistration, reviewerRegistry, attachments, now });
-  const sources = new Map(protocol.corpus.samples.map(sample => [sample.id, {
-    ...sample, text: inputText(attachments, sample.source, 'source'),
-  }]));
+  const sources = readSources(protocol, attachments);
   const rubric = inputText(attachments, protocol.rubric, 'rubric');
   const judgePrompt = inputText(attachments, protocol.independentJudge.prompt, 'independent judge prompt');
   const output = await verifyArchives(protocol.builds, archiveLocations, outputDirectory, bound.journalDirectory, live);
@@ -147,6 +156,9 @@ async function runBoundPromptQuality({ plan, approvedPlanHash, preregistration, 
   try {
     requireThat(budget.snapshot().attempts.length === 0, 'Evaluation already attempted under this approval');
     const keep = openEvidence(output);
+    if (protocol.v === 2) {
+      for (const sample of sources.values()) keep(Buffer.from(sample.checklistText));
+    }
     const observations = [];
     const responseIds = new Set();
     const requestIds = new Set();
@@ -161,7 +173,7 @@ async function runBoundPromptQuality({ plan, approvedPlanHash, preregistration, 
         const call = callScope(run, stage, build, protocol, bound.pricing);
         const id = promptQualityCallId(run, stage);
         const request = stage === 'independent'
-          ? independentRequest(call.model, call.pricing.maxOutputTokens, judgePrompt, sample.text, rubric, summary)
+          ? independentRequest(call.model, call.pricing.maxOutputTokens, judgePrompt, sample.text, rubric, summary, sample.checklistText)
           : await shapeRequest({
             provider: run.provider, stage, build: structuredClone(build), buildHash,
             sourceUrl: sample.provenance.url, sourceText: sample.text, sourceHash: sample.source.sha256,
@@ -229,7 +241,8 @@ async function runBoundPromptQuality({ plan, approvedPlanHash, preregistration, 
         }
         try {
           if (stage !== 'independent') await verifyImageReplay(replayResponse, build, call, result);
-          if (stage === 'independent') independentGrade = readIndependentGrade(result.text);
+          if (stage === 'independent') independentGrade = protocol.v === 2
+            ? gradeFindings(result.text, sample, summary) : readIndependentGrade(result.text);
           const observation = { provider: call.provider, model: call.model, responseModel: call.pricing.responseModel,
             capture: captureRef, request: requestRef, response, output: keep(Buffer.from(result.text)), receipt,
             usage: result.usage, ...(inputCheck && { inputCheck }) };
@@ -242,15 +255,15 @@ async function runBoundPromptQuality({ plan, approvedPlanHash, preregistration, 
         }
         if (stage === 'analyzer') {
           summary = result.text;
-          headingCheck = checkAnalyzerHeadings(summary);
+          headingCheck = checkAnalyzerHeadings(summary, protocol.v);
         }
       }
-      const observation = { ...run, origin, buildHash, sourceHash: sample.source.sha256, stages, headingCheck, independentGrade };
+      const observation = { ...run, origin, buildHash, sourceHash: sample.source.sha256, ...(sample.checklist && { checklist: sample.checklist }), stages, headingCheck, independentGrade };
       observations.push({ ...observation, log: keep(encode(observation)) });
     }
 
     const report = C.seal({
-      v: 1, kind: 'maintenance-prompt-quality-run-report', phase: 'prompt-quality-evaluation',
+      v: protocol.v, kind: 'maintenance-prompt-quality-run-report', phase: 'prompt-quality-evaluation',
       diagnosticOnly: true, promotionEligible: false, evaluationPassed: false,
       origin, planHash: bound.hash, protocolHash: protocol.hash,
       providerCalls: live ? deliveries : 0, fixtureDeliveries: live ? 0 : deliveries,
@@ -276,4 +289,4 @@ function runPromptQualityRehearsal(input) {
   });
 }
 
-module.exports = { runBoundPromptQuality, runPromptQualityRehearsal };
+module.exports = { readSources, runBoundPromptQuality, runPromptQualityRehearsal };

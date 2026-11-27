@@ -233,8 +233,9 @@ function validateCorpus(protocol) {
     corpus.samples.length * repetitions * ARMS.length * PROVIDERS.length <= 1000, 'Bounded corpus and repetitions required');
   const ids = new Set(), hashes = new Set(), urls = new Set(), covered = new Set();
   for (const sample of corpus.samples) {
-    requireThat(exact(sample, ['id', 'coverage', 'source', 'provenance']) && id(sample.id) && !ids.has(sample.id) &&
+    requireThat(exact(sample, protocol.v === 2 ? ['id', 'coverage', 'source', 'provenance', 'checklist'] : ['id', 'coverage', 'source', 'provenance']) && id(sample.id) && !ids.has(sample.id) &&
       descriptor(sample.source) && !hashes.has(sample.source.sha256), 'Malformed or duplicate corpus sample');
+    if (protocol.v === 2) requireThat(descriptor(sample.checklist), 'Invalid sample checklist descriptor');
     requireThat(uniqueTags(sample.coverage) && sample.coverage.every(tag => corpus.requiredCoverage.includes(tag)), 'Invalid sample coverage');
     sample.coverage.forEach(tag => covered.add(tag));
     const p = sample.provenance;
@@ -254,7 +255,7 @@ function validateCorpus(protocol) {
 function validatePromptQualityProtocol(protocol) {
   try {
     const fields = Object.hasOwn(protocol ?? {}, 'anthropicInputCheck') ? [...SPEC, 'anthropicInputCheck'] : SPEC;
-    requireThat(exact(protocol, [...fields, 'v', 'kind', 'hash']) && protocol.v === 1 &&
+    requireThat(exact(protocol, [...fields, 'v', 'kind', 'hash']) && [1, 2].includes(protocol.v) &&
       protocol.kind === 'maintenance-prompt-quality-protocol' && C.bodyHash(protocol) === protocol.hash, 'Invalid prompt quality protocol seal or shape');
     if (fields !== SPEC) {
       requireThat(same(protocol.anthropicInputCheck, ANTHROPIC_INPUT_CHECK), 'Invalid Anthropic input check');
@@ -267,6 +268,9 @@ function validatePromptQualityProtocol(protocol) {
     requireThat(exact(c, ['minAccuracy', 'minCompleteness', 'maxFabrications', 'maxMeanRegression']) &&
       [c.minAccuracy, c.minCompleteness, c.maxMeanRegression].every(unit) && c.minAccuracy > 0 &&
       c.minCompleteness > 0 && c.maxFabrications === 0, 'Invalid preregistered criteria');
+    if (protocol.v === 2) requireThat(same(c, {
+      minAccuracy: 0.9, minCompleteness: 0.8, maxFabrications: 0, maxMeanRegression: 0.05,
+    }), 'Fixed grading thresholds required');
     requireThat(descriptor(protocol.rubric) && exact(protocol.independentJudge, ['model', 'prompt']) &&
       modelId(protocol.independentJudge.model) && descriptor(protocol.independentJudge.prompt), 'Invalid rubric or independent judge');
     requireThat(exact(protocol.reviewers, ROLES) && Object.values(protocol.reviewers).every(id) &&
@@ -277,8 +281,9 @@ function validatePromptQualityProtocol(protocol) {
 
 function createPromptQualityProtocol(spec) {
   const fields = Object.hasOwn(spec ?? {}, 'anthropicInputCheck') ? [...SPEC, 'anthropicInputCheck'] : SPEC;
-  requireThat(exact(spec, fields), 'Exact protocol specification required');
-  const protocol = C.seal({ v: 1, kind: 'maintenance-prompt-quality-protocol', ...clone(spec) });
+  const version = spec?.v === 2 ? 2 : 1;
+  requireThat(exact(spec, version === 2 ? [...fields, 'v'] : fields), 'Exact protocol specification required');
+  const protocol = C.seal({ v: version, kind: 'maintenance-prompt-quality-protocol', ...clone(spec) });
   const checked = validatePromptQualityProtocol(protocol);
   requireThat(checked.valid, checked.reasons.join(', '));
   return protocol;

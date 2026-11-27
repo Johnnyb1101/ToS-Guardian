@@ -204,5 +204,40 @@ function normalSummary() {
   ok('AI disclaimer present', html.includes('AI analysis may not be 100% accurate'));
 }
 
+{
+  const privacy = '🟢 DATA DELETION RIGHTS\nYou can delete your data.';
+  const terms = '\r\n📌 OTHER IMPORTANT TERMS \t\r\n- **Arbitration**: The DATA DELETION RIGHTS clause excludes <img src=x onerror=alert(1)>.\n- Second point.';
+  const normalized = utils.normalizeAnalysisHeaders(privacy + terms);
+  ok('normalization keeps the final section text verbatim', normalized.endsWith(terms));
+  const html = utils.formatSummary(normalized);
+  assertClean('other important terms use the existing safe renderer', html);
+  const title = '<span class="tg-category-title">📌 OTHER IMPORTANT TERMS</span>';
+  const headingPosition = html.indexOf(title);
+  ok('other terms render separately after deletion', headingPosition > html.indexOf('You can delete your data.')
+    && html.indexOf('<strong>Arbitration</strong>') > headingPosition);
+  ok('other terms preserve literal heading words and escape HTML', html.includes('The DATA DELETION RIGHTS clause excludes &lt;img'));
+  ok('other terms use the existing Show more control', html.includes('Show more'));
+  for (const heading of [
+    'Read 📌 OTHER IMPORTANT TERMS first.', '📌 OTHER IMPORTANT TERMS: inline prose',
+    ' 📌 OTHER IMPORTANT TERMS', '**📌 OTHER IMPORTANT TERMS**', '📌 OTHER IMPORTANT TERMS\u00a0'
+  ]) {
+    ok(`lookalike stays in deletion prose (${JSON.stringify(heading)})`,
+      !utils.formatSummary(`${privacy}\n${heading}\n- A clause.`).includes(title));
+  }
+  ok('legacy summary renders no other terms card', !utils.formatSummary(normalSummary()).includes(title));
+  ok('empty other terms section renders no card', !utils.formatSummary(`${privacy}\n📌 OTHER IMPORTANT TERMS`).includes(title));
+  const marker = '📌 OTHER IMPORTANT TERMS';
+  const malformed = [
+    `${marker}\n- Arbitration.\n${privacy}`,
+    `${marker}\n- Early marker.\n${privacy}\n${marker}\n- Arbitration.`,
+    `${privacy}\n${marker}\n- Arbitration.\n🔴 OPT-OUT RIGHTS\nYou can opt out.`
+  ];
+  for (const summary of malformed) {
+    const html = utils.formatSummary(utils.normalizeAnalysisHeaders(summary));
+    ok('a non-final or repeated marker does not hide the deletion card',
+      !html.includes(title) && html.includes('🟢 DATA DELETION RIGHTS') && html.includes('You can delete your data.'));
+  }
+}
+
 console.log(`\nSummary: ${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
