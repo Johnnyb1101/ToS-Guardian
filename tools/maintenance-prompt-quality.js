@@ -157,6 +157,76 @@ const OBSERVED_BUILD_PAIRS = new Map([
       }
     ],
   }],
+  ['d46bc5fbc0d8943b2f34209f1de9589752477686c7d6d3e4e7780b8eb6695e48', {
+    "requiredProtocolVersion": 2,
+    "builds": {
+      "baseline": {
+        "commit": "632b5fc38cdd19d6b042b6d193fb34fb3b612b98",
+        "artifact": {
+          "bytes": 266977280,
+          "manifestDigest": "sha256:2898a9d7594b80a41c4ec21a8847c32b969fd68523ad472433693284d1d4d89b",
+          "sha256": "f3a8d29821866d8bdef1a58837ffec89efedc3d0902a3000f116bb1da778276d"
+        },
+        "configHash": "208864d93ccbfb4ff8f9012e812bdf9c043f3d2919a65220292136383154ac73"
+      },
+      "candidate": {
+        "commit": "0347e313748ca0864ae36b0aad3282e039f2611a",
+        "artifact": {
+          "bytes": 266987520,
+          "manifestDigest": "sha256:49313ce37edaf27c893f7c00e33668ab24ad0b2126d182fa57d1ac053378b93a",
+          "sha256": "92ffd1300ad4b98487afea999604990b69133b8aa0732a8b62f17d32956f6a6c"
+        },
+        "configHash": "1ae951683cb4575415dab18c1327dcec53648ccd30a4a5bf6817189a8203de98"
+      }
+    },
+    "changes": [
+      {
+        "path": [
+          "policy",
+          "promptHashes",
+          "analyzer"
+        ],
+        "baseline": "61c3552389d6b8bbb1a0c99693315c2d15575d6f4deb0a58d2a794705ff9e8c0",
+        "candidate": "b3f91f89df64b658f1e68d01ad54e17e2ca6a9944bf68160ff2d013cf8228664"
+      },
+      {
+        "path": [
+          "policy",
+          "versions",
+          "promptComposition"
+        ],
+        "baseline": "bf9de2031ef72410fd4d71da45fe771fa9e0beff4bc211a50b7232f4cfc90c8e",
+        "candidate": "3d825f277caa1a3573b35e42e492cbb335a91b005eab452b4122781cb6a6b73e"
+      },
+      {
+        "path": [
+          "policy",
+          "versions",
+          "serverPipeline"
+        ],
+        "baseline": "190331bc7d9c826e2534920524aa55af9200772ea5210e2ccbd242905f1ac944",
+        "candidate": "dc01e76600e0dab933f68122e3234d1c4bab2aa5a1ebf23b7fd6c1d9ef757222"
+      }
+    ],
+    "additionalOfflineSources": [
+      {
+        "url": "https://www.uspto.gov/terms-use-uspto-websites",
+        "sha256": "a1eda8e508a2770b9bb8edbdadec1522c2070531cfa6dd8ffd9b9fdaeab8b040"
+      },
+      {
+        "url": "https://www.nist.gov/copyrights-disclaimers",
+        "sha256": "66564691e940f3db4a7067929578d3ef8802c5978754bb48af6ac6737a130103"
+      },
+      {
+        "url": "https://www.archives.gov/global-pages/privacy.html",
+        "sha256": "ca086b238198b1d2ec218215ab6b5c675bc232adbf92419bd89bf8e70403f93d"
+      },
+      {
+        "url": "https://www.federalreserve.gov/website-linking-policies.htm",
+        "sha256": "b1fc2cf0e39b534da4cb5f5537b02a408db2a4270e0d3da03c2dea227b972939"
+      }
+    ]
+  }],
 ]);
 const OFFLINE_SOURCES = [
   {
@@ -185,11 +255,15 @@ const OFFLINE_SOURCES = [
   }
 ];
 
-function validateBuilds({ builds, mode, offlineComparisonHash }) {
+function validateBuilds({ builds, mode, offlineComparisonHash, v }) {
   requireThat(exact(builds, ARMS) && C.isHash(offlineComparisonHash), 'Build pair and offline comparison hash required');
   const observed = mode === 'observed';
   const reviewedPair = OBSERVED_BUILD_PAIRS.get(offlineComparisonHash);
-  if (observed) requireThat(reviewedPair, 'Unknown offline comparison');
+  if (observed) {
+    requireThat(reviewedPair, 'Unknown offline comparison');
+    requireThat(reviewedPair.requiredProtocolVersion === undefined || reviewedPair.requiredProtocolVersion === v,
+      'Reviewed build pair requires the fixed-checklist protocol');
+  }
   const changes = observed ? reviewedPair.changes : CHANGES;
   const fixed = {};
   for (const arm of ARMS) {
@@ -227,7 +301,9 @@ function sourceUrl(value) {
 }
 
 function validateCorpus(protocol) {
-  const { corpus, repetitions, declaredAt, mode } = protocol;
+  const { corpus, repetitions, declaredAt, mode, offlineComparisonHash } = protocol;
+  const extraSources = OBSERVED_BUILD_PAIRS.get(offlineComparisonHash)?.additionalOfflineSources ?? [];
+  const excludedSources = [...OFFLINE_SOURCES, ...extraSources];
   requireThat(exact(corpus, ['samples', 'requiredCoverage']) && uniqueTags(corpus.requiredCoverage) &&
     positive(repetitions) && Array.isArray(corpus.samples) && corpus.samples.length > 0 &&
     corpus.samples.length * repetitions * ARMS.length * PROVIDERS.length <= 1000, 'Bounded corpus and repetitions required');
@@ -245,7 +321,7 @@ function validateCorpus(protocol) {
     requireThat(!urls.has(url), 'Duplicate corpus URL');
     if (mode === 'observed') {
       requireThat(p.method === 'official-capture', 'Official source capture required');
-      requireThat(!OFFLINE_SOURCES.some(s => s.sha256 === sample.source.sha256 || sourceUrl(s.url) === url), 'Offline comparison corpus cannot be reused');
+      requireThat(!excludedSources.some(s => s.sha256 === sample.source.sha256 || sourceUrl(s.url) === url), 'Offline comparison corpus cannot be reused');
     }
     ids.add(sample.id); hashes.add(sample.source.sha256); urls.add(url);
   }
